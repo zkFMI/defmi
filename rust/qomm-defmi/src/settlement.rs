@@ -19,8 +19,8 @@ use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
 use qomm_zk::pedersen::Pedersen;
 use qomm_zk::sigma::{
-    prove_product, prove_same_value, product_terms, same_value_terms, Batch,
-    CrossGeneratorProof, ProductProof,
+    product_terms, prove_product, prove_same_value, same_value_terms, Batch, CrossGeneratorProof,
+    ProductProof,
 };
 use qomm_zkpi::{Instruction, Venue};
 use rand_core::{CryptoRng, RngCore};
@@ -140,30 +140,58 @@ pub struct InstructionOpenings {
 
 #[allow(clippy::too_many_arguments)]
 pub fn build_package<R: RngCore + CryptoRng>(
-    key: &Pedersen, instruction: Instruction,
-    securities: &Ledger, cash: &Ledger,
-    quantity: u64, price: u64, holdings: &Holdings,
+    key: &Pedersen,
+    instruction: Instruction,
+    securities: &Ledger,
+    cash: &Ledger,
+    quantity: u64,
+    price: u64,
+    holdings: &Holdings,
     openings: &InstructionOpenings,
-    securities_tag: Option<&BlindedTag>, securities_gamma: &Scalar,
-    cash_tag: Option<&BlindedTag>, cash_gamma: &Scalar,
+    securities_tag: Option<&BlindedTag>,
+    securities_gamma: &Scalar,
+    cash_tag: Option<&BlindedTag>,
+    cash_gamma: &Scalar,
     rng: &mut R,
 ) -> Result<(DvpPackage, Carry), &'static str> {
     // Both amounts are pinned by the instruction --- the quantity through the
     // link below, the cash through the product relation --- so neither needs a
     // second range proof here. That is half the range proofs in the package.
     let (securities_leg, securities_secrets) = securities.build_transfer(
-        holdings.securities_balance, &holdings.securities_blinding, quantity,
-        &[SETTLE_DOMAIN, b":sec"].concat(), securities_tag, securities_gamma, true, rng)?;
+        holdings.securities_balance,
+        &holdings.securities_blinding,
+        quantity,
+        &[SETTLE_DOMAIN, b":sec"].concat(),
+        securities_tag,
+        securities_gamma,
+        true,
+        rng,
+    )?;
     let value = quantity.checked_mul(price).ok_or("cash amount overflows")?;
     let (cash_leg, cash_secrets) = cash.build_transfer(
-        holdings.cash_balance, &holdings.cash_blinding, value,
-        &[SETTLE_DOMAIN, b":cash"].concat(), cash_tag, cash_gamma, true, rng)?;
+        holdings.cash_balance,
+        &holdings.cash_blinding,
+        value,
+        &[SETTLE_DOMAIN, b":cash"].concat(),
+        cash_tag,
+        cash_gamma,
+        true,
+        rng,
+    )?;
 
     let leg_generator = securities_tag.map(|t| t.point).unwrap_or(key.g);
     let quantity_link = prove_same_value(
-        key, &mut link_transcript(), &leg_generator, &key.g,
-        &securities_leg.amount_commitment, &instruction.amount_commitment,
-        &Scalar::from(quantity), &securities_secrets.amount_blinding, &openings.amount, rng);
+        key,
+        &mut link_transcript(),
+        &leg_generator,
+        &key.g,
+        &securities_leg.amount_commitment,
+        &instruction.amount_commitment,
+        &Scalar::from(quantity),
+        &securities_secrets.amount_blinding,
+        &openings.amount,
+        rng,
+    );
 
     // The quantity is taken from the instruction rather than from the leg: the
     // link above already ties them, and the instruction is what the quorum
@@ -176,15 +204,29 @@ pub fn build_package<R: RngCore + CryptoRng>(
     let reference_blinding = Scalar::random(rng);
     let cash_reference = key.commit_u64(value, &reference_blinding);
     let value_proof = prove_product(
-        key, &mut value_transcript(), &instruction.price_commitment,
-        &Scalar::from(price), &openings.price,
-        &Scalar::from(quantity), &openings.amount,
-        &reference_blinding, rng);
+        key,
+        &mut value_transcript(),
+        &instruction.price_commitment,
+        &Scalar::from(price),
+        &openings.price,
+        &Scalar::from(quantity),
+        &openings.amount,
+        &reference_blinding,
+        rng,
+    );
     let cash_generator = cash_tag.map(|t| t.point).unwrap_or(key.g);
     let cash_link = prove_same_value(
-        key, &mut cash_link_transcript(), &cash_generator, &key.g,
-        &cash_leg.amount_commitment, &cash_reference,
-        &Scalar::from(value), &cash_secrets.amount_blinding, &reference_blinding, rng);
+        key,
+        &mut cash_link_transcript(),
+        &cash_generator,
+        &key.g,
+        &cash_leg.amount_commitment,
+        &cash_reference,
+        &Scalar::from(value),
+        &cash_secrets.amount_blinding,
+        &reference_blinding,
+        rng,
+    );
 
     let who = Sides::of(&instruction);
     let carry = Carry {
@@ -200,16 +242,26 @@ pub fn build_package<R: RngCore + CryptoRng>(
             securities_to: who.securities_to,
             cash_from: who.cash_from,
             cash_to: who.cash_to,
-            securities_leg, cash_leg, quantity_link, cash_reference,
-            value_proof, cash_link,
+            securities_leg,
+            cash_leg,
+            quantity_link,
+            cash_reference,
+            value_proof,
+            cash_link,
         },
         carry,
     ))
 }
 
-fn link_transcript() -> Transcript { Transcript::new(b"qomm:defmi:qty-link") }
-fn value_transcript() -> Transcript { Transcript::new(b"qomm:defmi:value") }
-fn cash_link_transcript() -> Transcript { Transcript::new(b"qomm:defmi:cash-link") }
+fn link_transcript() -> Transcript {
+    Transcript::new(b"qomm:defmi:qty-link")
+}
+fn value_transcript() -> Transcript {
+    Transcript::new(b"qomm:defmi:value")
+}
+fn cash_link_transcript() -> Transcript {
+    Transcript::new(b"qomm:defmi:cash-link")
+}
 
 pub struct Defmi {
     pub key: Pedersen,
@@ -220,11 +272,19 @@ pub struct Defmi {
 
 impl Defmi {
     pub fn new(key: Pedersen, securities: Ledger, cash: Ledger, venue: Venue) -> Self {
-        Defmi { key, securities, cash, venue }
+        Defmi {
+            key,
+            securities,
+            cash,
+            venue,
+        }
     }
 
     fn check<R: RngCore + CryptoRng>(
-        &self, package: &DvpPackage, now: u64, rng: &mut R,
+        &self,
+        package: &DvpPackage,
+        now: u64,
+        rng: &mut R,
     ) -> Result<(), &'static str> {
         self.venue.verify(&package.instruction, now)?;
 
@@ -247,38 +307,76 @@ impl Defmi {
             (&package.cash_from, &self.cash),
             (&package.cash_to, &self.cash),
         ] {
-            if ledger.balance(handle).is_none() { return Err("an account is not open"); }
+            if ledger.balance(handle).is_none() {
+                return Err("an account is not open");
+            }
         }
-        if package.securities_from == package.securities_to { return Err("securities legs share a handle"); }
-        if package.cash_from == package.cash_to { return Err("cash legs share a handle"); }
+        if package.securities_from == package.securities_to {
+            return Err("securities legs share a handle");
+        }
+        if package.cash_from == package.cash_to {
+            return Err("cash legs share a handle");
+        }
 
-        self.securities.check_transfer(&package.securities_from, &package.securities_leg,
-                                       &[SETTLE_DOMAIN, b":sec"].concat(), true)?;
-        self.cash.check_transfer(&package.cash_from, &package.cash_leg,
-                                 &[SETTLE_DOMAIN, b":cash"].concat(), true)?;
+        self.securities.check_transfer(
+            &package.securities_from,
+            &package.securities_leg,
+            &[SETTLE_DOMAIN, b":sec"].concat(),
+            true,
+        )?;
+        self.cash.check_transfer(
+            &package.cash_from,
+            &package.cash_leg,
+            &[SETTLE_DOMAIN, b":cash"].concat(),
+            true,
+        )?;
 
         // Everything that is a sigma check goes into one batch, so the package
         // costs one multiscalar multiplication rather than one per proof.
         let mut batch = Batch::new();
-        let leg_generator = package.securities_leg.tag.as_ref()
-            .map(|t| t.point).unwrap_or(self.key.g);
+        let leg_generator = package
+            .securities_leg
+            .tag
+            .as_ref()
+            .map(|t| t.point)
+            .unwrap_or(self.key.g);
         let (s, p) = same_value_terms(
-            &self.key, &mut link_transcript(), &leg_generator, &self.key.g,
+            &self.key,
+            &mut link_transcript(),
+            &leg_generator,
+            &self.key.g,
             &package.securities_leg.amount_commitment,
             &package.instruction.amount_commitment,
-            &package.quantity_link, &Batch::weight(rng));
+            &package.quantity_link,
+            &Batch::weight(rng),
+        );
         batch.push(s, p);
         let (s, p) = product_terms(
-            &self.key, &mut value_transcript(), &package.instruction.price_commitment,
-            &package.instruction.amount_commitment, &package.cash_reference,
-            &package.value_proof, &Batch::weight(rng));
+            &self.key,
+            &mut value_transcript(),
+            &package.instruction.price_commitment,
+            &package.instruction.amount_commitment,
+            &package.cash_reference,
+            &package.value_proof,
+            &Batch::weight(rng),
+        );
         batch.push(s, p);
-        let cash_generator = package.cash_leg.tag.as_ref()
-            .map(|t| t.point).unwrap_or(self.key.g);
+        let cash_generator = package
+            .cash_leg
+            .tag
+            .as_ref()
+            .map(|t| t.point)
+            .unwrap_or(self.key.g);
         let (s, p) = same_value_terms(
-            &self.key, &mut cash_link_transcript(), &cash_generator, &self.key.g,
-            &package.cash_leg.amount_commitment, &package.cash_reference,
-            &package.cash_link, &Batch::weight(rng));
+            &self.key,
+            &mut cash_link_transcript(),
+            &cash_generator,
+            &self.key.g,
+            &package.cash_leg.amount_commitment,
+            &package.cash_reference,
+            &package.cash_link,
+            &Batch::weight(rng),
+        );
         batch.push(s, p);
         if !batch.verify() {
             return Err("the legs do not match what the instruction says");
@@ -287,7 +385,10 @@ impl Defmi {
     }
 
     pub fn settle<R: RngCore + CryptoRng>(
-        &mut self, package: &DvpPackage, now: u64, rng: &mut R,
+        &mut self,
+        package: &DvpPackage,
+        now: u64,
+        rng: &mut R,
     ) -> Receipt {
         let securities_before = self.securities.snapshot();
         let cash_before = self.cash.snapshot();
@@ -295,16 +396,23 @@ impl Defmi {
         if status.is_ok() {
             // both legs are checked before either is applied, so a failure on
             // the second cannot leave the first settled
-            self.securities.apply_transfer(&package.securities_from,
-                                           &package.securities_to, &package.securities_leg);
-            self.cash.apply_transfer(&package.cash_from, &package.cash_to, &package.cash_leg);
-            self.venue.settle(&package.instruction, now)
+            self.securities.apply_transfer(
+                &package.securities_from,
+                &package.securities_to,
+                &package.securities_leg,
+            );
+            self.cash
+                .apply_transfer(&package.cash_from, &package.cash_to, &package.cash_leg);
+            self.venue
+                .settle(&package.instruction, now)
                 .expect("venue refused after checks passed");
         }
         Receipt {
             status,
-            securities_before, securities_after: self.securities.snapshot(),
-            cash_before, cash_after: self.cash.snapshot(),
+            securities_before,
+            securities_after: self.securities.snapshot(),
+            cash_before,
+            cash_after: self.cash.snapshot(),
         }
     }
 

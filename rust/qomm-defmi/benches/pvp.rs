@@ -31,12 +31,18 @@ const AMOUNT: u64 = 1_000;
 const BALANCE: u64 = 10_000;
 
 fn shell(cmd: &str, args: &[&str]) -> String {
-    std::process::Command::new(cmd).args(args).output().ok()
+    std::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
 }
 
-struct Rail { ledger: Ledger, blinding: Scalar }
+struct Rail {
+    ledger: Ledger,
+    blinding: Scalar,
+}
 
 fn rail(label: &[u8], rng: &mut OsRng) -> Rail {
     let key = Pedersen::new(label);
@@ -48,8 +54,19 @@ fn rail(label: &[u8], rng: &mut OsRng) -> Rail {
 }
 
 fn transfer(rail: &Rail, rng: &mut OsRng) -> Transfer {
-    rail.ledger.build_transfer(BALANCE, &rail.blinding, AMOUNT, b"pvp",
-                               None, &Scalar::ZERO, false, rng).unwrap().0
+    rail.ledger
+        .build_transfer(
+            BALANCE,
+            &rail.blinding,
+            AMOUNT,
+            b"pvp",
+            None,
+            &Scalar::ZERO,
+            false,
+            rng,
+        )
+        .unwrap()
+        .0
 }
 
 /// One whole swap, timed in the four places it can be timed.
@@ -62,8 +79,12 @@ struct Timings {
 
 fn run(repeats: usize) -> Timings {
     let mut rng = OsRng;
-    let mut t = Timings { prepare_ms: vec![], claim_ms: vec![], react_ms: vec![],
-                          unwind_us: vec![] };
+    let mut t = Timings {
+        prepare_ms: vec![],
+        claim_ms: vec![],
+        react_ms: vec![],
+        unwind_us: vec![],
+    };
 
     for _ in 0..repeats {
         let (bob, _) = Swap::proposer(&mut rng);
@@ -75,14 +96,36 @@ fn run(repeats: usize) -> Timings {
         // Preparing: the transfer is already built, so this is the ledger's
         // check plus moving the amount out of the payer's account.
         let start = Instant::now();
-        let leg_a: Leg = alice.prepare(&mut a.ledger, b"A", b"payer", b"payee",
-                                       &Scalar::random(&mut rng), &ta, b"pvp",
-                                       false, 100, &mut rng).unwrap();
+        let leg_a: Leg = alice
+            .prepare(
+                &mut a.ledger,
+                b"A",
+                b"payer",
+                b"payee",
+                &Scalar::random(&mut rng),
+                &ta,
+                b"pvp",
+                false,
+                100,
+                &mut rng,
+            )
+            .unwrap();
         t.prepare_ms.push(start.elapsed().as_secs_f64() * 1e3);
 
-        let leg_b: Leg = bob.prepare(&mut b.ledger, b"B", b"payer", b"payee",
-                                     &Scalar::random(&mut rng), &tb, b"pvp",
-                                     false, 160, &mut rng).unwrap();
+        let leg_b: Leg = bob
+            .prepare(
+                &mut b.ledger,
+                b"B",
+                b"payer",
+                b"payee",
+                &Scalar::random(&mut rng),
+                &tb,
+                b"pvp",
+                false,
+                160,
+                &mut rng,
+            )
+            .unwrap();
 
         // The first mover claims. This is what appears on ledger A.
         let start = Instant::now();
@@ -94,7 +137,9 @@ fn run(repeats: usize) -> Timings {
         // to cover, less the network and the block times.
         let start = Instant::now();
         let secret = alice.learn(&leg_a, &published);
-        alice.claim_with(&mut b.ledger, &leg_b, &secret, 120).unwrap();
+        alice
+            .claim_with(&mut b.ledger, &leg_b, &secret, 120)
+            .unwrap();
         t.react_ms.push(start.elapsed().as_secs_f64() * 1e3);
 
         assert!(a.ledger.conserved() && b.ledger.conserved());
@@ -106,9 +151,20 @@ fn run(repeats: usize) -> Timings {
         let swap = Swap::responder(adaptor.point);
         let mut a = rail(b"qomm:defmi:jpy", &mut rng);
         let ta = transfer(&a, &mut rng);
-        let leg = swap.prepare(&mut a.ledger, b"A", b"payer", b"payee",
-                               &Scalar::random(&mut rng), &ta, b"pvp",
-                               false, 100, &mut rng).unwrap();
+        let leg = swap
+            .prepare(
+                &mut a.ledger,
+                b"A",
+                b"payer",
+                b"payee",
+                &Scalar::random(&mut rng),
+                &ta,
+                b"pvp",
+                false,
+                100,
+                &mut rng,
+            )
+            .unwrap();
         let start = Instant::now();
         swap.unwind(&mut a.ledger, &leg, 101).unwrap();
         t.unwind_us.push(start.elapsed().as_secs_f64() * 1e6);
@@ -117,16 +173,23 @@ fn run(repeats: usize) -> Timings {
 }
 
 fn json(name: &str, s: &Summary) -> String {
-    format!("    \"{name}\": {{\"n\": {}, \"mean\": {:.6}, \"sd\": {}, \
+    format!(
+        "    \"{name}\": {{\"n\": {}, \"mean\": {:.6}, \"sd\": {}, \
              \"median\": {:.6}, \"min\": {:.6}, \"max\": {:.6}}}",
-            s.n, s.mean,
-            s.sd.map_or("null".to_string(), |v| format!("{v:.6}")),
-            s.median, s.min, s.max)
+        s.n,
+        s.mean,
+        s.sd.map_or("null".to_string(), |v| format!("{v:.6}")),
+        s.median,
+        s.min,
+        s.max
+    )
 }
 
 fn main() {
-    let repeats: usize = std::env::var("QOMM_BENCH_REPEATS").ok()
-        .and_then(|v| v.parse().ok()).unwrap_or(25);
+    let repeats: usize = std::env::var("QOMM_BENCH_REPEATS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(25);
 
     // The calibration every artifact in this project carries, so a reading here
     // can be compared with one taken on another day or another machine.
@@ -134,7 +197,9 @@ fn main() {
     let key = Pedersen::new(b"calibration");
     let point = key.g;
     let scalar = Scalar::random(&mut rng);
-    let scalar_mult = time_us(200, || { std::hint::black_box(point * scalar); });
+    let scalar_mult = time_us(200, || {
+        std::hint::black_box(point * scalar);
+    });
 
     let t = run(repeats);
     let prepare = Summary::of(&t.prepare_ms).unwrap();
@@ -153,7 +218,9 @@ fn main() {
     println!("  exposure. The figure above is its floor: it excludes the time for");
     println!("  ledger A to publish and ledger B to accept, which is the larger term.");
 
-    let Ok(path) = std::env::var("QOMM_BENCH_JSON") else { return };
+    let Ok(path) = std::env::var("QOMM_BENCH_JSON") else {
+        return;
+    };
     let json = format!(
         "{{\n  \"host\": \"{}\",\n  \"rustc\": \"{}\",\n  \"group\": \"ristretto255\",\n  \
          \"rail_bits\": {BITS},\n  \"amount\": {AMOUNT},\n  \"repeats\": {repeats},\n  \
@@ -164,9 +231,14 @@ one ledger to publish and the other to accept\"\n}}\n",
         std::env::var("QOMM_HOST_LABEL").unwrap_or_else(|_| hosts::this_host()),
         shell("rustc", &["--version"]),
         json("scalar_mult_us", &scalar_mult).trim_start(),
-        [json("prepare", &prepare), json("claim", &claim), json("react", &react)]
-            .join(",\n"),
-        json("unwind", &unwind));
+        [
+            json("prepare", &prepare),
+            json("claim", &claim),
+            json("react", &react)
+        ]
+        .join(",\n"),
+        json("unwind", &unwind)
+    );
     std::fs::write(&path, json).expect("could not write the benchmark JSON");
     println!("wrote {path}");
     let _ = time_ms(1, || {});

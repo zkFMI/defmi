@@ -1,6 +1,5 @@
 //! Delivery versus payment on ledgers that cannot read themselves.
 
-use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::{Signer, SigningKey};
 use qomm_defmi::assets::AssetRegistry;
@@ -29,13 +28,16 @@ struct World {
     cash: (u64, Scalar),
 }
 
-
 /// The two firms, named the way the design says they should be: one seed each,
 /// a handle derived for this venue. The accounts a rail keeps their balances
 /// under follow from those handles, so the test cannot open an account the
 /// instruction would not name --- which is the property being fixed.
-fn seller() -> Handle { Identity::from_seed([11u8; 32]).handle(VENUE) }
-fn buyer() -> Handle { Identity::from_seed([22u8; 32]).handle(VENUE) }
+fn seller() -> Handle {
+    Identity::from_seed([11u8; 32]).handle(VENUE)
+}
+fn buyer() -> Handle {
+    Identity::from_seed([22u8; 32]).handle(VENUE)
+}
 
 const VENUE: &[u8] = b"defmi:test";
 
@@ -54,7 +56,8 @@ fn world_with_cash_asset(rng: &mut OsRng, cash_asset: Option<u32>) -> World {
     let key = Pedersen::new(b"qomm:defmi:v1");
     let registry = AssetRegistry::new(key.clone(), 16);
     let (secret, public) = deal_quorum(7, 3, rng).unwrap();
-    let shares = secret.into_iter()
+    let shares = secret
+        .into_iter()
         .map(|(id, s)| (id, frost::keys::KeyPackage::try_from(s).unwrap()))
         .collect();
     let mut securities = Ledger::new(key.clone(), BITS);
@@ -63,24 +66,37 @@ fn world_with_cash_asset(rng: &mut OsRng, cash_asset: Option<u32>) -> World {
     let asset_key = key.with_value_generator(registry.tags[3]);
     let sec = (SEC_BALANCE, Scalar::random(rng));
     let cash_holding = (CASH_BALANCE, Scalar::random(rng));
-    securities.open(&account_of(&seller().point, SECURITIES_RAIL),
-                    asset_key.commit_u64(sec.0, &sec.1));
-    securities.open(&account_of(&buyer().point, SECURITIES_RAIL),
-                    asset_key.commit_u64(0, &Scalar::random(rng)));
+    securities.open(
+        &account_of(&seller().point, SECURITIES_RAIL),
+        asset_key.commit_u64(sec.0, &sec.1),
+    );
+    securities.open(
+        &account_of(&buyer().point, SECURITIES_RAIL),
+        asset_key.commit_u64(0, &Scalar::random(rng)),
+    );
     let cash_key = match cash_asset {
         Some(a) => key.with_value_generator(registry.tags[a as usize]),
         None => key.clone(),
     };
-    cash.open(&account_of(&buyer().point, CASH_RAIL),
-              cash_key.commit_u64(cash_holding.0, &cash_holding.1));
-    cash.open(&account_of(&seller().point, CASH_RAIL),
-              cash_key.commit_u64(0, &Scalar::random(rng)));
+    cash.open(
+        &account_of(&buyer().point, CASH_RAIL),
+        cash_key.commit_u64(cash_holding.0, &cash_holding.1),
+    );
+    cash.open(
+        &account_of(&seller().point, CASH_RAIL),
+        cash_key.commit_u64(0, &Scalar::random(rng)),
+    );
 
     let venue = Venue::new(key.clone(), &Bounds::default(), public.clone());
     World {
         issuer: Issuer::new(key.clone(), Bounds::default()),
         defmi: Defmi::new(key.clone(), securities, cash, venue),
-        key, registry, shares, public, sec, cash: cash_holding,
+        key,
+        registry,
+        shares,
+        public,
+        sec,
+        cash: cash_holding,
     }
 }
 
@@ -96,25 +112,47 @@ fn sign(w: &World, message: &[u8], rng: &mut OsRng) -> frost::Signature {
     let package = frost::SigningPackage::new(commitments, message);
     let mut shares = BTreeMap::new();
     for id in &chosen {
-        shares.insert(*id, frost::round2::sign(&package, &nonces[id], &w.shares[id]).unwrap());
+        shares.insert(
+            *id,
+            frost::round2::sign(&package, &nonces[id], &w.shares[id]).unwrap(),
+        );
     }
     frost::aggregate(&package, &shares, &w.public).unwrap()
 }
 
-fn instruction(w: &World, rng: &mut OsRng, nonce: u8)
-    -> (Instruction, InstructionOpenings) {
-    let (digest, openings, partial) = w.issuer.build(
-        QTY, PRICE, 3,
-        buyer().point,      // pays cash, receives securities
-        seller().point,     // delivers securities, receives cash
-        1_500, [nonce; 32], 1_599_845, rng).unwrap();
+fn instruction(w: &World, rng: &mut OsRng, nonce: u8) -> (Instruction, InstructionOpenings) {
+    let (digest, openings, partial) = w
+        .issuer
+        .build(
+            QTY,
+            PRICE,
+            3,
+            buyer().point,  // pays cash, receives securities
+            seller().point, // delivers securities, receives cash
+            1_500,
+            [nonce; 32],
+            1_599_845,
+            rng,
+        )
+        .unwrap();
     let signature = sign(w, &digest, rng);
-    (partial.sealed(signature),
-     InstructionOpenings { amount: openings.amount, price: openings.price })
+    (
+        partial.sealed(signature),
+        InstructionOpenings {
+            amount: openings.amount,
+            price: openings.price,
+        },
+    )
 }
 
-fn package(w: &World, rng: &mut OsRng, quantity: u64, price: u64, tag_asset: u32, nonce: u8)
-    -> Result<DvpPackage, &'static str> {
+fn package(
+    w: &World,
+    rng: &mut OsRng,
+    quantity: u64,
+    price: u64,
+    tag_asset: u32,
+    nonce: u8,
+) -> Result<DvpPackage, &'static str> {
     packaged(w, rng, quantity, price, tag_asset, nonce, None)
 }
 
@@ -124,9 +162,15 @@ fn package(w: &World, rng: &mut OsRng, quantity: u64, price: u64, tag_asset: u32
 /// where hiding *which cash* means nothing. With more than one settlement
 /// currency it means the same thing hiding the instrument does, and it is the
 /// same construction applied once more.
-fn packaged(w: &World, rng: &mut OsRng, quantity: u64, price: u64,
-            tag_asset: u32, nonce: u8, cash_asset: Option<u32>)
-    -> Result<DvpPackage, &'static str> {
+fn packaged(
+    w: &World,
+    rng: &mut OsRng,
+    quantity: u64,
+    price: u64,
+    tag_asset: u32,
+    nonce: u8,
+    cash_asset: Option<u32>,
+) -> Result<DvpPackage, &'static str> {
     let (instruction, openings) = instruction(w, rng, nonce);
     let (tag, gamma) = w.registry.blind(tag_asset, false, rng).unwrap();
     let cash = cash_asset.map(|a| w.registry.blind(a, false, rng).unwrap());
@@ -135,14 +179,26 @@ fn packaged(w: &World, rng: &mut OsRng, quantity: u64, price: u64,
         None => (None, Scalar::ZERO),
     };
     build_package(
-        &w.key, instruction, &w.defmi.securities, &w.defmi.cash,
-        quantity, price,
+        &w.key,
+        instruction,
+        &w.defmi.securities,
+        &w.defmi.cash,
+        quantity,
+        price,
         &Holdings {
-            securities_balance: w.sec.0, securities_blinding: w.sec.1,
-            cash_balance: w.cash.0, cash_blinding: w.cash.1,
+            securities_balance: w.sec.0,
+            securities_blinding: w.sec.1,
+            cash_balance: w.cash.0,
+            cash_blinding: w.cash.1,
         },
-        &openings, Some(&tag), &gamma, cash_tag, &cash_gamma, rng,
-    ).map(|(p, _)| p)
+        &openings,
+        Some(&tag),
+        &gamma,
+        cash_tag,
+        &cash_gamma,
+        rng,
+    )
+    .map(|(p, _)| p)
 }
 
 #[test]
@@ -192,7 +248,10 @@ fn an_instruction_settles_at_most_once() {
     let mut w = world(&mut rng);
     let p = package(&w, &mut rng, QTY, PRICE, 3, 5).unwrap();
     assert_eq!(w.defmi.settle(&p, 1_000, &mut rng).status, Ok(()));
-    assert_eq!(w.defmi.settle(&p, 1_000, &mut rng).status, Err("already settled"));
+    assert_eq!(
+        w.defmi.settle(&p, 1_000, &mut rng).status,
+        Err("already settled")
+    );
 }
 
 #[test]
@@ -200,7 +259,10 @@ fn an_expired_instruction_does_not_settle() {
     let mut rng = OsRng;
     let mut w = world(&mut rng);
     let p = package(&w, &mut rng, QTY, PRICE, 3, 6).unwrap();
-    assert_eq!(w.defmi.settle(&p, 2_000, &mut rng).status, Err("past the deadline"));
+    assert_eq!(
+        w.defmi.settle(&p, 2_000, &mut rng).status,
+        Err("past the deadline")
+    );
 }
 
 #[test]
@@ -223,10 +285,14 @@ fn the_package_looks_the_same_whatever_the_asset() {
         let mut w = world(&mut rng);
         let asset_key = key.with_value_generator(registry.tags[*asset as usize]);
         let mut securities = Ledger::new(key.clone(), BITS);
-        securities.open(&account_of(&seller().point, SECURITIES_RAIL),
-                        asset_key.commit_u64(SEC_BALANCE, &w.sec.1));
-        securities.open(&account_of(&buyer().point, SECURITIES_RAIL),
-                        asset_key.commit_u64(0, &Scalar::random(&mut rng)));
+        securities.open(
+            &account_of(&seller().point, SECURITIES_RAIL),
+            asset_key.commit_u64(SEC_BALANCE, &w.sec.1),
+        );
+        securities.open(
+            &account_of(&buyer().point, SECURITIES_RAIL),
+            asset_key.commit_u64(0, &Scalar::random(&mut rng)),
+        );
         w.defmi.securities = securities;
         w.registry = registry;
         let p = package(&w, &mut rng, QTY, PRICE, *asset, 20 + i as u8).unwrap();
@@ -253,13 +319,30 @@ fn wire_size(p: &DvpPackage) -> usize {
 fn a_stale_range_proof_on_a_bounded_amount_is_refused() {
     let mut rng = OsRng;
     let w = world(&mut rng);
-    let (transfer, _) = w.defmi.securities.build_transfer(
-        SEC_BALANCE, &w.sec.1, QTY, b"ctx", None, &Scalar::ZERO, false, &mut rng).unwrap();
+    let (transfer, _) = w
+        .defmi
+        .securities
+        .build_transfer(
+            SEC_BALANCE,
+            &w.sec.1,
+            QTY,
+            b"ctx",
+            None,
+            &Scalar::ZERO,
+            false,
+            &mut rng,
+        )
+        .unwrap();
     assert!(transfer.amount_range.is_some());
     assert_eq!(
         w.defmi.securities.check_transfer(
-            &account_of(&seller().point, SECURITIES_RAIL), &transfer, b"ctx", true),
-        Err("an externally bounded amount carries a stale range proof"));
+            &account_of(&seller().point, SECURITIES_RAIL),
+            &transfer,
+            b"ctx",
+            true
+        ),
+        Err("an externally bounded amount carries a stale range proof")
+    );
 }
 
 #[test]
@@ -293,23 +376,29 @@ fn a_package_cannot_name_accounts_the_instruction_does_not() {
     let mut tampered = package(&w, &mut rng, QTY, PRICE, 3, 2).unwrap();
     let stranger = Identity::from_seed([99u8; 32]).handle(VENUE);
     tampered.securities_to = account_of(&stranger.point, SECURITIES_RAIL);
-    assert_eq!(w.defmi.settle(&tampered, 1_000, &mut rng).status,
-               Err("the package names accounts the instruction does not"));
+    assert_eq!(
+        w.defmi.settle(&tampered, 1_000, &mut rng).status,
+        Err("the package names accounts the instruction does not")
+    );
 
     // or take the cash from somebody else
     let mut w = world(&mut rng);
     let mut tampered = package(&w, &mut rng, QTY, PRICE, 3, 3).unwrap();
     tampered.cash_from = account_of(&seller().point, CASH_RAIL);
-    assert_eq!(w.defmi.settle(&tampered, 1_000, &mut rng).status,
-               Err("the package names accounts the instruction does not"));
+    assert_eq!(
+        w.defmi.settle(&tampered, 1_000, &mut rng).status,
+        Err("the package names accounts the instruction does not")
+    );
 
     // or run the whole thing backwards
     let mut w = world(&mut rng);
     let mut tampered = package(&w, &mut rng, QTY, PRICE, 3, 4).unwrap();
     std::mem::swap(&mut tampered.cash_from, &mut tampered.cash_to);
     std::mem::swap(&mut tampered.securities_from, &mut tampered.securities_to);
-    assert_eq!(w.defmi.settle(&tampered, 1_000, &mut rng).status,
-               Err("the package names accounts the instruction does not"));
+    assert_eq!(
+        w.defmi.settle(&tampered, 1_000, &mut rng).status,
+        Err("the package names accounts the instruction does not")
+    );
 }
 
 /// Two firms at one venue get different accounts on each rail, and one firm's
@@ -317,7 +406,10 @@ fn a_package_cannot_name_accounts_the_instruction_does_not() {
 #[test]
 fn accounts_are_a_function_of_the_handle_and_the_rail() {
     let (a, b) = (seller().point, buyer().point);
-    assert_ne!(account_of(&a, SECURITIES_RAIL), account_of(&b, SECURITIES_RAIL));
+    assert_ne!(
+        account_of(&a, SECURITIES_RAIL),
+        account_of(&b, SECURITIES_RAIL)
+    );
     assert_ne!(account_of(&a, SECURITIES_RAIL), account_of(&a, CASH_RAIL));
     assert_eq!(account_of(&a, CASH_RAIL), account_of(&a, CASH_RAIL));
 }
@@ -340,7 +432,8 @@ fn a_ledger_under_an_issuer_refuses_an_unsigned_opening() {
     let body = qomm_defmi::ledger::issuance_body(b"alice", &balance, b"n1");
     assert_eq!(
         ledger.open_authorised(b"alice", balance, b"n1", &elsewhere.sign(&body)),
-        Err("the opening balance is not signed by the issuer"));
+        Err("the opening balance is not signed by the issuer")
+    );
 }
 
 #[test]
@@ -352,12 +445,19 @@ fn an_issued_opening_is_admitted_once_and_not_twice() {
     let balance = key.commit_u64(1_000, &Scalar::random(&mut rng));
     let body = qomm_defmi::ledger::issuance_body(b"alice", &balance, b"n1");
     let signature = issuer.sign(&body);
-    assert_eq!(ledger.open_authorised(b"alice", balance, b"n1", &signature), Ok(()));
-    assert_eq!(ledger.open_authorised(b"alice", balance, b"n1", &signature),
-               Err("handle already open"));
-    assert_eq!(ledger.open_authorised(b"bob", balance, b"n1", &signature),
-               Err("the opening balance is not signed by the issuer"),
-               "an authorisation moved to another handle");
+    assert_eq!(
+        ledger.open_authorised(b"alice", balance, b"n1", &signature),
+        Ok(())
+    );
+    assert_eq!(
+        ledger.open_authorised(b"alice", balance, b"n1", &signature),
+        Err("handle already open")
+    );
+    assert_eq!(
+        ledger.open_authorised(b"bob", balance, b"n1", &signature),
+        Err("the opening balance is not signed by the issuer"),
+        "an authorisation moved to another handle"
+    );
 }
 
 #[test]
@@ -369,8 +469,10 @@ fn an_authorisation_does_not_carry_to_another_amount() {
     let small = key.commit_u64(1, &Scalar::random(&mut rng));
     let large = key.commit_u64(1_000_000, &Scalar::random(&mut rng));
     let signature = issuer.sign(&qomm_defmi::ledger::issuance_body(b"alice", &small, b"n1"));
-    assert_eq!(ledger.open_authorised(b"alice", large, b"n1", &signature),
-               Err("the opening balance is not signed by the issuer"));
+    assert_eq!(
+        ledger.open_authorised(b"alice", large, b"n1", &signature),
+        Err("the opening balance is not signed by the issuer")
+    );
 }
 
 #[test]
@@ -382,7 +484,6 @@ fn the_unchecked_opening_is_closed_once_a_ledger_has_an_issuer() {
     let mut ledger = Ledger::under_issuer(key.clone(), 32, issuer.verifying_key());
     ledger.open(b"alice", key.commit_u64(1_000, &Scalar::random(&mut rng)));
 }
-
 
 // --- a cash rail with a currency of its own --------------------------------
 
@@ -406,8 +507,10 @@ fn a_tagged_cash_leg_over_untagged_balances_is_refused() {
     let mut rng = OsRng;
     let mut w = world(&mut rng);
     let p = packaged(&w, &mut rng, QTY, PRICE, 3, 1, Some(0)).unwrap();
-    assert_eq!(w.defmi.settle(&p, 1_000, &mut rng).status,
-               Err("remainder does not equal balance minus amount"));
+    assert_eq!(
+        w.defmi.settle(&p, 1_000, &mut rng).status,
+        Err("remainder does not equal balance minus amount")
+    );
 }
 
 #[test]
@@ -443,8 +546,10 @@ fn an_untagged_cash_rail_still_settles_and_the_package_is_the_same_shape() {
     let mut w = world(&mut rng);
     let tagged = packaged(&w, &mut rng, QTY, PRICE, 3, 1, Some(0)).unwrap();
     let bare = packaged(&w, &mut rng, QTY, PRICE, 3, 2, None).unwrap();
-    assert_eq!(tagged.cash_link.z_value.to_bytes().len(),
-               bare.cash_link.z_value.to_bytes().len());
+    assert_eq!(
+        tagged.cash_link.z_value.to_bytes().len(),
+        bare.cash_link.z_value.to_bytes().len()
+    );
     let receipt = w.defmi.settle(&bare, 1_000, &mut rng);
     assert_eq!(receipt.status, Ok(()));
 }

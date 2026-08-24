@@ -11,4 +11,5 @@ pub mod pvp;
 pub mod reconcile;
 pub mod register;
 pub mod settlement;
+pub mod vetting;
 pub mod viewing;

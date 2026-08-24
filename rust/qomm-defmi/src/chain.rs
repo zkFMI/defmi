@@ -19,8 +19,17 @@
 //! flight within one deadline window, not by everything ever settled.
 //!
 //! *Can nodes agree on it.* The root is a hash over the state in sorted key
-//! order, so two nodes that applied the same settlements agree byte for byte
-//! regardless of the order they arrived in.
+//! order, so two nodes holding the same state agree on the root byte for byte.
+//! That is a weaker statement than it used to make, which was that two nodes
+//! that applied the same settlements agree regardless of the order they arrived
+//! in --- and they do not, because a settlement writes an absolute commitment
+//! rather than a delta. Two settlements that both move one account do not
+//! commute, and the one applied second is the one that survives.
+//!
+//! Which is what a chain is for. The ordering comes from consensus and not from
+//! this map, and what this map contributes is that the root is canonical given
+//! the state: no node can disagree about the hash of a state it agrees on. The
+//! sentence to hold onto is "same state, same root", not "same set, same root".
 //!
 //! What this is not: a contract for a specific chain. The storage interface
 //! every WebAssembly chain offers is a key-value map, which is what this is
@@ -93,6 +102,16 @@ pub enum Rejected {
     UnknownAccount,
 }
 
+/// Money parked under a leg's name until it is claimed or taken back.
+#[derive(Debug, Clone)]
+pub struct Escrow {
+    pub payer: Vec<u8>,
+    pub payee: Vec<u8>,
+    pub held: [u8; 32],
+    /// Past this the payer may take it back and the payee may not claim.
+    pub deadline: u64,
+}
+
 /// The persistent half of a settlement venue.
 ///
 /// Deliberately holds compressed points rather than decompressed ones. A chain
@@ -104,10 +123,16 @@ pub struct ChainState {
     accounts: BTreeMap<Vec<u8>, [u8; 32]>,
     /// nullifier -> the deadline past which it can be dropped
     nullifiers: BTreeMap<[u8; 32], u64>,
-    /// leg -> (payee, the amount being held). Unlike nullifiers this cannot be
-    /// pruned on a deadline: an escrow past its deadline is money someone is
-    /// still owed, so it stays until it is claimed or taken back.
-    escrows: BTreeMap<Vec<u8>, (Vec<u8>, [u8; 32])>,
+    /// leg -> the escrow. Unlike nullifiers this cannot be pruned on a
+    /// deadline: an escrow past its deadline is money someone is still owed, so
+    /// it stays until it is claimed or taken back.
+    ///
+    /// It used to hold only the payee and the amount. Without the payer there
+    /// was nothing to give an expired escrow back to, and without the deadline
+    /// `claim` could not refuse a late one --- so an expired leg still settled
+    /// to the payee and an unclaimed one was stranded, and this map and
+    /// `Ledger` could reach different final states from the same leg.
+    escrows: BTreeMap<Vec<u8>, Escrow>,
 }
 
 impl ChainState {
@@ -116,8 +141,14 @@ impl ChainState {
     }
 
     pub fn open(&mut self, handle: &[u8], commitment: RistrettoPoint) -> Delta {
-        self.accounts.insert(handle.to_vec(), commitment.compress().to_bytes());
-        Delta { slots_read: 0, slots_written: 1, bytes_written: 32, nullifiers_added: 0 }
+        self.accounts
+            .insert(handle.to_vec(), commitment.compress().to_bytes());
+        Delta {
+            slots_read: 0,
+            slots_written: 1,
+            bytes_written: 32,
+            nullifiers_added: 0,
+        }
     }
 
     pub fn balance(&self, handle: &[u8]) -> Option<RistrettoPoint> {
@@ -177,9 +208,15 @@ impl ChainState {
     /// replaced and the amount is parked under the leg's name. Two slots, one
     /// of which did not exist before --- which is the whole extra cost of doing
     /// this in two transactions instead of one.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare(
-        &mut self, leg: &[u8], payer: &[u8], payee: &[u8],
-        remainder: RistrettoPoint, held: RistrettoPoint,
+        &mut self,
+        leg: &[u8],
+        payer: &[u8],
+        payee: &[u8],
+        remainder: RistrettoPoint,
+        held: RistrettoPoint,
+        deadline: u64,
     ) -> Result<Delta, Rejected> {
         if !self.accounts.contains_key(payer) || !self.accounts.contains_key(payee) {
             return Err(Rejected::UnknownAccount);
@@ -187,25 +224,96 @@ impl ChainState {
         if self.escrows.contains_key(leg) {
             return Err(Rejected::NullifierSeen);
         }
-        self.accounts.insert(payer.to_vec(), remainder.compress().to_bytes());
-        self.escrows.insert(leg.to_vec(),
-                            (payee.to_vec(), held.compress().to_bytes()));
-        Ok(Delta { slots_read: 2, slots_written: 2, bytes_written: 64,
-                   nullifiers_added: 0 })
+        self.accounts
+            .insert(payer.to_vec(), remainder.compress().to_bytes());
+        self.escrows.insert(
+            leg.to_vec(),
+            Escrow {
+                payer: payer.to_vec(),
+                payee: payee.to_vec(),
+                held: held.compress().to_bytes(),
+                deadline,
+            },
+        );
+        Ok(Delta {
+            slots_read: 2,
+            slots_written: 2,
+            bytes_written: 96,
+            nullifiers_added: 0,
+        })
     }
 
     /// Release an escrow to its payee. The signature check is the verifier's;
-    /// this is the state it leaves behind.
-    pub fn claim(&mut self, leg: &[u8], credited: RistrettoPoint)
-        -> Result<Delta, Rejected> {
-        let (payee, _) = self.escrows.get(leg).ok_or(Rejected::UnknownAccount)?.clone();
-        self.accounts.insert(payee, credited.compress().to_bytes());
+    /// this is the state it leaves behind, and the deadline is this map's.
+    ///
+    /// The escrow used to record only the payee and the amount, so there was no
+    /// deadline to refuse a late claim against and no payer to give an expired
+    /// one back to. An expired leg still settled to the payee, an unclaimed one
+    /// was stranded, and this map and `Ledger` could reach different final
+    /// states from the same leg.
+    pub fn claim(
+        &mut self,
+        leg: &[u8],
+        credited: RistrettoPoint,
+        now: u64,
+    ) -> Result<Delta, Rejected> {
+        let escrow = self
+            .escrows
+            .get(leg)
+            .ok_or(Rejected::UnknownAccount)?
+            .clone();
+        if now > escrow.deadline {
+            return Err(Rejected::Expired {
+                deadline: escrow.deadline,
+                now,
+            });
+        }
+        self.accounts
+            .insert(escrow.payee, credited.compress().to_bytes());
         self.escrows.remove(leg);
-        Ok(Delta { slots_read: 2, slots_written: 2, bytes_written: 32,
-                   nullifiers_added: 0 })
+        Ok(Delta {
+            slots_read: 2,
+            slots_written: 2,
+            bytes_written: 32,
+            nullifiers_added: 0,
+        })
     }
 
-    pub fn escrows(&self) -> usize { self.escrows.len() }
+    /// Give an expired escrow back to its payer.
+    ///
+    /// No signature: the payer already owned this money and the deadline is the
+    /// whole authority, which is the rule `Ledger::unwind_pending` follows.
+    pub fn unwind(
+        &mut self,
+        leg: &[u8],
+        returned: RistrettoPoint,
+        now: u64,
+    ) -> Result<Delta, Rejected> {
+        let escrow = self
+            .escrows
+            .get(leg)
+            .ok_or(Rejected::UnknownAccount)?
+            .clone();
+        if now <= escrow.deadline {
+            return Err(Rejected::Expired {
+                deadline: escrow.deadline,
+                now,
+            });
+        }
+        self.accounts
+            .insert(escrow.payer, returned.compress().to_bytes());
+        self.escrows.remove(leg);
+        Ok(Delta {
+            slots_read: 2,
+            slots_written: 2,
+            bytes_written: 32,
+            nullifiers_added: 0,
+        })
+    }
+
+    pub fn escrows(&self) -> usize {
+        self.escrows.len()
+    }
 
     pub fn prune(&mut self, now: u64) -> usize {
         let before = self.nullifiers.len();
@@ -234,12 +342,15 @@ impl ChainState {
             hasher.update(deadline.to_be_bytes());
         }
         hasher.update((self.escrows.len() as u64).to_be_bytes());
-        for (leg, (payee, held)) in &self.escrows {
+        for (leg, escrow) in &self.escrows {
             hasher.update((leg.len() as u64).to_be_bytes());
             hasher.update(leg);
-            hasher.update((payee.len() as u64).to_be_bytes());
-            hasher.update(payee);
-            hasher.update(held);
+            hasher.update((escrow.payer.len() as u64).to_be_bytes());
+            hasher.update(&escrow.payer);
+            hasher.update((escrow.payee.len() as u64).to_be_bytes());
+            hasher.update(&escrow.payee);
+            hasher.update(escrow.held);
+            hasher.update(escrow.deadline.to_be_bytes());
         }
         hasher.finalize().into()
     }
@@ -254,8 +365,12 @@ impl ChainState {
 
     /// Bytes the chain is holding on this venue's behalf.
     pub fn stored_bytes(&self) -> usize {
-        self.accounts.iter().map(|(h, _)| h.len() + 32).sum::<usize>()
+        self.accounts.keys().map(|h| h.len() + 32).sum::<usize>()
             + self.nullifiers.len() * (32 + 8)
-            + self.escrows.iter().map(|(l, (p, _))| l.len() + p.len() + 32).sum::<usize>()
+            + self
+                .escrows
+                .iter()
+                .map(|(l, e)| l.len() + e.payer.len() + e.payee.len() + 32 + 8)
+                .sum::<usize>()
     }
 }

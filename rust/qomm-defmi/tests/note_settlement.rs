@@ -35,17 +35,32 @@ struct World {
     cash_asset: u32,
 }
 
-fn stock_rail(key: &Pedersen, registry: &AssetRegistry, asset: u32,
-              owner: &Wallet, value: u64, rng: &mut OsRng) -> NoteLedger {
+fn stock_rail(
+    key: &Pedersen,
+    registry: &AssetRegistry,
+    asset: u32,
+    owner: &Wallet,
+    value: u64,
+    rng: &mut OsRng,
+) -> NoteLedger {
     let asset_key = key.with_value_generator(registry.tags[asset as usize]);
     let mut ledger = NoteLedger::new(key.clone(), BITS);
     for i in 0..RING {
         // The owner's note is first; the rest are decoys the ring will hide it in.
-        let address = if i == 0 { owner.address } else { Wallet::new(rng).address };
+        let address = if i == 0 {
+            owner.address
+        } else {
+            Wallet::new(rng).address
+        };
         let held = if i == 0 { value } else { value + i as u64 };
         let blinding = Scalar::random(rng);
-        let note = ledger.build_note(&address, held,
-                                     asset_key.commit_u64(held, &blinding), &blinding, rng);
+        let note = ledger.build_note(
+            &address,
+            held,
+            asset_key.commit_u64(held, &blinding),
+            &blinding,
+            rng,
+        );
         ledger.add(note);
     }
     ledger
@@ -55,7 +70,8 @@ fn world(rng: &mut OsRng) -> World {
     let key = Pedersen::new(b"qomm:defmi:v1");
     let registry = AssetRegistry::new(key.clone(), 16);
     let (secret, public) = deal_quorum(7, 3, rng).unwrap();
-    let shares = secret.into_iter()
+    let shares = secret
+        .into_iter()
         .map(|(id, s)| (id, frost::keys::KeyPackage::try_from(s).unwrap()))
         .collect();
     let (seller, buyer) = (Wallet::new(rng), Wallet::new(rng));
@@ -66,9 +82,21 @@ fn world(rng: &mut OsRng) -> World {
     let venue = Venue::new(key.clone(), &Bounds::default(), public.clone());
     World {
         issuer: Issuer::new(key.clone(), Bounds::default()),
-        defmi: NoteDefmi::new(key.clone(), securities, cash, venue,
-                              SigningKey::generate(rng)),
-        key, registry, shares, public, seller, buyer, sec_asset, cash_asset,
+        defmi: NoteDefmi::new(
+            key.clone(),
+            securities,
+            cash,
+            venue,
+            SigningKey::generate(rng),
+        ),
+        key,
+        registry,
+        shares,
+        public,
+        seller,
+        buyer,
+        sec_asset,
+        cash_asset,
     }
 }
 
@@ -83,32 +111,57 @@ fn sign(w: &World, message: &[u8], rng: &mut OsRng) -> frost::Signature {
     let package = frost::SigningPackage::new(commitments, message);
     let mut shares = BTreeMap::new();
     for id in &chosen {
-        shares.insert(*id, frost::round2::sign(&package, &nonces[id], &w.shares[id]).unwrap());
+        shares.insert(
+            *id,
+            frost::round2::sign(&package, &nonces[id], &w.shares[id]).unwrap(),
+        );
     }
     frost::aggregate(&package, &shares, &w.public).unwrap()
 }
 
-fn instruction(w: &World, rng: &mut OsRng, nonce: u8, qty: u64, price: u64)
-    -> (Instruction, Scalar, Scalar) {
-    let (digest, openings, partial) = w.issuer.build(
-        qty, price, w.sec_asset,
-        RistrettoPoint::mul_base(&Scalar::from(11u64)),
-        RistrettoPoint::mul_base(&Scalar::from(22u64)),
-        1_500, [nonce; 32], 1_599_845, rng).unwrap();
+fn instruction(
+    w: &World,
+    rng: &mut OsRng,
+    nonce: u8,
+    qty: u64,
+    price: u64,
+) -> (Instruction, Scalar, Scalar) {
+    let (digest, openings, partial) = w
+        .issuer
+        .build(
+            qty,
+            price,
+            w.sec_asset,
+            RistrettoPoint::mul_base(&Scalar::from(11u64)),
+            RistrettoPoint::mul_base(&Scalar::from(22u64)),
+            1_500,
+            [nonce; 32],
+            1_599_845,
+            rng,
+        )
+        .unwrap();
     let signature = sign(w, &digest, rng);
     (partial.sealed(signature), openings.amount, openings.price)
 }
 
-fn package(w: &World, rng: &mut OsRng, nonce: u8, qty: u64, price: u64)
-    -> Result<NoteDvpPackage, &'static str> {
-    let (instruction, amount_blinding, price_blinding) =
-        instruction(w, rng, nonce, qty, price);
-    let sec_key = w.key.with_value_generator(w.registry.tags[w.sec_asset as usize]);
-    let cash_key = w.key.with_value_generator(w.registry.tags[w.cash_asset as usize]);
+fn package(
+    w: &World,
+    rng: &mut OsRng,
+    nonce: u8,
+    qty: u64,
+    price: u64,
+) -> Result<NoteDvpPackage, &'static str> {
+    let (instruction, amount_blinding, price_blinding) = instruction(w, rng, nonce, qty, price);
+    let sec_key = w
+        .key
+        .with_value_generator(w.registry.tags[w.sec_asset as usize]);
+    let cash_key = w
+        .key
+        .with_value_generator(w.registry.tags[w.cash_asset as usize]);
     let sec_found = w.defmi.securities.scan(&w.seller, &sec_key);
     let cash_found = w.defmi.cash.scan(&w.buyer, &cash_key);
-    let (sec_index, sec_opening) = sec_found[0].clone();
-    let (cash_index, cash_opening) = cash_found[0].clone();
+    let (sec_index, sec_opening) = sec_found[0];
+    let (cash_index, cash_opening) = cash_found[0];
 
     let (sec_tag, sec_gamma) = w.registry.blind(w.sec_asset, false, rng)?;
     let (cash_tag, cash_gamma) = w.registry.blind(w.cash_asset, false, rng)?;
@@ -116,14 +169,35 @@ fn package(w: &World, rng: &mut OsRng, nonce: u8, qty: u64, price: u64)
     let cash_ring = ring_for(w.defmi.cash.notes.len(), cash_index, RING, 2)?;
 
     build_note_package(
-        &w.key, instruction, &w.defmi.securities, &w.defmi.cash,
-        &LegInput { ring: &sec_ring, index: sec_index, opening: &sec_opening,
-                    tag: sec_tag.point, gamma: sec_gamma,
-                    payee: w.buyer.address, change_to: w.seller.address },
-        &LegInput { ring: &cash_ring, index: cash_index, opening: &cash_opening,
-                    tag: cash_tag.point, gamma: cash_gamma,
-                    payee: w.seller.address, change_to: w.buyer.address },
-        qty, price, &amount_blinding, &price_blinding, b"ctx", rng)
+        &w.key,
+        instruction,
+        &w.defmi.securities,
+        &w.defmi.cash,
+        &LegInput {
+            ring: &sec_ring,
+            index: sec_index,
+            opening: &sec_opening,
+            tag: sec_tag.point,
+            gamma: sec_gamma,
+            payee: w.buyer.address,
+            change_to: w.seller.address,
+        },
+        &LegInput {
+            ring: &cash_ring,
+            index: cash_index,
+            opening: &cash_opening,
+            tag: cash_tag.point,
+            gamma: cash_gamma,
+            payee: w.seller.address,
+            change_to: w.buyer.address,
+        },
+        qty,
+        price,
+        &amount_blinding,
+        &price_blinding,
+        b"ctx",
+        rng,
+    )
 }
 
 #[test]
@@ -161,8 +235,10 @@ fn a_receipt_is_signed_over_what_it_says() {
     let mut receipt = w.defmi.settle(p, 1_000, b"ctx", rng);
     assert!(receipt.verify(&w.defmi.public_key()));
     receipt.settled_at += 1;
-    assert!(!receipt.verify(&w.defmi.public_key()),
-            "a receipt whose contents changed must stop verifying");
+    assert!(
+        !receipt.verify(&w.defmi.public_key()),
+        "a receipt whose contents changed must stop verifying"
+    );
 }
 
 #[test]
@@ -182,11 +258,14 @@ fn nothing_is_applied_when_a_leg_fails() {
     let rng = &mut OsRng;
     let mut w = world(rng);
     let mut p = package(&w, rng, 5, QTY, PRICE).unwrap();
-    p.securities.spend.outputs[0] += w.key.g;          // no longer the proved value
+    p.securities.spend.outputs[0] += w.key.g; // no longer the proved value
     let before = (w.defmi.securities.snapshot(), w.defmi.cash.snapshot());
     let receipt = w.defmi.settle(p, 1_000, b"ctx", rng);
     assert!(!receipt.settled);
-    assert_eq!(receipt.securities_after, before.0, "a failed leg still moved the rail");
+    assert_eq!(
+        receipt.securities_after, before.0,
+        "a failed leg still moved the rail"
+    );
     assert_eq!(receipt.cash_after, before.1);
 }
 
@@ -195,15 +274,21 @@ fn two_payments_to_one_address_share_no_bytes() {
     let rng = &mut OsRng;
     let mut w = world(rng);
     let first = package(&w, rng, 6, QTY, PRICE).unwrap();
-    let sec_notes: Vec<[u8; 32]> = first.securities.notes.iter()
-        .map(|n| n.ephemeral.compress().to_bytes()).collect();
+    let sec_notes: Vec<[u8; 32]> = first
+        .securities
+        .notes
+        .iter()
+        .map(|n| n.ephemeral.compress().to_bytes())
+        .collect();
     assert!(w.defmi.settle(first, 1_000, b"ctx", rng).settled);
 
     let second = package(&w, rng, 7, QTY, PRICE);
     if let Ok(p) = second {
         for note in &p.securities.notes {
-            assert!(!sec_notes.contains(&note.ephemeral.compress().to_bytes()),
-                    "a second payment to the same address reused a byte string");
+            assert!(
+                !sec_notes.contains(&note.ephemeral.compress().to_bytes()),
+                "a second payment to the same address reused a byte string"
+            );
         }
     }
 }

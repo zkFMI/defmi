@@ -136,12 +136,19 @@ impl ScopedWallet {
         let mut spend_seed = [0u8; 32];
         rng.fill_bytes(&mut view_seed);
         rng.fill_bytes(&mut spend_seed);
-        ScopedWallet { view_seed, spend_seed, identity: SigningKey::generate(rng) }
+        ScopedWallet {
+            view_seed,
+            spend_seed,
+            identity: SigningKey::generate(rng),
+        }
     }
 
-    pub fn from_seeds(view_seed: [u8; 32], spend_seed: [u8; 32],
-                      identity: SigningKey) -> Self {
-        ScopedWallet { view_seed, spend_seed, identity }
+    pub fn from_seeds(view_seed: [u8; 32], spend_seed: [u8; 32], identity: SigningKey) -> Self {
+        ScopedWallet {
+            view_seed,
+            spend_seed,
+            identity,
+        }
     }
 
     pub fn public_identity(&self) -> VerifyingKey {
@@ -150,8 +157,10 @@ impl ScopedWallet {
 
     /// The full wallet for one scope. This is what spends.
     pub fn wallet(&self, scope: &str) -> Wallet {
-        Wallet::from_parts(derive(&self.view_seed, b"view", scope),
-                           derive(&self.spend_seed, b"spend", scope))
+        Wallet::from_parts(
+            derive(&self.view_seed, b"view", scope),
+            derive(&self.spend_seed, b"spend", scope),
+        )
     }
 
     pub fn address(&self, scope: &str) -> Address {
@@ -159,16 +168,42 @@ impl ScopedWallet {
     }
 
     /// Hand out the ability to read one scope, and sign that it was handed out.
-    pub fn grant(&self, scope: &str, grantee: &str, issued_at: u64, days: u64)
-        -> ViewingGrant
-    {
+    pub fn grant(&self, scope: &str, grantee: &str, issued_at: u64, days: u64) -> ViewingGrant {
+        self.grant_until(
+            scope,
+            grantee,
+            issued_at,
+            issued_at + days.saturating_mul(86_400),
+        )
+    }
+
+    /// The same, to an exact second rather than to a whole day.
+    ///
+    /// `grant_current` used to convert the remaining time to days, rounding
+    /// *up*, and then multiply back --- so a grant meant to expire with its
+    /// period outlived it by up to 86,399 seconds. That is exactly the state
+    /// the doc above calls "current for a scope nothing is being paid into,
+    /// which looks like access and is not".
+    pub fn grant_until(
+        &self,
+        scope: &str,
+        grantee: &str,
+        issued_at: u64,
+        expires_at: u64,
+    ) -> ViewingGrant {
         let view = derive(&self.view_seed, b"view", scope);
         let spend = derive(&self.spend_seed, b"spend", scope);
         let mut grant = ViewingGrant {
-            scope: scope.to_string(), grantee: grantee.to_string(),
-            address: Address { view: G * view, spend: G * spend },
-            view_key: ViewKey::new(view), issued_at,
-            expires_at: issued_at + days * 86_400, signature: None,
+            scope: scope.to_string(),
+            grantee: grantee.to_string(),
+            address: Address {
+                view: G * view,
+                spend: G * spend,
+            },
+            view_key: ViewKey::new(view),
+            issued_at,
+            expires_at,
+            signature: None,
         };
         grant.signature = Some(self.identity.sign(&grant.body()));
         grant
@@ -182,12 +217,18 @@ impl ScopedWallet {
 /// `Ok`; what refusing buys is that a party which *wants* to stay inside its
 /// mandate has something to check against, and that a party which does not can
 /// be shown to have gone outside it.
-pub fn check_grant(grant: &ViewingGrant, owner: &VerifyingKey, now: u64)
-    -> Result<(), &'static str>
-{
-    let signature = grant.signature.as_ref()
+pub fn check_grant(
+    grant: &ViewingGrant,
+    owner: &VerifyingKey,
+    now: u64,
+) -> Result<(), &'static str> {
+    let signature = grant
+        .signature
+        .as_ref()
         .ok_or("an unsigned grant is a key somebody wrote down")?;
-    owner.verify(&grant.body(), signature).map_err(|_| "not signed by that wallet")?;
+    owner
+        .verify(&grant.body(), signature)
+        .map_err(|_| "not signed by that wallet")?;
     if grant.view_key.address_view() != grant.address.view {
         return Err("the key does not open the address it names");
     }
@@ -195,16 +236,20 @@ pub fn check_grant(grant: &ViewingGrant, owner: &VerifyingKey, now: u64)
         return Err("the grant has not begun");
     }
     if now >= grant.expires_at {
-        return Err("the grant has expired --- which stops a party that chooses \
-                    to be stopped, and nothing else");
+        return Err(
+            "the grant has expired --- which stops a party that chooses \
+                    to be stopped, and nothing else",
+        );
     }
     Ok(())
 }
 
 /// Every note in the pool addressed to this scope, and their amounts.
-pub fn scan_scope(ledger: &NoteLedger, grant: &ViewingGrant, asset_key: &Pedersen)
-    -> Vec<(usize, u64, Scalar)>
-{
+pub fn scan_scope(
+    ledger: &NoteLedger,
+    grant: &ViewingGrant,
+    asset_key: &Pedersen,
+) -> Vec<(usize, u64, Scalar)> {
     ledger.scan_view(&grant.view_key, &grant.address, asset_key)
 }
 
@@ -218,10 +263,11 @@ pub fn total_seen(found: &[(usize, u64, Scalar)]) -> u64 {
 ///
 /// This is the join between the two modules: a scope is a set of positions, and
 /// `reconcile` is what turns a set of positions into agreement with a number.
-pub fn scope_commitments(ledger: &NoteLedger, grant: &ViewingGrant,
-                         asset_key: &Pedersen)
-    -> (Vec<RistrettoPoint>, Vec<Scalar>, u64)
-{
+pub fn scope_commitments(
+    ledger: &NoteLedger,
+    grant: &ViewingGrant,
+    asset_key: &Pedersen,
+) -> (Vec<RistrettoPoint>, Vec<Scalar>, u64) {
     let found = scan_scope(ledger, grant, asset_key);
     let mut commitments = Vec::with_capacity(found.len());
     let mut blindings = Vec::with_capacity(found.len());
@@ -233,7 +279,6 @@ pub fn scope_commitments(ledger: &NoteLedger, grant: &ViewingGrant,
     }
     (commitments, blindings, total)
 }
-
 
 // --- outflows, which are a different disclosure and a weaker one -----------
 
@@ -283,17 +328,27 @@ impl ScopedWallet {
     /// The serials come from the wallet's own scan, so producing this needs the
     /// spend key --- which is the point: nobody else can produce it, and the
     /// signature is what makes it worth anything.
-    pub fn disclose_spends(&self, ledger: &NoteLedger, scope: &str, grantee: &str,
-                           asset_key: &Pedersen, issued_at: u64) -> SpendDisclosure
-    {
+    pub fn disclose_spends(
+        &self,
+        ledger: &NoteLedger,
+        scope: &str,
+        grantee: &str,
+        asset_key: &Pedersen,
+        issued_at: u64,
+    ) -> SpendDisclosure {
         let wallet = self.wallet(scope);
-        let serials = ledger.scan(&wallet, asset_key).into_iter()
+        let serials = ledger
+            .scan(&wallet, asset_key)
+            .into_iter()
             .map(|(_, opening)| opening.serial)
             .filter(|serial| ledger.is_spent(serial))
             .collect();
         let mut disclosure = SpendDisclosure {
-            scope: scope.to_string(), grantee: grantee.to_string(), serials,
-            issued_at, signature: None,
+            scope: scope.to_string(),
+            grantee: grantee.to_string(),
+            serials,
+            issued_at,
+            signature: None,
         };
         disclosure.signature = Some(self.identity.sign(&disclosure.body()));
         disclosure
@@ -312,16 +367,23 @@ impl ScopedWallet {
 /// many serials the ledger has no record of, because a list naming a spend that
 /// never happened is a different failure from one that leaves a spend out, and
 /// only the first is visible here.
-pub fn check_spend_disclosure(disclosure: &SpendDisclosure, owner: &VerifyingKey,
-                              ledger: &NoteLedger)
-    -> Result<usize, &'static str>
-{
-    let signature = disclosure.signature.as_ref()
+pub fn check_spend_disclosure(
+    disclosure: &SpendDisclosure,
+    owner: &VerifyingKey,
+    ledger: &NoteLedger,
+) -> Result<usize, &'static str> {
+    let signature = disclosure
+        .signature
+        .as_ref()
         .ok_or("an unsigned disclosure is a list somebody typed")?;
-    owner.verify(&disclosure.body(), signature)
+    owner
+        .verify(&disclosure.body(), signature)
         .map_err(|_| "not signed by that wallet")?;
-    let unknown = disclosure.serials.iter()
-        .filter(|serial| !ledger.is_spent(serial)).count();
+    let unknown = disclosure
+        .serials
+        .iter()
+        .filter(|serial| !ledger.is_spent(serial))
+        .count();
     if unknown > 0 {
         return Err("the list names a spend the ledger has no record of");
     }
@@ -357,13 +419,40 @@ pub fn conflicts_with(grant: &ViewingGrant, disclosure: &SpendDisclosure) -> boo
 pub struct Rolling {
     pub name: String,
     /// Seconds a period lasts. A quarter is the usual unit for a mandate.
-    pub period: u64,
+    ///
+    /// Private because zero is not a period. Every instant would fall in the
+    /// same scope --- the permanent scope this module exists to avoid --- and
+    /// the division that finds the period would trap. The constructor refuses
+    /// it, so `period_of` never has to decide what a scope means when there is
+    /// no schedule.
+    period: u64,
     pub epoch: u64,
 }
 
 impl Rolling {
+    /// A schedule of `period` seconds counted from `epoch`.
+    pub fn new(name: &str, period: u64, epoch: u64) -> Result<Self, &'static str> {
+        if period == 0 {
+            return Err("a rolling schedule needs a period; zero never rolls");
+        }
+        Ok(Rolling {
+            name: name.to_string(),
+            period,
+            epoch,
+        })
+    }
+
     pub fn quarterly(name: &str, epoch: u64) -> Self {
-        Rolling { name: name.to_string(), period: 90 * 86_400, epoch }
+        Rolling {
+            name: name.to_string(),
+            period: 90 * 86_400,
+            epoch,
+        }
+    }
+
+    /// Seconds a period lasts. Never zero.
+    pub fn period(&self) -> u64 {
+        self.period
     }
 
     pub fn period_of(&self, now: u64) -> u64 {
@@ -376,8 +465,17 @@ impl Rolling {
         format!("{}:{}", self.name, self.period_of(now))
     }
 
+    /// When the current period stops being current.
+    ///
+    /// Saturating: a schedule whose end does not fit a `u64` ends at the end of
+    /// the clock, which is the honest answer --- reporting a wrapped, earlier
+    /// instant would expire a live grant.
     pub fn ends_at(&self, now: u64) -> u64 {
-        self.epoch + (self.period_of(now) + 1) * self.period
+        self.period_of(now)
+            .checked_add(1)
+            .and_then(|n| n.checked_mul(self.period))
+            .and_then(|d| self.epoch.checked_add(d))
+            .unwrap_or(u64::MAX)
     }
 }
 
@@ -397,8 +495,11 @@ impl ScopedWallet {
     /// The address to hand out at `now`.
     pub fn publish(&self, rolling: &Rolling, now: u64) -> Published {
         let scope = rolling.scope(now);
-        Published { address: self.address(&scope), scope,
-                    valid_until: rolling.ends_at(now) }
+        Published {
+            address: self.address(&scope),
+            scope,
+            valid_until: rolling.ends_at(now),
+        }
     }
 
     /// Grant the period in force, expiring when the period does.
@@ -407,13 +508,9 @@ impl ScopedWallet {
     /// period would be current for a scope nothing is being paid into, which
     /// looks like access and is not, and a grant that ended early would look
     /// like revocation and would not be.
-    pub fn grant_current(&self, rolling: &Rolling, grantee: &str, now: u64)
-        -> ViewingGrant
-    {
+    pub fn grant_current(&self, rolling: &Rolling, grantee: &str, now: u64) -> ViewingGrant {
         let scope = rolling.scope(now);
-        let ends = rolling.ends_at(now);
-        let days = (ends.saturating_sub(now)).div_ceil(86_400).max(1);
-        self.grant(&scope, grantee, now, days)
+        self.grant_until(&scope, grantee, now, rolling.ends_at(now))
     }
 }
 
@@ -430,10 +527,13 @@ pub fn is_current_scope(grant: &ViewingGrant, rolling: &Rolling, now: u64) -> bo
 
 /// What a payee should check about what arrived: that it came into the scope
 /// it published, and not an older one it has since granted away.
-pub fn arrived_off_schedule(ledger: &NoteLedger, owner: &ScopedWallet,
-                            rolling: &Rolling, now: u64, asset_key: &Pedersen)
-    -> Vec<(u64, String)>
-{
+pub fn arrived_off_schedule(
+    ledger: &NoteLedger,
+    owner: &ScopedWallet,
+    rolling: &Rolling,
+    now: u64,
+    asset_key: &Pedersen,
+) -> Vec<(u64, String)> {
     let mut out = Vec::new();
     let current = rolling.period_of(now);
     for period in 0..current {

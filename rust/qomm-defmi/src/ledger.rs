@@ -8,10 +8,10 @@
 //! signature on the instruction.
 
 use bulletproofs::{BulletproofGens, RangeProof};
-use ed25519_dalek::{Signature as IssuerSignature, Verifier, VerifyingKey};
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::Identity;
+use ed25519_dalek::{Signature as IssuerSignature, VerifyingKey};
 use merlin::Transcript;
 use qomm_zk::pedersen::Pedersen;
 use rand_core::{CryptoRng, RngCore};
@@ -53,6 +53,14 @@ pub struct TransferSecrets {
 /// this could silently create or destroy value.
 pub struct Pending {
     pub payer: Vec<u8>,
+    /// The key that may release this escrow, recorded when it was prepared.
+    ///
+    /// `commit_pending` used to verify the release under a key the *caller*
+    /// supplied and never compare it with anything, so anyone could sign the
+    /// leg's name with a key of their own and force somebody else's escrow to
+    /// settle --- without knowing the adaptor secret, which is what was meant to
+    /// gate it. A signature is only an authority if the verifier chose the key.
+    pub release_key: RistrettoPoint,
     pub payee: Vec<u8>,
     pub amount_commitment: RistrettoPoint,
     /// Past this, the payer may take it back. A ledger does not read a clock;
@@ -83,6 +91,8 @@ pub struct Ledger {
     bp_gens: BulletproofGens,
     accounts: BTreeMap<Vec<u8>, RistrettoPoint>,
     pending: BTreeMap<Vec<u8>, Pending>,
+    /// Leg names that have been prepared, live or not. See `prepare_transfer`.
+    spent_legs: BTreeSet<Vec<u8>>,
     minted: RistrettoPoint,
     /// Who may create balance. `None` accepts any opening and says so; see
     /// `open_authorised`.
@@ -93,10 +103,12 @@ pub struct Ledger {
 impl Ledger {
     pub fn new(key: Pedersen, bits: usize) -> Self {
         Ledger {
-            key, bits,
+            key,
+            bits,
             bp_gens: BulletproofGens::new(bits, 1),
             accounts: BTreeMap::new(),
             pending: BTreeMap::new(),
+            spent_legs: BTreeSet::new(),
             minted: RistrettoPoint::identity(),
             issuer: None,
             issued: BTreeSet::new(),
@@ -118,25 +130,33 @@ impl Ledger {
     /// conservation measurements use this deliberately; a deployment wants
     /// `under_issuer` and `open_authorised`.
     pub fn open(&mut self, handle: &[u8], balance: RistrettoPoint) {
-        assert!(self.issuer.is_none(),
-                "this ledger has an issuer; use open_authorised");
+        assert!(
+            self.issuer.is_none(),
+            "this ledger has an issuer; use open_authorised"
+        );
         assert!(!self.accounts.contains_key(handle), "handle already open");
         self.accounts.insert(handle.to_vec(), balance);
         self.minted += balance;
     }
 
     /// Admit a balance an issuer put its name to.
-    pub fn open_authorised(&mut self, handle: &[u8], balance: RistrettoPoint,
-                           nonce: &[u8], authorisation: &IssuerSignature)
-        -> Result<(), &'static str>
-    {
+    pub fn open_authorised(
+        &mut self,
+        handle: &[u8],
+        balance: RistrettoPoint,
+        nonce: &[u8],
+        authorisation: &IssuerSignature,
+    ) -> Result<(), &'static str> {
         let issuer = self.issuer.as_ref().ok_or("this ledger has no issuer")?;
-        if self.accounts.contains_key(handle) { return Err("handle already open"); }
+        if self.accounts.contains_key(handle) {
+            return Err("handle already open");
+        }
         let body = issuance_body(handle, &balance, nonce);
         if self.issued.contains(&body) {
             return Err("that issuance authorisation was already used");
         }
-        issuer.verify_strict(&body, authorisation)
+        issuer
+            .verify_strict(&body, authorisation)
             .map_err(|_| "the opening balance is not signed by the issuer")?;
         self.issued.insert(body);
         self.accounts.insert(handle.to_vec(), balance);
@@ -148,7 +168,9 @@ impl Ledger {
         self.accounts.get(handle)
     }
 
-    pub fn handles(&self) -> Vec<Vec<u8>> { self.accounts.keys().cloned().collect() }
+    pub fn handles(&self) -> Vec<Vec<u8>> {
+        self.accounts.keys().cloned().collect()
+    }
 
     /// No proof and no opening: the two products simply have to agree.
     ///
@@ -156,14 +178,17 @@ impl Ledger {
     /// is counted here. Leaving it out would make every prepared leg look like
     /// value destroyed and every commit like value created.
     pub fn conserved(&self) -> bool {
-        let held: RistrettoPoint = self.pending.values()
-            .map(|p| p.amount_commitment).sum();
+        let held: RistrettoPoint = self.pending.values().map(|p| p.amount_commitment).sum();
         self.accounts.values().sum::<RistrettoPoint>() + held == self.minted
     }
 
-    pub fn pending(&self, leg: &[u8]) -> Option<&Pending> { self.pending.get(leg) }
+    pub fn pending(&self, leg: &[u8]) -> Option<&Pending> {
+        self.pending.get(leg)
+    }
 
-    pub fn pending_legs(&self) -> Vec<Vec<u8>> { self.pending.keys().cloned().collect() }
+    pub fn pending_legs(&self) -> Vec<Vec<u8>> {
+        self.pending.keys().cloned().collect()
+    }
 
     /// Check a transfer and take the amount out of the payer's reach, without
     /// giving it to the payee.
@@ -172,42 +197,69 @@ impl Ledger {
     /// signature that later releases the money is made over, so it has to be
     /// unique on this ledger --- a reused name is a second claim on the first
     /// escrow, which is refused here rather than left to the caller.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_transfer(
-        &mut self, leg: &[u8], payer: &[u8], payee: &[u8], transfer: &Transfer,
-        context: &[u8], amount_bounded: bool, deadline: u64,
+        &mut self,
+        leg: &[u8],
+        payer: &[u8],
+        payee: &[u8],
+        transfer: &Transfer,
+        context: &[u8],
+        amount_bounded: bool,
+        deadline: u64,
+        release_key: &RistrettoPoint,
     ) -> Result<(), &'static str> {
         if self.pending.contains_key(leg) {
             return Err("that leg is already prepared");
+        }
+        // A leg name is spent for the ledger's lifetime and not only while its
+        // escrow is live. It used to be checked against `pending` alone, and
+        // the entry is removed on commit or unwind --- so a name could be
+        // reused, and the release signature covers only the name, so the first
+        // escrow's release settled the second one.
+        if self.spent_legs.contains(leg) {
+            return Err("that leg name has been used before");
         }
         if !self.accounts.contains_key(payee) {
             return Err("unknown payee handle");
         }
         self.check_transfer(payer, transfer, context, amount_bounded)?;
-        self.accounts.insert(payer.to_vec(), transfer.remainder_commitment);
-        self.pending.insert(leg.to_vec(), Pending {
-            payer: payer.to_vec(),
-            payee: payee.to_vec(),
-            amount_commitment: transfer.amount_commitment,
-            deadline,
-        });
+        self.accounts
+            .insert(payer.to_vec(), transfer.remainder_commitment);
+        self.spent_legs.insert(leg.to_vec());
+        self.pending.insert(
+            leg.to_vec(),
+            Pending {
+                payer: payer.to_vec(),
+                release_key: *release_key,
+                payee: payee.to_vec(),
+                amount_commitment: transfer.amount_commitment,
+                deadline,
+            },
+        );
         Ok(())
     }
 
     /// Release an escrow to its payee.
     ///
-    /// The ledger checks an ordinary signature over the leg's name under the
-    /// payer's key. It knows nothing about adaptors or about the other ledger;
-    /// what makes the pair atomic happens outside, and this stays a signature
-    /// check so that it can.
+    /// The ledger checks an ordinary signature over the leg's name under the key
+    /// the escrow was prepared against. It knows nothing about adaptors or about
+    /// the other ledger; what makes the pair atomic happens outside, and this
+    /// stays a signature check so that it can.
+    ///
+    /// The key is the one recorded at `prepare_transfer` and not one the caller
+    /// hands in. Taking it from the caller made the check vacuous.
     pub fn commit_pending(
-        &mut self, leg: &[u8], payer_key: &RistrettoPoint,
-        release: &Signature, now: u64,
+        &mut self,
+        leg: &[u8],
+        release: &Signature,
+        now: u64,
     ) -> Result<(), &'static str> {
         let held = self.pending.get(leg).ok_or("no such prepared leg")?;
         if now > held.deadline {
             return Err("the escrow has expired");
         }
-        if !adaptor::verify(payer_key, leg, release) {
+        if !adaptor::verify(&held.release_key, leg, release) {
             return Err("the release is not signed for this leg");
         }
         let held = self.pending.remove(leg).expect("just looked it up");
@@ -235,7 +287,10 @@ impl Ledger {
     fn gens(&self, tag: Option<&BlindedTag>) -> bulletproofs::PedersenGens {
         match tag {
             Some(t) => t.gens(&self.key),
-            None => bulletproofs::PedersenGens { B: self.key.g, B_blinding: self.key.h },
+            None => bulletproofs::PedersenGens {
+                B: self.key.g,
+                B_blinding: self.key.h,
+            },
         }
     }
 
@@ -254,9 +309,15 @@ impl Ledger {
     /// Run by the payer, the only party that knows its own balance.
     #[allow(clippy::too_many_arguments)]
     pub fn build_transfer<R: RngCore + CryptoRng>(
-        &self, payer_balance: u64, payer_blinding: &Scalar, amount: u64,
-        context: &[u8], tag: Option<&BlindedTag>, gamma: &Scalar,
-        amount_bounded: bool, rng: &mut R,
+        &self,
+        payer_balance: u64,
+        payer_blinding: &Scalar,
+        amount: u64,
+        context: &[u8],
+        tag: Option<&BlindedTag>,
+        gamma: &Scalar,
+        amount_bounded: bool,
+        rng: &mut R,
     ) -> Result<(Transfer, TransferSecrets), &'static str> {
         if payer_balance < amount {
             return Err("balance cannot cover the amount");
@@ -265,12 +326,20 @@ impl Ledger {
         let ctx = self.context(context, tag);
         let amount_blinding = Scalar::random(rng);
 
-        let amount_range = if amount_bounded { None } else {
+        let amount_range = if amount_bounded {
+            None
+        } else {
             let mut t = Transcript::new(b"qomm:defmi:amt");
             t.append_message(b"ctx", &ctx);
             let (proof, commitments) = RangeProof::prove_multiple(
-                &self.bp_gens, &gens, &mut t, &[amount], &[amount_blinding], self.bits)
-                .map_err(|_| "amount range proof failed")?;
+                &self.bp_gens,
+                &gens,
+                &mut t,
+                &[amount],
+                &[amount_blinding],
+                self.bits,
+            )
+            .map_err(|_| "amount range proof failed")?;
             Some((proof, commitments[0]))
         };
         let amount_commitment = gens.commit(Scalar::from(amount), amount_blinding);
@@ -282,14 +351,21 @@ impl Ledger {
         let mut t = Transcript::new(b"qomm:defmi:rem");
         t.append_message(b"ctx", &ctx);
         let (remainder_range, remainder_commitments) = RangeProof::prove_multiple(
-            &self.bp_gens, &gens, &mut t, &[remainder], &[remainder_blinding], self.bits)
-            .map_err(|_| "remainder range proof failed")?;
+            &self.bp_gens,
+            &gens,
+            &mut t,
+            &[remainder],
+            &[remainder_blinding],
+            self.bits,
+        )
+        .map_err(|_| "remainder range proof failed")?;
 
         Ok((
             Transfer {
                 amount_commitment,
                 amount_range,
-                remainder_commitment: remainder_commitments[0].decompress()
+                remainder_commitment: remainder_commitments[0]
+                    .decompress()
                     .ok_or("bad remainder commitment")?,
                 remainder_range,
                 tag: tag.cloned(),
@@ -304,14 +380,20 @@ impl Ledger {
 
     /// Run by the ledger, which reads neither the balance nor the amount.
     pub fn check_transfer(
-        &self, payer: &[u8], transfer: &Transfer, context: &[u8], amount_bounded: bool,
+        &self,
+        payer: &[u8],
+        transfer: &Transfer,
+        context: &[u8],
+        amount_bounded: bool,
     ) -> Result<(), &'static str> {
         let balance = *self.accounts.get(payer).ok_or("unknown payer handle")?;
         let gens = self.gens(transfer.tag.as_ref());
         let ctx = self.context(context, transfer.tag.as_ref());
 
         match (&transfer.amount_range, amount_bounded) {
-            (Some(_), true) => return Err("an externally bounded amount carries a stale range proof"),
+            (Some(_), true) => {
+                return Err("an externally bounded amount carries a stale range proof")
+            }
             (None, false) => return Err("the amount carries no range proof"),
             (Some((proof, commitment)), false) => {
                 if *commitment != transfer.amount_commitment.compress() {
@@ -319,8 +401,14 @@ impl Ledger {
                 }
                 let mut t = Transcript::new(b"qomm:defmi:amt");
                 t.append_message(b"ctx", &ctx);
-                proof.verify_multiple(&self.bp_gens, &gens, &mut t,
-                                      std::slice::from_ref(commitment), self.bits)
+                proof
+                    .verify_multiple(
+                        &self.bp_gens,
+                        &gens,
+                        &mut t,
+                        std::slice::from_ref(commitment),
+                        self.bits,
+                    )
                     .map_err(|_| "amount not shown to be within the ledger range")?;
             }
             (None, true) => {}
@@ -328,9 +416,15 @@ impl Ledger {
 
         let mut t = Transcript::new(b"qomm:defmi:rem");
         t.append_message(b"ctx", &ctx);
-        transfer.remainder_range
-            .verify_multiple(&self.bp_gens, &gens, &mut t,
-                             &[transfer.remainder_commitment.compress()], self.bits)
+        transfer
+            .remainder_range
+            .verify_multiple(
+                &self.bp_gens,
+                &gens,
+                &mut t,
+                &[transfer.remainder_commitment.compress()],
+                self.bits,
+            )
             .map_err(|_| "payer would be left with a negative balance")?;
 
         // the remainder must be exactly balance - amount, which the
@@ -341,9 +435,40 @@ impl Ledger {
         Ok(())
     }
 
+    /// Verify and apply one transfer as a single ledger operation.
+    ///
+    /// This is the safe public entry point for a rail that settles one leg at a
+    /// time. Replaying the same transfer is refused because verification is
+    /// repeated against the payer's current commitment before anything moves.
+    /// Multi-leg DvP must continue to use [`crate::settlement::Defmi::settle`],
+    /// which verifies every leg first and then applies all of them atomically.
+    pub fn settle_transfer(
+        &mut self,
+        payer: &[u8],
+        payee: &[u8],
+        transfer: &Transfer,
+        context: &[u8],
+        amount_bounded: bool,
+    ) -> Result<(), &'static str> {
+        if !self.accounts.contains_key(payee) {
+            return Err("unknown payee handle");
+        }
+        self.check_transfer(payer, transfer, context, amount_bounded)?;
+        self.apply_transfer(payer, payee, transfer);
+        Ok(())
+    }
+
     /// Only called once every leg of a settlement has been checked.
-    pub fn apply_transfer(&mut self, payer: &[u8], payee: &[u8], transfer: &Transfer) {
-        self.accounts.insert(payer.to_vec(), transfer.remainder_commitment);
+    ///
+    /// Crate-private, because it is not idempotent and nothing in it could be:
+    /// the payer's balance is overwritten with the remainder, which is the same
+    /// on a second call, while the payee is credited again. Calling it twice
+    /// creates value. What stops that is the instruction's nullifier in
+    /// `settlement.rs`, and the way to keep that the only guard is to make this
+    /// unreachable from outside.
+    pub(crate) fn apply_transfer(&mut self, payer: &[u8], payee: &[u8], transfer: &Transfer) {
+        self.accounts
+            .insert(payer.to_vec(), transfer.remainder_commitment);
         let credited = self.accounts[payee] + transfer.amount_commitment;
         self.accounts.insert(payee.to_vec(), credited);
     }

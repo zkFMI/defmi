@@ -50,12 +50,13 @@ use std::collections::BTreeMap;
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{Signature, SigningKey, Signer, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use qomm_zk::pedersen::Pedersen;
 use rand_core::{CryptoRng, RngCore};
 
-use crate::reconcile::{check, check_positions, locate_break, prove, Attestation,
-                       BreakSearch, Reconciliation};
+use crate::reconcile::{
+    check, check_positions, locate_break, prove, Attestation, BreakSearch, Reconciliation,
+};
 
 /// What one register said, on one day, about one account.
 #[derive(Clone, Debug)]
@@ -72,15 +73,33 @@ pub struct Statement {
 }
 
 impl Statement {
+    /// The sum of the positions, or `None` if they do not fit.
+    ///
+    /// It used to be a plain `sum`, which panics in debug and wraps in release.
+    /// A total that wraps is a total that disagrees with its own positions and
+    /// says nothing about it --- and this total goes into an attestation, so a
+    /// wrapped one is signed and reconciled against.
+    pub fn checked_total(&self) -> Option<u64> {
+        self.positions
+            .iter()
+            .try_fold(0u64, |acc, (_, q)| acc.checked_add(*q))
+    }
+
+    /// The sum, saturating. For display and for callers that have already
+    /// established the positions fit; `checked_total` is what an attestation
+    /// should be built from.
     pub fn total(&self) -> u64 {
-        self.positions.iter().map(|(_, q)| q).sum()
+        self.checked_total().unwrap_or(u64::MAX)
     }
 
     pub fn attestation(&self, signature: Option<Signature>) -> Attestation {
         Attestation {
-            register: self.register.clone(), account: self.account.clone(),
-            asset: self.asset.clone(), total: self.total(),
-            as_of: self.as_of.clone(), signature,
+            register: self.register.clone(),
+            account: self.account.clone(),
+            asset: self.asset.clone(),
+            total: self.total(),
+            as_of: self.as_of.clone(),
+            signature,
         }
     }
 
@@ -103,23 +122,55 @@ impl Statement {
 pub enum FileError {
     Empty,
     Header(String),
-    Line { number: usize, why: String },
+    Line {
+        number: usize,
+        why: String,
+    },
+    /// The file did not say how long it was, or said something the rows
+    /// disagree with. Both are the same failure seen from two sides.
+    End(String),
 }
 
 impl std::fmt::Display for FileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FileError::Empty => write!(f, "the file is empty, which is not a \
-                                           statement of zero holdings"),
+            FileError::Empty => write!(
+                f,
+                "the file is empty, which is not a \
+                                           statement of zero holdings"
+            ),
             FileError::Header(why) => write!(f, "the header: {why}"),
             FileError::Line { number, why } => write!(f, "line {number}: {why}"),
+            FileError::End(why) => write!(f, "the end line: {why}"),
         }
     }
 }
 
 /// Read a position file exactly, refusing anything it is not sure of.
+///
+/// The file is a header, then a row per position, then a line that says how
+/// many rows there were and what they came to:
+///
+/// ```text
+/// JASDEC,customer-omnibus-001,JP3633400001,2026-08-22
+/// p0,1200
+/// p1,4500
+/// end,2,5700
+/// ```
+///
+/// That last line is the whole reason the format is not just rows. A file that
+/// lost rows off the end is a well-formed statement of a smaller holding, and
+/// nothing in its content says otherwise --- reconciliation reports a break
+/// against a ledger that is correct, and the morning goes to the wrong place.
+/// A file has to declare its own length for truncation to be visible, and the
+/// declaration has to be at the end, where truncation takes it.
+///
+/// It does not defend against an edited file: anyone who drops a row can drop
+/// it from the count too. That is what the register's signature is for. This
+/// catches the accident, which is the common one.
 pub fn parse(text: &str) -> Result<Statement, FileError> {
-    let mut lines = text.lines()
+    let mut lines = text
+        .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .enumerate();
@@ -128,37 +179,93 @@ pub fn parse(text: &str) -> Result<Statement, FileError> {
     if fields.len() != 4 {
         return Err(FileError::Header(format!(
             "wanted register, account, asset and a date; got {} field(s)",
-            fields.len())));
+            fields.len()
+        )));
     }
     let mut positions = Vec::new();
-    for (index, line) in lines {
+    let mut declared: Option<(usize, u64)> = None;
+    for (index, line) in lines.by_ref() {
         let mut parts = line.split(',').map(str::trim);
         let handle = parts.next().unwrap_or_default();
+        if handle == "end" {
+            let count = parts
+                .next()
+                .ok_or_else(|| FileError::End("wanted a row count and a total".into()))?;
+            let total = parts
+                .next()
+                .ok_or_else(|| FileError::End("wanted a total after the row count".into()))?;
+            if parts.next().is_some() {
+                return Err(FileError::End("more than a count and a total".into()));
+            }
+            let count: usize = count
+                .parse()
+                .map_err(|_| FileError::End(format!("{count} is not a row count")))?;
+            let total: u64 = total
+                .parse()
+                .map_err(|_| FileError::End(format!("{total} is not a total")))?;
+            declared = Some((count, total));
+            break;
+        }
         // A missing quantity is a refusal and not a zero: a truncated download
         // would otherwise reconcile to a smaller total and look like a break in
         // the ledger rather than a broken file.
         let quantity = parts.next().ok_or(FileError::Line {
             number: index + 1,
-            why: "no quantity. A register that means zero says zero.".into() })?;
+            why: "no quantity. A register that means zero says zero.".into(),
+        })?;
         let quantity: u64 = quantity.parse().map_err(|_| FileError::Line {
-            number: index + 1, why: format!("{quantity} is not a quantity") })?;
+            number: index + 1,
+            why: format!("{quantity} is not a quantity"),
+        })?;
         if handle.is_empty() {
-            return Err(FileError::Line { number: index + 1,
-                                         why: "no handle".into() });
+            return Err(FileError::Line {
+                number: index + 1,
+                why: "no handle".into(),
+            });
         }
         if parts.next().is_some() {
-            return Err(FileError::Line { number: index + 1,
-                why: "more than a handle and a quantity".into() });
+            return Err(FileError::Line {
+                number: index + 1,
+                why: "more than a handle and a quantity".into(),
+            });
         }
         positions.push((handle.to_string(), quantity));
     }
     if positions.is_empty() {
         return Err(FileError::Empty);
     }
-    Ok(Statement {
-        register: fields[0].to_string(), account: fields[1].to_string(),
-        asset: fields[2].to_string(), as_of: fields[3].to_string(), positions,
-    })
+    if lines.next().is_some() {
+        return Err(FileError::End("there are rows after it".into()));
+    }
+    let (count, total) = declared.ok_or_else(|| {
+        FileError::End(
+            "the file does not say how many rows it has, so a file that lost \
+         some of them would read as a smaller holding"
+                .into(),
+        )
+    })?;
+    let statement = Statement {
+        register: fields[0].to_string(),
+        account: fields[1].to_string(),
+        asset: fields[2].to_string(),
+        as_of: fields[3].to_string(),
+        positions,
+    };
+    if statement.positions.len() != count {
+        return Err(FileError::End(format!(
+            "it declares {count} row(s) and the file has {}",
+            statement.positions.len()
+        )));
+    }
+    let found = statement
+        .checked_total()
+        .ok_or_else(|| FileError::End("the positions do not fit a total".into()))?;
+    if found != total {
+        return Err(FileError::End(format!(
+            "it declares a total of {total} and the rows come to {found}"
+        )));
+    }
+    Ok(statement)
 }
 
 /// Where a figure comes from. A file today; a connection when there is one.
@@ -186,13 +293,20 @@ pub struct FileRegister {
 
 impl FileRegister {
     pub fn read(text: &str) -> Result<Self, FileError> {
-        Ok(FileRegister { statement: parse(text)?, signature: None })
+        Ok(FileRegister {
+            statement: parse(text)?,
+            signature: None,
+        })
     }
 }
 
 impl Register for FileRegister {
-    fn statement(&self) -> &Statement { &self.statement }
-    fn signature(&self) -> Option<&Signature> { self.signature.as_ref() }
+    fn statement(&self) -> &Statement {
+        &self.statement
+    }
+    fn signature(&self) -> Option<&Signature> {
+        self.signature.as_ref()
+    }
 }
 
 /// A register that sends only a total, which is the common case one level up.
@@ -201,8 +315,12 @@ pub struct TotalOnly {
 }
 
 impl Register for TotalOnly {
-    fn statement(&self) -> &Statement { &self.statement }
-    fn positions(&self) -> Option<&[(String, u64)]> { None }
+    fn statement(&self) -> &Statement {
+        &self.statement
+    }
+    fn positions(&self) -> Option<&[(String, u64)]> {
+        None
+    }
 }
 
 /// What a reconciliation run produced, in the shape an operations team acts on.
@@ -226,32 +344,46 @@ impl Report {
     pub fn text(&self) -> String {
         let mut out = format!(
             "{} / {} / {} as of {}\n{} position(s), the register says {}\n",
-            self.register, self.account, self.asset, self.as_of, self.positions,
-            self.register_total);
+            self.register,
+            self.account,
+            self.asset,
+            self.as_of,
+            self.positions,
+            self.register_total
+        );
         if self.agrees {
-            out.push_str("\nAgrees. No balance was opened and nothing left that \
-                          both sides did not already hold.\n");
+            out.push_str(
+                "\nAgrees. No balance was opened and nothing left that \
+                          both sides did not already hold.\n",
+            );
             return out;
         }
         out.push_str(&format!("\nDoes not agree: {}\n", self.reason));
         if self.broken.is_empty() && self.search.is_none() {
-            out.push_str("\nThe register sends a total and not a figure per \
+            out.push_str(
+                "\nThe register sends a total and not a figure per \
                           position, so there is nothing here that can say where. \
                           Localising it needs the register to answer for \
                           sub-ranges, and every sub-range it answers becomes \
-                          public.\n");
+                          public.\n",
+            );
             return out;
         }
         for (handle, expected) in &self.broken {
-            out.push_str(&format!("  {handle}: the register says {expected} and \
-                                   the ledger holds something else\n"));
+            out.push_str(&format!(
+                "  {handle}: the register says {expected} and \
+                                   the ledger holds something else\n"
+            ));
         }
         if let Some(search) = &self.search {
             out.push_str(&format!(
                 "\nLocalised with {} sub-range proof(s); {} sub-total(s) are now \
                  public, the narrowest covering {} position(s) --- which at one \
                  position is a balance.\n",
-                search.proofs, search.ranges_made_public.len(), search.narrowest()));
+                search.proofs,
+                search.ranges_made_public.len(),
+                search.narrowest()
+            ));
         }
         out
     }
@@ -263,27 +395,42 @@ impl Report {
 /// side silently is how a reconciliation reports a break that is really a
 /// disagreement about ordering, so neither side is sorted here.
 pub fn run<R: RngCore + CryptoRng>(
-    key: &Pedersen, register: &dyn Register, commitments: &[RistrettoPoint],
-    blindings: &[Scalar], registrar: Option<&VerifyingKey>, rng: &mut R,
+    key: &Pedersen,
+    register: &dyn Register,
+    commitments: &[RistrettoPoint],
+    blindings: &[Scalar],
+    registrar: Option<&VerifyingKey>,
+    rng: &mut R,
 ) -> Report {
     let statement = register.statement();
     let attestation = statement.attestation(register.signature().cloned());
     let mut report = Report {
-        register: statement.register.clone(), account: statement.account.clone(),
-        asset: statement.asset.clone(), as_of: statement.as_of.clone(),
-        positions: statement.positions.len(), register_total: statement.total(),
-        agrees: false, reason: String::new(), broken: Vec::new(), search: None,
+        register: statement.register.clone(),
+        account: statement.account.clone(),
+        asset: statement.asset.clone(),
+        as_of: statement.as_of.clone(),
+        positions: statement.positions.len(),
+        register_total: statement.total(),
+        agrees: false,
+        reason: String::new(),
+        broken: Vec::new(),
+        search: None,
         reconciliation: None,
     };
     if commitments.len() != statement.positions.len() {
         report.reason = format!(
             "the register lists {} position(s) and the ledger offered {}",
-            statement.positions.len(), commitments.len());
+            statement.positions.len(),
+            commitments.len()
+        );
         return report;
     }
     let reconciliation = match prove(key, commitments, blindings, &attestation, rng) {
         Ok(r) => r,
-        Err(why) => { report.reason = why.to_string(); return report; }
+        Err(why) => {
+            report.reason = why.to_string();
+            return report;
+        }
     };
     let totals_agree = check(key, commitments, &reconciliation, registrar);
 
@@ -307,13 +454,17 @@ pub fn run<R: RngCore + CryptoRng>(
         (Ok(()), Some(_)) => {
             report.reason = "the totals agree and the positions do not, which is \
                              a reordering or an offsetting pair --- a sum cannot \
-                             see either".into();
+                             see either"
+                .into();
         }
         (Err(why), _) => report.reason = why.clone(),
     }
 
-    let (Some(positions), Some(broken)) = (positions, broken) else { return report };
-    report.broken = broken.iter()
+    let (Some(positions), Some(broken)) = (positions, broken) else {
+        return report;
+    };
+    report.broken = broken
+        .iter()
         .map(|i| (positions[*i].0.clone(), positions[*i].1))
         .collect();
     if report.broken.is_empty() {
@@ -321,7 +472,9 @@ pub fn run<R: RngCore + CryptoRng>(
         // which means the register's own arithmetic is what differs.
         report.reason = format!(
             "{}, and yet every position holds what the register says --- so the \
-             disagreement is in the register's own total", report.reason);
+             disagreement is in the register's own total",
+            report.reason
+        );
     }
     report
 }
@@ -331,9 +484,19 @@ pub fn run<R: RngCore + CryptoRng>(
 /// Kept separate because it is the expensive and disclosing path, and having to
 /// ask for it by name is the point.
 pub fn localise<R: RngCore + CryptoRng>(
-    key: &Pedersen, commitments: &[RistrettoPoint], blindings: &[Scalar],
-    subtotals: &BTreeMap<(usize, usize), u64>, expected: u64, rng: &mut R,
+    key: &Pedersen,
+    commitments: &[RistrettoPoint],
+    blindings: &[Scalar],
+    subtotals: &BTreeMap<(usize, usize), u64>,
+    expected: u64,
+    rng: &mut R,
 ) -> Result<BreakSearch, String> {
-    locate_break(key, commitments, blindings,
-                 |low, high| subtotals.get(&(low, high)).copied(), expected, rng)
+    locate_break(
+        key,
+        commitments,
+        blindings,
+        |low, high| subtotals.get(&(low, high)).copied(),
+        expected,
+        rng,
+    )
 }

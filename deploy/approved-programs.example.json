@@ -1,0 +1,15 @@
+{
+  "programs": [
+    {
+      "shape_digest": "REPLACE_WITH_64_HEX_CHARACTERS",
+      "argv": [
+        "/opt/qomm/current/rust/target/release/qomm-mpc-party",
+        "--party", "{node}",
+        "--slot", "{slot}"
+      ],
+      "cwd": "/var/lib/qomm/runtime",
+      "executable_sha256": "REPLACE_WITH_BINARY_SHA256",
+      "timeout_seconds": 60
+    }
+  ]
+}

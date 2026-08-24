@@ -52,8 +52,8 @@ use qomm_measure::{hosts, Summary};
 use qomm_zk::pedersen::Pedersen;
 use qomm_zkpi::{deal_quorum, frost, Bounds, Instruction, Issuer, Venue};
 use rand::rngs::OsRng;
-use std::collections::BTreeMap;
 use sha2::Digest;
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 const BITS: usize = 32;
@@ -88,17 +88,36 @@ struct World {
 /// A rail that already holds notes: the owner's last, the rest other people's.
 /// The pool has to be bigger than the ring before a ring means anything, and
 /// the owner's note has to be recent because that is what a spender holds.
-fn rail(key: &Pedersen, registry: &AssetRegistry, asset: u32, owner: &Wallet,
-        depth: usize, rng: &mut OsRng) -> NoteLedger {
+fn rail(
+    key: &Pedersen,
+    registry: &AssetRegistry,
+    asset: u32,
+    owner: &Wallet,
+    depth: usize,
+    rng: &mut OsRng,
+) -> NoteLedger {
     let asset_key = key.with_value_generator(registry.tags[asset as usize]);
     let mut ledger = NoteLedger::new(key.clone(), BITS);
     for i in 0..depth {
         let mine = i + 1 == depth;
-        let address = if mine { owner.address } else { Wallet::new(rng).address };
-        let held = if mine { NOTE_VALUE } else { NOTE_VALUE + i as u64 + 1 };
+        let address = if mine {
+            owner.address
+        } else {
+            Wallet::new(rng).address
+        };
+        let held = if mine {
+            NOTE_VALUE
+        } else {
+            NOTE_VALUE + i as u64 + 1
+        };
         let blinding = Scalar::random(rng);
-        let note = ledger.build_note(&address, held,
-                                     asset_key.commit_u64(held, &blinding), &blinding, rng);
+        let note = ledger.build_note(
+            &address,
+            held,
+            asset_key.commit_u64(held, &blinding),
+            &blinding,
+            rng,
+        );
         ledger.add(note);
     }
     ledger
@@ -108,7 +127,8 @@ fn world(depth: usize, rng: &mut OsRng) -> World {
     let key = Pedersen::new(b"qomm:defmi:v1");
     let registry = AssetRegistry::new(key.clone(), 16);
     let (secret, public) = deal_quorum(7, 3, rng).unwrap();
-    let shares = secret.into_iter()
+    let shares = secret
+        .into_iter()
         .map(|(id, s)| (id, frost::keys::KeyPackage::try_from(s).unwrap()))
         .collect();
     let (seller, buyer) = (Wallet::new(rng), Wallet::new(rng));
@@ -118,9 +138,21 @@ fn world(depth: usize, rng: &mut OsRng) -> World {
     let venue = Venue::new(key.clone(), &Bounds::default(), public.clone());
     World {
         issuer: Issuer::new(key.clone(), Bounds::default()),
-        defmi: NoteDefmi::new(key.clone(), securities, cash, venue,
-                              SigningKey::generate(rng)),
-        key, registry, shares, public, seller, buyer, sec_asset, cash_asset,
+        defmi: NoteDefmi::new(
+            key.clone(),
+            securities,
+            cash,
+            venue,
+            SigningKey::generate(rng),
+        ),
+        key,
+        registry,
+        shares,
+        public,
+        seller,
+        buyer,
+        sec_asset,
+        cash_asset,
     }
 }
 
@@ -135,18 +167,34 @@ fn sign(w: &World, message: &[u8], rng: &mut OsRng) -> frost::Signature {
     let package = frost::SigningPackage::new(commitments, message);
     let mut shares = BTreeMap::new();
     for id in &chosen {
-        shares.insert(*id, frost::round2::sign(&package, &nonces[id], &w.shares[id]).unwrap());
+        shares.insert(
+            *id,
+            frost::round2::sign(&package, &nonces[id], &w.shares[id]).unwrap(),
+        );
     }
     frost::aggregate(&package, &shares, &w.public).unwrap()
 }
 
 fn instruction(w: &World, rng: &mut OsRng, nonce: u8) -> (Instruction, Scalar, Scalar) {
-    let (digest, openings, partial) = w.issuer.build(
-        QTY, PRICE, w.sec_asset,
-        RistrettoPoint::mul_base(&Scalar::from(11u64)),
-        RistrettoPoint::mul_base(&Scalar::from(22u64)),
-        1_500, [nonce; 32], 1_599_845, rng).unwrap();
-    (partial.sealed(sign(w, &digest, rng)), openings.amount, openings.price)
+    let (digest, openings, partial) = w
+        .issuer
+        .build(
+            QTY,
+            PRICE,
+            w.sec_asset,
+            RistrettoPoint::mul_base(&Scalar::from(11u64)),
+            RistrettoPoint::mul_base(&Scalar::from(22u64)),
+            1_500,
+            [nonce; 32],
+            1_599_845,
+            rng,
+        )
+        .unwrap();
+    (
+        partial.sealed(sign(w, &digest, rng)),
+        openings.amount,
+        openings.price,
+    )
 }
 
 /// One settlement, and the two rings it published.
@@ -159,18 +207,28 @@ struct Published {
     pool: usize,
 }
 
-fn settle_once(w: &mut World, nonce: u8, ring: usize, decoys: Decoys,
-               window: usize, rng: &mut OsRng) -> Option<Published> {
+fn settle_once(
+    w: &mut World,
+    nonce: u8,
+    ring: usize,
+    decoys: Decoys,
+    window: usize,
+    rng: &mut OsRng,
+) -> Option<Published> {
     let (instruction, amount_blinding, price_blinding) = instruction(w, rng, nonce);
-    let sec_key = w.key.with_value_generator(w.registry.tags[w.sec_asset as usize]);
-    let cash_key = w.key.with_value_generator(w.registry.tags[w.cash_asset as usize]);
+    let sec_key = w
+        .key
+        .with_value_generator(w.registry.tags[w.sec_asset as usize]);
+    let cash_key = w
+        .key
+        .with_value_generator(w.registry.tags[w.cash_asset as usize]);
     // What a spender actually reaches for: the newest note it holds. Nothing in
     // the ledger makes that choice; it is what being paid and then paying looks
     // like, and it is the whole reason the decoys matter.
     let sec_found = w.defmi.securities.scan(&w.seller, &sec_key);
     let cash_found = w.defmi.cash.scan(&w.buyer, &cash_key);
-    let (sec_index, sec_opening) = sec_found.last()?.clone();
-    let (cash_index, cash_opening) = cash_found.last()?.clone();
+    let (sec_index, sec_opening) = *sec_found.last()?;
+    let (cash_index, cash_opening) = *cash_found.last()?;
 
     let (sec_tag, sec_gamma) = w.registry.blind(w.sec_asset, false, rng).ok()?;
     let (cash_tag, cash_gamma) = w.registry.blind(w.cash_asset, false, rng).ok()?;
@@ -184,22 +242,51 @@ fn settle_once(w: &mut World, nonce: u8, ring: usize, decoys: Decoys,
     let cash_ring = pick(cash_pool, cash_index, nonce as u64 * 2 + 2).ok()?;
 
     let package = build_note_package(
-        &w.key, instruction, &w.defmi.securities, &w.defmi.cash,
-        &LegInput { ring: &sec_ring, index: sec_index, opening: &sec_opening,
-                    tag: sec_tag.point, gamma: sec_gamma,
-                    payee: w.buyer.address, change_to: w.seller.address },
-        &LegInput { ring: &cash_ring, index: cash_index, opening: &cash_opening,
-                    tag: cash_tag.point, gamma: cash_gamma,
-                    payee: w.seller.address, change_to: w.buyer.address },
-        QTY, PRICE, &amount_blinding, &price_blinding, CONTEXT, rng).ok()?;
+        &w.key,
+        instruction,
+        &w.defmi.securities,
+        &w.defmi.cash,
+        &LegInput {
+            ring: &sec_ring,
+            index: sec_index,
+            opening: &sec_opening,
+            tag: sec_tag.point,
+            gamma: sec_gamma,
+            payee: w.buyer.address,
+            change_to: w.seller.address,
+        },
+        &LegInput {
+            ring: &cash_ring,
+            index: cash_index,
+            opening: &cash_opening,
+            tag: cash_tag.point,
+            gamma: cash_gamma,
+            payee: w.seller.address,
+            change_to: w.buyer.address,
+        },
+        QTY,
+        PRICE,
+        &amount_blinding,
+        &price_blinding,
+        CONTEXT,
+        rng,
+    )
+    .ok()?;
 
     let start = Instant::now();
     let receipt = w.defmi.settle(package, 1_000, CONTEXT, rng);
     let verify_ms = start.elapsed().as_secs_f64() * 1e3;
-    if !receipt.settled { return None; }
-    Some(Published { sec_ring, sec_true: sec_index,
-                     cash_ring, cash_true: cash_index, verify_ms,
-                     pool: w.defmi.securities.notes.len() })
+    if !receipt.settled {
+        return None;
+    }
+    Some(Published {
+        sec_ring,
+        sec_true: sec_index,
+        cash_ring,
+        cash_true: cash_index,
+        verify_ms,
+        pool: w.defmi.securities.notes.len(),
+    })
 }
 
 /// Guess uniformly inside the ring. This is the number the design quotes.
@@ -232,18 +319,28 @@ fn newest(published: &[Published]) -> f64 {
 /// about them is visible to the tracked pair and nothing about the tracked pair
 /// is visible to them, which is exactly why they are the anonymity set.
 fn churn(w: &mut World, settlements: usize, rng: &mut OsRng) {
-    let sec_key = w.key.with_value_generator(w.registry.tags[w.sec_asset as usize]);
-    let cash_key = w.key.with_value_generator(w.registry.tags[w.cash_asset as usize]);
+    let sec_key = w
+        .key
+        .with_value_generator(w.registry.tags[w.sec_asset as usize]);
+    let cash_key = w
+        .key
+        .with_value_generator(w.registry.tags[w.cash_asset as usize]);
     for _ in 0..settlements {
-        for (ledger, asset_key) in [(&mut w.defmi.securities, &sec_key),
-                                    (&mut w.defmi.cash, &cash_key)] {
+        for (ledger, asset_key) in [
+            (&mut w.defmi.securities, &sec_key),
+            (&mut w.defmi.cash, &cash_key),
+        ] {
             for _ in 0..2 {
                 let address = Wallet::new(rng).address;
                 let blinding = Scalar::random(rng);
                 let held = NOTE_VALUE;
-                let note = ledger.build_note(&address, held,
-                                             asset_key.commit_u64(held, &blinding),
-                                             &blinding, rng);
+                let note = ledger.build_note(
+                    &address,
+                    held,
+                    asset_key.commit_u64(held, &blinding),
+                    &blinding,
+                    rng,
+                );
                 ledger.add(note);
             }
         }
@@ -251,67 +348,94 @@ fn churn(w: &mut World, settlements: usize, rng: &mut OsRng) {
 }
 
 fn shell(cmd: &str, args: &[&str]) -> String {
-    std::process::Command::new(cmd).args(args).output().ok()
+    std::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
 }
 
 fn main() {
     let mut rng = OsRng;
-    let settlements: usize = std::env::var("QOMM_BENCH_SETTLEMENTS").ok()
-        .and_then(|v| v.parse().ok()).unwrap_or(12);
+    let settlements: usize = std::env::var("QOMM_BENCH_SETTLEMENTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(12);
     let depth = 64;
 
-    println!("what a reader of a note ledger can name, {BITS}-bit rails, \
-pool starts at {depth}\n");
-    println!("{:<8} {:>5} {:>7} {:>8} {:>9} {:>9} {:>9} {:>24} {:>7}",
-             "decoys", "ring", "window", "traffic", "uniform", "newest", "best",
-             "verify ms", "pool");
+    println!(
+        "what a reader of a note ledger can name, {BITS}-bit rails, \
+pool starts at {depth}\n"
+    );
+    println!(
+        "{:<8} {:>5} {:>7} {:>8} {:>9} {:>9} {:>9} {:>24} {:>7}",
+        "decoys", "ring", "window", "traffic", "uniform", "newest", "best", "verify ms", "pool"
+    );
     let mut rows = Vec::new();
 
-    for (decoys, name, window) in [(Decoys::Uniform, "uniform", 0usize),
-                                   (Decoys::Recent, "recent", 32)] {
+    for (decoys, name, window) in [
+        (Decoys::Uniform, "uniform", 0usize),
+        (Decoys::Recent, "recent", 32),
+    ] {
         for ring in [4usize, 8, 16] {
-        for traffic in [0usize, 4, 16] {
-            let mut w = world(depth, &mut rng);
-            let mut published = Vec::new();
-            for nonce in 0..settlements {
-                if let Some(p) = settle_once(&mut w, nonce as u8, ring, decoys,
-                                             window, &mut rng) {
-                    published.push(p);
+            for traffic in [0usize, 4, 16] {
+                let mut w = world(depth, &mut rng);
+                let mut published = Vec::new();
+                for nonce in 0..settlements {
+                    if let Some(p) =
+                        settle_once(&mut w, nonce as u8, ring, decoys, window, &mut rng)
+                    {
+                        published.push(p);
+                    }
+                    churn(&mut w, traffic, &mut rng);
                 }
-                churn(&mut w, traffic, &mut rng);
-            }
-            let shown = if window == 0 { "-".to_string() } else { window.to_string() };
-            if published.is_empty() {
-                println!("{name:<8} {ring:>5} {shown:>7} {traffic:>8} {:>9} {:>9} \
-{:>9} {:>24} {:>7}", "-", "-", "-", "nothing settled", "-");
-                continue;
-            }
-            let times: Vec<f64> = published.iter().map(|p| p.verify_ms).collect();
-            let t = Summary::of(&times).unwrap();
-            let (u, n) = (uniform(&published), newest(&published));
-            let best = if n > u { n } else { u };
-            let pool = published.last().unwrap().pool;
-            println!("{name:<8} {ring:>5} {shown:>7} {traffic:>8} {u:>9.3} {n:>9.3} \
-{best:>9.3} {:>24} {pool:>7}", format!("{t}"));
-            rows.push(format!(
-                "    {{\"decoys\": \"{name}\", \"ring\": {ring}, \"window\": {window}, \
+                let shown = if window == 0 {
+                    "-".to_string()
+                } else {
+                    window.to_string()
+                };
+                if published.is_empty() {
+                    println!(
+                        "{name:<8} {ring:>5} {shown:>7} {traffic:>8} {:>9} {:>9} \
+{:>9} {:>24} {:>7}",
+                        "-", "-", "-", "nothing settled", "-"
+                    );
+                    continue;
+                }
+                let times: Vec<f64> = published.iter().map(|p| p.verify_ms).collect();
+                let t = Summary::of(&times).unwrap();
+                let (u, n) = (uniform(&published), newest(&published));
+                let best = if n > u { n } else { u };
+                let pool = published.last().unwrap().pool;
+                println!(
+                    "{name:<8} {ring:>5} {shown:>7} {traffic:>8} {u:>9.3} {n:>9.3} \
+{best:>9.3} {:>24} {pool:>7}",
+                    format!("{t}")
+                );
+                rows.push(format!(
+                    "    {{\"decoys\": \"{name}\", \"ring\": {ring}, \"window\": {window}, \
 \"traffic\": {traffic}, \
 \"settlements\": {}, \"uniform_guess\": {u:.4}, \"newest_guess\": {n:.4}, \
 \"observer_success\": {best:.4}, \"pool\": {pool}, \
 \"verify_ms\": {{\"n\": {}, \"mean\": {:.4}, \"sd\": {}, \"median\": {:.4}}}}}",
-                published.len(), t.n, t.mean,
-                t.sd.map(|s| format!("{s:.4}")).unwrap_or_else(|| "null".into()),
-                t.median));
-        }
+                    published.len(),
+                    t.n,
+                    t.mean,
+                    t.sd.map(|s| format!("{s:.4}"))
+                        .unwrap_or_else(|| "null".into()),
+                    t.median
+                ));
+            }
         }
     }
 
-    println!("\n`traffic` is how many other settlements land between one firm being\n\
+    println!(
+        "\n`traffic` is how many other settlements land between one firm being\n\
 paid and paying. `uniform` guesses inside the ring, `newest` guesses its\n\
 highest note index, and `best` is what an observer that takes the better of\n\
-the two gets --- which is the number that matters.");
+the two gets --- which is the number that matters."
+    );
 
     // The timing column above climbs with the pool, and nothing in
     // `check_spend` is proportional to it --- the ring proof, the range proofs
@@ -321,8 +445,10 @@ the two gets --- which is the number that matters.");
     // So this is measured on its own, because a settlement cost that grows
     // with total history is a deployability question and not a privacy one.
     println!("\nthe state root, which is not a ring question\n");
-    println!("{:>8} {:>24} {:>24} {:>10}",
-             "pool", "walked, us", "kept, us", "ratio");
+    println!(
+        "{:>8} {:>24} {:>24} {:>10}",
+        "pool", "walked, us", "kept, us", "ratio"
+    );
     let mut roots = Vec::new();
     for pool in [64usize, 256, 1024, 4096] {
         let w = world(pool, &mut rng);
@@ -346,18 +472,31 @@ the two gets --- which is the number that matters.");
             walked.push(start.elapsed().as_secs_f64() * 1e6);
         }
         let (k, wk) = (Summary::of(&kept).unwrap(), Summary::of(&walked).unwrap());
-        println!("{pool:>8} {:>24} {:>24} {:>10.0}x",
-                 format!("{wk}"), format!("{k}"), wk.mean / k.mean);
+        println!(
+            "{pool:>8} {:>24} {:>24} {:>10.0}x",
+            format!("{wk}"),
+            format!("{k}"),
+            wk.mean / k.mean
+        );
         roots.push(format!(
             "    {{\"pool\": {pool}, \
 \"kept_us\": {{\"n\": {}, \"mean\": {:.4}, \"sd\": {}, \"median\": {:.4}}}, \
 \"walked_us\": {{\"n\": {}, \"mean\": {:.4}, \"sd\": {}, \"median\": {:.4}}}, \
 \"per_settlement_kept_us\": {:.4}, \"per_settlement_walked_us\": {:.4}}}",
-            k.n, k.mean, k.sd.map(|s| format!("{s:.4}")).unwrap_or_else(|| "null".into()),
+            k.n,
+            k.mean,
+            k.sd.map(|s| format!("{s:.4}"))
+                .unwrap_or_else(|| "null".into()),
             k.median,
-            wk.n, wk.mean, wk.sd.map(|s| format!("{s:.4}")).unwrap_or_else(|| "null".into()),
+            wk.n,
+            wk.mean,
+            wk.sd
+                .map(|s| format!("{s:.4}"))
+                .unwrap_or_else(|| "null".into()),
             wk.median,
-            k.mean * 4.0, wk.mean * 4.0));
+            k.mean * 4.0,
+            wk.mean * 4.0
+        ));
     }
 
     if let Ok(path) = std::env::var("QOMM_BENCH_JSON") {
@@ -368,7 +507,10 @@ the two gets --- which is the number that matters.");
 \"rows\": [\n{}\n  ],\n  \
 \"state_root\": [\n{}\n  ]\n}}\n",
             std::env::var("QOMM_HOST_LABEL").unwrap_or_else(|_| hosts::this_host()),
-            shell("rustc", &["--version"]), rows.join(",\n"), roots.join(",\n"));
+            shell("rustc", &["--version"]),
+            rows.join(",\n"),
+            roots.join(",\n")
+        );
         std::fs::write(&path, json).expect("could not write the measurement");
         println!("\nwrote {path}");
     }

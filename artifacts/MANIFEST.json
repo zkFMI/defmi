@@ -1,5 +1,9 @@
 {
   "artifacts": {
+    "avalanche_l1_acceptance.json": {
+      "bytes": 3638,
+      "sha256": "569f0a9a2cf472f555a9ca542002b375808004f4bbb3435d18a79fac4dc640d3"
+    },
     "ccp_rust.json": {
       "bytes": 2921,
       "host": "host-c",
@@ -85,6 +89,20 @@
       "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
       "sha256": "e0c6a0fcddf816659fbaa1903b391d375bc4f0be87dc9530e8a4f26e41eaf70c"
     },
+    "solana_cu.json": {
+      "bytes": 3328,
+      "sha256": "196bf2a6dc19272248c346c364aab7472d5c35e96777464059e6950975e4d46b"
+    },
+    "stylus_gas.json": {
+      "bytes": 4479,
+      "sha256": "1d9c285b0014686fae0aadd780747f5da8500a8e2cecd7321810ba6a66314f88"
+    },
+    "vetting.json": {
+      "bytes": 2089,
+      "host": "host-c",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "sha256": "764ec2b21df9ee4062d5a0adc5158f455b2734b93f59d66d04ebd2c983166956"
+    },
     "viewing.json": {
       "bytes": 2278,
       "host": "host-c",
@@ -105,5 +123,5 @@
       "target": "wasm32"
     }
   },
-  "commit": "43aa4604bd042f6f6848b2eefd50a41e84591ae9"
+  "commit": "7b7ab116a640626433142af57efcefb2ed42f773"
 }

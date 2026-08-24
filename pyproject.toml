@@ -5,12 +5,24 @@ description = "Delivery versus payment for committed holdings: two legs that mov
 license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
+    "cryptography>=45",
+    "pynacl>=1.5",
     "zkpi @ git+https://github.com/shukob/zkpi",
 ]
+
+[dependency-groups]
+dev = ["pytest>=8.4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-config --strict-markers"
+
+[tool.uv]
+default-groups = ["dev"]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["defmi", "evm", "scripts"]
+packages = ["defmi", "evm", "zk", "scripts"]

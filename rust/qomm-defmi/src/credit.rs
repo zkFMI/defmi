@@ -17,8 +17,10 @@ use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::Identity;
 use merlin::Transcript;
 use qomm_zk::pedersen::Pedersen;
-use qomm_zk::sigma::{product_terms, prove_opening, prove_product, opening_terms,
-                     verify_product, Batch, OpeningProof, ProductProof};
+use qomm_zk::sigma::{
+    opening_terms, product_terms, prove_opening, prove_product, verify_product, Batch,
+    OpeningProof, ProductProof,
+};
 use rand_core::{CryptoRng, RngCore};
 use sha2::Digest;
 
@@ -54,11 +56,18 @@ impl CreditCtx {
     /// it under a different generator makes the two incomparable --- and the
     /// arithmetic still typechecks, which is why this is worth saying out loud.
     pub fn new(key: Pedersen, bits: usize) -> Self {
-        CreditCtx { key, bits, gens: BulletproofGens::new(bits, 1) }
+        CreditCtx {
+            key,
+            bits,
+            gens: BulletproofGens::new(bits, 1),
+        }
     }
 
     fn pc(&self) -> PedersenGens {
-        PedersenGens { B: self.key.g, B_blinding: self.key.h }
+        PedersenGens {
+            B: self.key.g,
+            B_blinding: self.key.h,
+        }
     }
 
     /// Run where the collateral openings are known --- by the pledging member.
@@ -66,12 +75,22 @@ impl CreditCtx {
     /// collateral, only that the cap it underwrites is covered.
     #[allow(clippy::too_many_arguments)]
     pub fn grant(
-        &self, handle: &[u8], rail: &'static str, cap: u64, cap_blinding: &Scalar,
-        collateral: u64, collateral_blinding: &Scalar, haircut_bp: u64,
+        &self,
+        handle: &[u8],
+        rail: &'static str,
+        cap: u64,
+        cap_blinding: &Scalar,
+        collateral: u64,
+        collateral_blinding: &Scalar,
+        haircut_bp: u64,
     ) -> Result<CreditLine, &'static str> {
-        if haircut_bp >= 10_000 { return Err("the haircut is not a fraction"); }
+        if haircut_bp >= 10_000 {
+            return Err("the haircut is not a fraction");
+        }
         let scale = 10_000 - haircut_bp;
-        let lendable = collateral.checked_mul(scale).ok_or("collateral overflows")?;
+        let lendable = collateral
+            .checked_mul(scale)
+            .ok_or("collateral overflows")?;
         let owed = cap.checked_mul(10_000).ok_or("cap overflows")?;
         if lendable < owed {
             return Err("the pledged collateral does not cover the cap");
@@ -80,33 +99,49 @@ impl CreditCtx {
         // proved. The width grows by the fourteen bits of the scale factor,
         // paid once when the line is granted rather than once per order.
         let slack = lendable - owed;
-        let slack_blinding = collateral_blinding * Scalar::from(scale)
-            - cap_blinding * Scalar::from(10_000u64);
+        let slack_blinding =
+            collateral_blinding * Scalar::from(scale) - cap_blinding * Scalar::from(10_000u64);
         let mut t = Transcript::new(b"qomm:credit:backing");
         let (backing, commitments) = RangeProof::prove_multiple(
-            &self.gens, &self.pc(), &mut t, &[slack], &[slack_blinding], self.bits)
-            .map_err(|_| "the backing proof failed")?;
+            &self.gens,
+            &self.pc(),
+            &mut t,
+            &[slack],
+            &[slack_blinding],
+            self.bits,
+        )
+        .map_err(|_| "the backing proof failed")?;
         Ok(CreditLine {
-            handle: handle.to_vec(), rail,
+            handle: handle.to_vec(),
+            rail,
             cap_commitment: self.key.commit_u64(cap, cap_blinding),
             collateral_commitment: self.key.commit_u64(collateral, collateral_blinding),
-            haircut_bp, backing, backing_commitment: commitments[0],
+            haircut_bp,
+            backing,
+            backing_commitment: commitments[0],
         })
     }
 
     /// The infrastructure underwriting a limit it cannot see.
     pub fn check(&self, line: &CreditLine) -> Result<(), &'static str> {
-        if line.haircut_bp >= 10_000 { return Err("the haircut is not a fraction"); }
+        if line.haircut_bp >= 10_000 {
+            return Err("the haircut is not a fraction");
+        }
         let scale = Scalar::from(10_000 - line.haircut_bp);
-        let expected = line.collateral_commitment * scale
-            - line.cap_commitment * Scalar::from(10_000u64);
+        let expected =
+            line.collateral_commitment * scale - line.cap_commitment * Scalar::from(10_000u64);
         if expected.compress() != line.backing_commitment {
             return Err("the backing proof is about other commitments");
         }
         let mut t = Transcript::new(b"qomm:credit:backing");
         line.backing
-            .verify_multiple(&self.gens, &self.pc(), &mut t,
-                             std::slice::from_ref(&line.backing_commitment), self.bits)
+            .verify_multiple(
+                &self.gens,
+                &self.pc(),
+                &mut t,
+                std::slice::from_ref(&line.backing_commitment),
+                self.bits,
+            )
             .map_err(|_| "the pledged collateral does not cover the cap")
     }
 }
@@ -148,12 +183,23 @@ pub struct Waterfall {
 
 impl Waterfall {
     pub fn new(key: Pedersen, tranches: Vec<Tranche>, bits: usize) -> Self {
-        assert!(!tranches.is_empty(), "a waterfall needs at least one tranche");
-        Waterfall { key, bits, tranches, gens: BulletproofGens::new(bits, 1) }
+        assert!(
+            !tranches.is_empty(),
+            "a waterfall needs at least one tranche"
+        );
+        Waterfall {
+            key,
+            bits,
+            tranches,
+            gens: BulletproofGens::new(bits, 1),
+        }
     }
 
     fn pc(&self) -> PedersenGens {
-        PedersenGens { B: self.key.g, B_blinding: self.key.h }
+        PedersenGens {
+            B: self.key.g,
+            B_blinding: self.key.h,
+        }
     }
 
     fn within_transcript(index: usize) -> Transcript {
@@ -166,13 +212,21 @@ impl Waterfall {
         t.append_u64(b"k", index as u64);
         t
     }
-    fn shortfall_transcript() -> Transcript { Transcript::new(b"qomm:waterfall:shortfall") }
-    fn balance_transcript() -> Transcript { Transcript::new(b"qomm:waterfall:balance") }
+    fn shortfall_transcript() -> Transcript {
+        Transcript::new(b"qomm:waterfall:shortfall")
+    }
+    fn balance_transcript() -> Transcript {
+        Transcript::new(b"qomm:waterfall:balance")
+    }
 
     /// Run where every tranche opening is known --- by the infrastructure.
     pub fn build<R: RngCore + CryptoRng>(
-        &self, shortfall: u64, shortfall_blinding: &Scalar,
-        balances: &[u64], blindings: &[Scalar], rng: &mut R,
+        &self,
+        shortfall: u64,
+        shortfall_blinding: &Scalar,
+        balances: &[u64],
+        blindings: &[Scalar],
+        rng: &mut R,
     ) -> Result<(Resolution, Vec<u64>), &'static str> {
         if balances.len() != self.tranches.len() || blindings.len() != self.tranches.len() {
             return Err("one balance and one blinding per tranche");
@@ -201,45 +255,75 @@ impl Waterfall {
             let left = balances[index] - amount;
             let left_blinding = blindings[index] - blinding;
             let (within, within_commitments) = RangeProof::prove_multiple(
-                &self.gens, &self.pc(), &mut Self::within_transcript(index),
-                &[left], &[left_blinding], self.bits)
-                .map_err(|_| "a tranche is overdrawn")?;
+                &self.gens,
+                &self.pc(),
+                &mut Self::within_transcript(index),
+                &[left],
+                &[left_blinding],
+                self.bits,
+            )
+            .map_err(|_| "a tranche is overdrawn")?;
             let ordering = above.map(|(above_value, above_blinding)| {
                 prove_product(
-                    &self.key, &mut Self::order_transcript(index),
+                    &self.key,
+                    &mut Self::order_transcript(index),
                     &self.key.commit_u64(above_value, &above_blinding),
-                    &Scalar::from(above_value), &above_blinding,
-                    &Scalar::from(*amount), blinding, &Scalar::ZERO, rng)
+                    &Scalar::from(above_value),
+                    &above_blinding,
+                    &Scalar::from(*amount),
+                    blinding,
+                    &Scalar::ZERO,
+                    rng,
+                )
             });
             draws.push(Draw {
                 tranche: index,
                 amount_commitment: self.key.commit_u64(*amount, blinding),
-                within, within_commitment: within_commitments[0], ordering,
+                within,
+                within_commitment: within_commitments[0],
+                ordering,
             });
             above = Some((left, left_blinding));
         }
 
         let (shortfall_range, shortfall_commitments) = RangeProof::prove_multiple(
-            &self.gens, &self.pc(), &mut Self::shortfall_transcript(),
-            &[shortfall], &[*shortfall_blinding], self.bits)
-            .map_err(|_| "the shortfall is not in range")?;
+            &self.gens,
+            &self.pc(),
+            &mut Self::shortfall_transcript(),
+            &[shortfall],
+            &[*shortfall_blinding],
+            self.bits,
+        )
+        .map_err(|_| "the shortfall is not in range")?;
         let residual = self.key.commit_u64(shortfall, shortfall_blinding)
-            - draws.iter().map(|d| d.amount_commitment).sum::<RistrettoPoint>();
-        let balance = prove_opening(&self.key, &mut Self::balance_transcript(),
-                                    &residual, &Scalar::ZERO, &Scalar::ZERO, rng);
+            - draws
+                .iter()
+                .map(|d| d.amount_commitment)
+                .sum::<RistrettoPoint>();
+        let balance = prove_opening(
+            &self.key,
+            &mut Self::balance_transcript(),
+            &residual,
+            &Scalar::ZERO,
+            &Scalar::ZERO,
+            rng,
+        );
         Ok((
             Resolution {
                 shortfall_commitment: self.key.commit_u64(shortfall, shortfall_blinding),
                 shortfall_range,
                 shortfall_range_commitment: shortfall_commitments[0],
-                draws, balance,
+                draws,
+                balance,
             },
             amounts,
         ))
     }
 
     pub fn check<R: RngCore + CryptoRng>(
-        &self, resolution: &Resolution, rng: &mut R,
+        &self,
+        resolution: &Resolution,
+        rng: &mut R,
     ) -> Result<(), &'static str> {
         if resolution.draws.len() != self.tranches.len() {
             return Err("one draw per tranche, present or zero");
@@ -247,31 +331,48 @@ impl Waterfall {
         if resolution.shortfall_range_commitment != resolution.shortfall_commitment.compress() {
             return Err("the shortfall range is about another commitment");
         }
-        resolution.shortfall_range
-            .verify_multiple(&self.gens, &self.pc(), &mut Self::shortfall_transcript(),
-                             std::slice::from_ref(&resolution.shortfall_range_commitment),
-                             self.bits)
+        resolution
+            .shortfall_range
+            .verify_multiple(
+                &self.gens,
+                &self.pc(),
+                &mut Self::shortfall_transcript(),
+                std::slice::from_ref(&resolution.shortfall_range_commitment),
+                self.bits,
+            )
             .map_err(|_| "the shortfall is not shown to be a positive amount")?;
 
         let mut batch = Batch::new();
         let mut above: Option<RistrettoPoint> = None;
         for (index, draw) in resolution.draws.iter().enumerate() {
-            if draw.tranche != index { return Err("the draws are not in tranche order"); }
+            if draw.tranche != index {
+                return Err("the draws are not in tranche order");
+            }
             let remaining = self.tranches[index].commitment - draw.amount_commitment;
             if draw.within_commitment != remaining.compress() {
                 return Err("a tranche's range proof is about another commitment");
             }
             draw.within
-                .verify_multiple(&self.gens, &self.pc(), &mut Self::within_transcript(index),
-                                 std::slice::from_ref(&draw.within_commitment), self.bits)
+                .verify_multiple(
+                    &self.gens,
+                    &self.pc(),
+                    &mut Self::within_transcript(index),
+                    std::slice::from_ref(&draw.within_commitment),
+                    self.bits,
+                )
                 .map_err(|_| "a tranche is overdrawn")?;
             match (&draw.ordering, above) {
                 (None, Some(_)) => return Err("a draw below the first tranche has no order proof"),
                 (Some(proof), Some(above_commitment)) => {
                     let (s, p) = product_terms(
-                        &self.key, &mut Self::order_transcript(index), &above_commitment,
-                        &draw.amount_commitment, &RistrettoPoint::identity(),
-                        proof, &Batch::weight(rng));
+                        &self.key,
+                        &mut Self::order_transcript(index),
+                        &above_commitment,
+                        &draw.amount_commitment,
+                        &RistrettoPoint::identity(),
+                        proof,
+                        &Batch::weight(rng),
+                    );
                     batch.push(s, p);
                 }
                 _ => {}
@@ -280,20 +381,33 @@ impl Waterfall {
         }
 
         let residual = resolution.shortfall_commitment
-            - resolution.draws.iter().map(|d| d.amount_commitment).sum::<RistrettoPoint>();
-        let (s, p) = opening_terms(&self.key, &mut Self::balance_transcript(),
-                                   &residual, &resolution.balance, &Batch::weight(rng));
+            - resolution
+                .draws
+                .iter()
+                .map(|d| d.amount_commitment)
+                .sum::<RistrettoPoint>();
+        let (s, p) = opening_terms(
+            &self.key,
+            &mut Self::balance_transcript(),
+            &residual,
+            &resolution.balance,
+            &Batch::weight(rng),
+        );
         batch.push(s, p);
         if !batch.verify() {
-            return Err("a tranche was drawn before the one above it was exhausted, \
-                        or the draws do not add up to the shortfall");
+            return Err(
+                "a tranche was drawn before the one above it was exhausted, \
+                        or the draws do not add up to the shortfall",
+            );
         }
         Ok(())
     }
 
     /// The tranches after the resolution, still committed.
     pub fn applied(&self, resolution: &Resolution) -> Vec<Tranche> {
-        self.tranches.iter().zip(resolution.draws.iter())
+        self.tranches
+            .iter()
+            .zip(resolution.draws.iter())
             .map(|(t, d)| Tranche {
                 name: t.name.clone(),
                 commitment: t.commitment - d.amount_commitment,
@@ -337,41 +451,65 @@ impl CreditCtx {
     /// the blinding of a commitment it did not make.
     #[allow(clippy::too_many_arguments)]
     pub fn value_pledge<R: RngCore + CryptoRng>(
-        &self, quantity: u64, quantity_blinding: &Scalar,
-        price: u64, price_blinding: &Scalar, value_blinding: &Scalar,
-        signed_price_commitment: &RistrettoPoint, rng: &mut R,
+        &self,
+        quantity: u64,
+        quantity_blinding: &Scalar,
+        price: u64,
+        price_blinding: &Scalar,
+        value_blinding: &Scalar,
+        signed_price_commitment: &RistrettoPoint,
+        rng: &mut R,
     ) -> Result<(ValuedCollateral, u64), &'static str> {
         if self.key.commit_u64(price, price_blinding) != *signed_price_commitment {
             return Err("that is not the price the quorum signed");
         }
-        let value = quantity.checked_mul(price).ok_or("the valuation overflows")?;
+        let value = quantity
+            .checked_mul(price)
+            .ok_or("the valuation overflows")?;
         let mut t = Transcript::new(b"qomm:credit:valuation");
         let proof = prove_product(
-            &self.key, &mut t, &self.key.commit_u64(quantity, quantity_blinding),
-            &Scalar::from(quantity), quantity_blinding,
-            &Scalar::from(price), price_blinding, value_blinding, rng);
-        Ok((ValuedCollateral {
-            quantity: self.key.commit_u64(quantity, quantity_blinding),
-            price: *signed_price_commitment,
-            value: self.key.commit_u64(value, value_blinding),
-            proof,
-        }, value))
+            &self.key,
+            &mut t,
+            &self.key.commit_u64(quantity, quantity_blinding),
+            &Scalar::from(quantity),
+            quantity_blinding,
+            &Scalar::from(price),
+            price_blinding,
+            value_blinding,
+            rng,
+        );
+        Ok((
+            ValuedCollateral {
+                quantity: self.key.commit_u64(quantity, quantity_blinding),
+                price: *signed_price_commitment,
+                value: self.key.commit_u64(value, value_blinding),
+                proof,
+            },
+            value,
+        ))
     }
 
     /// That the value really is the quantity times the price the quorum signed.
     ///
     /// Nothing opens. What the infrastructure learns is the relation, which is
     /// the only thing it needs in order to be willing to lend against it.
-    pub fn check_pledge(&self, pledge: &ValuedCollateral,
-                        signed_price_commitment: &RistrettoPoint)
-        -> Result<(), &'static str>
-    {
+    pub fn check_pledge(
+        &self,
+        pledge: &ValuedCollateral,
+        signed_price_commitment: &RistrettoPoint,
+    ) -> Result<(), &'static str> {
         if pledge.price != *signed_price_commitment {
             return Err("valued at a price other than the one the quorum signed");
         }
         let mut t = Transcript::new(b"qomm:credit:valuation");
-        if verify_product(&self.key, &mut t, &pledge.quantity, &pledge.price,
-                          &pledge.value, &pledge.proof) {
+        if verify_product(
+            &self.key,
+            &mut t,
+            &pledge.quantity,
+            &pledge.price,
+            &pledge.value,
+            &pledge.proof,
+        ) {
             Ok(())
         } else {
             Err("the valuation does not hold")
@@ -385,15 +523,30 @@ impl CreditCtx {
     /// a member should not be trusted with.
     #[allow(clippy::too_many_arguments)]
     pub fn grant_against(
-        &self, handle: &[u8], rail: &'static str, cap: u64, cap_blinding: &Scalar,
-        pledge: &ValuedCollateral, value: u64, value_blinding: &Scalar,
-        haircut_bp: u64, signed_price_commitment: &RistrettoPoint,
+        &self,
+        handle: &[u8],
+        rail: &'static str,
+        cap: u64,
+        cap_blinding: &Scalar,
+        pledge: &ValuedCollateral,
+        value: u64,
+        value_blinding: &Scalar,
+        haircut_bp: u64,
+        signed_price_commitment: &RistrettoPoint,
     ) -> Result<CreditLine, &'static str> {
         self.check_pledge(pledge, signed_price_commitment)?;
         if self.key.commit_u64(value, value_blinding) != pledge.value {
             return Err("the opening offered is not the value that was proved");
         }
-        self.grant(handle, rail, cap, cap_blinding, value, value_blinding, haircut_bp)
+        self.grant(
+            handle,
+            rail,
+            cap,
+            cap_blinding,
+            value,
+            value_blinding,
+            haircut_bp,
+        )
     }
 }
 
@@ -423,7 +576,10 @@ pub fn resolution_id(resolution: &Resolution) -> [u8; 32] {
 
 impl TrancheBook {
     pub fn new(tranches: Vec<Tranche>) -> Self {
-        TrancheBook { tranches, applied: std::collections::HashSet::new() }
+        TrancheBook {
+            tranches,
+            applied: std::collections::HashSet::new(),
+        }
     }
 
     pub fn applied_count(&self) -> usize {
@@ -437,7 +593,11 @@ impl TrancheBook {
     /// against a fuller book does not verify here --- which is what stops a
     /// second default being absorbed by capital the first one already ate.
     pub fn apply<R: RngCore + CryptoRng>(
-        &mut self, key: Pedersen, bits: usize, resolution: &Resolution, rng: &mut R,
+        &mut self,
+        key: Pedersen,
+        bits: usize,
+        resolution: &Resolution,
+        rng: &mut R,
     ) -> Result<(), &'static str> {
         let id = resolution_id(resolution);
         if self.applied.contains(&id) {

@@ -147,6 +147,44 @@ needed, and together they create a problem neither has alone: the audited value
 and the published value are not the same value. **The noise being provably drawn
 is not finished** --- section 8.
 
+**2.6a What is not noised, and why that is a decision.** The count of settled
+trades over a range of blocks is **not** put behind the budget, because it is
+already exact and public. The adversary these results are stated against "sees
+what a settlement layer publishes", and settlement is one on-chain instruction
+per trade at 18.2M--65.7M gas, so anyone running a node counts them without a
+wallet-to-entity map. The AUC 0.500 result protects *attribution* of a
+settlement to an entity, which needs a map of coverage rho; it has never been a
+claim about the count. Selling a noised version would protect nothing --- the
+asker differences it against the chain --- and would hand an honest asker a
+worse answer than the free one.
+
+What is secret is the **request** count. A request that settles nothing leaves
+no on-chain trace, which is exactly what the unsettled-request attack falling to
+0.500 means, so the venue holds that figure alone. It is also the one a maker
+cannot get any other way: makers never receive the request, so a maker knows the
+numerator of its hit rate and can never know the denominator.
+
+The query built on that is `BlockRangeQuery` --- how many *distinct entities*
+asked between two block heights. Distinct entities rather than request events,
+because an entity contributes 0 or 1 however wide the range, so the sensitivity
+is 1 at every width where an event count's is `cap x windows` and grows as the
+asker widens the question. Measured on 150,000 UniswapX fills with real swapper
+addresses, the public fill count explains R^2 0.95--0.97 of it, and the residual
+--- which is what the epsilon actually buys --- runs 1.69 to 148.98 entities
+against a noise of 1.36, so 1.2x the noise at 100 blocks and 4.7x by 600. That
+residual is flow concentration: the same 500 fills from 500 takers and from 20
+takers are different venues, the chain cannot separate them, and it is the
+separation a maker pricing adverse selection wants. **Activity is free;
+concentration is what is for sale.**
+
+Two limits belong with it. The simulator cannot evaluate this at all --- it
+assigns entities round robin, so the count saturates in one window and the
+saturation is a property of the assignment, the same way section 14's band count
+was a property of the instrument. And UniswapX records fills, so the population
+measured is settled requests; QOMM's denominator includes requests that settled
+nothing, and no chain records those. Nothing available measures whether they
+come from the same population.
+
 ---
 
 ## 3. Baldimtsi, Kiayias, Zacharias, Zhang (ASIACRYPT 2020) --- separate input parties, weaker guarantee

@@ -49,7 +49,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use qomm_zk::pedersen::encode;
 use sha2::{Digest, Sha256};
 
-use crate::credit::{CreditLine, Tranche, Waterfall};
+use crate::credit::{CreditCtx, CreditLine, Tranche, Waterfall};
 
 pub const CCP_DOMAIN: &[u8] = b"QOMM:DEFMI:CCP:v1";
 
@@ -69,7 +69,11 @@ impl Obligation {
         let mut out = Vec::with_capacity(96 + self.asset.len());
         out.extend_from_slice(CCP_DOMAIN);
         out.extend_from_slice(b":obligation:");
-        for part in [self.payer.as_slice(), self.payee.as_slice(), self.asset.as_bytes()] {
+        for part in [
+            self.payer.as_slice(),
+            self.payee.as_slice(),
+            self.asset.as_bytes(),
+        ] {
             out.extend_from_slice(&(part.len() as u32).to_be_bytes());
             out.extend_from_slice(part);
         }
@@ -119,7 +123,11 @@ pub struct ClearingProvider {
 
 impl ClearingProvider {
     pub fn new(name: &str, handle: &[u8], signing: SigningKey) -> Self {
-        ClearingProvider { name: name.to_string(), handle: handle.to_vec(), signing }
+        ClearingProvider {
+            name: name.to_string(),
+            handle: handle.to_vec(),
+            signing,
+        }
     }
 
     pub fn verifying_key(&self) -> VerifyingKey {
@@ -145,19 +153,26 @@ impl ClearingProvider {
         for edge in edges {
             let o = &edge.obligation;
             after.push(Obligation {
-                payer: o.payer.clone(), payee: self.handle.clone(),
-                asset: asset.clone(), commitment: o.commitment,
+                payer: o.payer.clone(),
+                payee: self.handle.clone(),
+                asset: asset.clone(),
+                commitment: o.commitment,
             });
             after.push(Obligation {
-                payer: self.handle.clone(), payee: o.payee.clone(),
-                asset: asset.clone(), commitment: o.commitment,
+                payer: self.handle.clone(),
+                payee: o.payee.clone(),
+                asset: asset.clone(),
+                commitment: o.commitment,
             });
             to_house += o.commitment;
             by_house += o.commitment;
         }
         Ok(Novation {
-            house: self.handle.clone(), asset,
-            before: edges.to_vec(), after, owed_to_house: to_house,
+            house: self.handle.clone(),
+            asset,
+            before: edges.to_vec(),
+            after,
+            owed_to_house: to_house,
             owed_by_house: by_house,
         })
     }
@@ -166,9 +181,12 @@ impl ClearingProvider {
     pub fn attest(&self, novation: &Novation, cycle: &[u8]) -> Attestation {
         let digest = attestation_digest(novation, cycle);
         Attestation {
-            provider: self.name.clone(), handle: self.handle.clone(),
-            cycle: cycle.to_vec(), digest,
-            signature: self.signing.sign(&digest), edges: novation.edges(),
+            provider: self.name.clone(),
+            handle: self.handle.clone(),
+            cycle: cycle.to_vec(),
+            digest,
+            signature: self.signing.sign(&digest),
+            edges: novation.edges(),
             asset: novation.asset.clone(),
         }
     }
@@ -188,9 +206,14 @@ pub fn attestation_digest(novation: &Novation, cycle: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(CCP_DOMAIN);
     hasher.update(b":novation:");
-    hasher.update(cycle);
-    hasher.update(&novation.house);
-    hasher.update(novation.asset.as_bytes());
+    // Length-prefixed, because these are variable length and concatenating
+    // them is ambiguous: cycle `a` with house `bc` hashes the same bytes as
+    // cycle `ab` with house `c`, so one provider's attestation moves to
+    // another provider and another cycle under the same signature.
+    for field in [cycle, &novation.house[..], novation.asset.as_bytes()] {
+        hasher.update((field.len() as u64).to_be_bytes());
+        hasher.update(field);
+    }
     for edge in &novation.before {
         hasher.update(edge.obligation.body());
     }
@@ -198,8 +221,11 @@ pub fn attestation_digest(novation: &Novation, cycle: &[u8]) -> [u8; 32] {
 }
 
 /// Sign one obligation as one of its two parties.
-pub fn sign_obligation(obligation: &Obligation, payer: &SigningKey,
-                       payee: &SigningKey) -> SignedObligation {
+pub fn sign_obligation(
+    obligation: &Obligation,
+    payer: &SigningKey,
+    payee: &SigningKey,
+) -> SignedObligation {
     let body = obligation.body();
     SignedObligation {
         obligation: obligation.clone(),
@@ -212,11 +238,18 @@ pub fn sign_obligation(obligation: &Obligation, payer: &SigningKey,
 ///
 /// Run before novation is believed, not after: an edge nobody agreed to should
 /// never reach a book.
-pub fn check_agreement(edge: &SignedObligation, payer: &VerifyingKey,
-                       payee: &VerifyingKey) -> Result<(), &'static str> {
+pub fn check_agreement(
+    edge: &SignedObligation,
+    payer: &VerifyingKey,
+    payee: &VerifyingKey,
+) -> Result<(), &'static str> {
     let body = edge.obligation.body();
-    payer.verify(&body, &edge.by_payer).map_err(|_| "the payer did not sign this")?;
-    payee.verify(&body, &edge.by_payee).map_err(|_| "the payee did not sign this")?;
+    payer
+        .verify(&body, &edge.by_payer)
+        .map_err(|_| "the payer did not sign this")?;
+    payee
+        .verify(&body, &edge.by_payee)
+        .map_err(|_| "the payee did not sign this")?;
     Ok(())
 }
 
@@ -230,8 +263,12 @@ pub fn check_novation(house: &[u8], novation: &Novation) -> Result<(), String> {
         return Err("novated by a different house than the one being checked".into());
     }
     if novation.after.len() != 2 * novation.before.len() {
-        return Err(format!("{} edges became {}, not {}", novation.before.len(),
-                           novation.after.len(), 2 * novation.before.len()));
+        return Err(format!(
+            "{} edges became {}, not {}",
+            novation.before.len(),
+            novation.after.len(),
+            2 * novation.before.len()
+        ));
     }
     let mut to_house = RistrettoPoint::identity();
     let mut by_house = RistrettoPoint::identity();
@@ -240,10 +277,14 @@ pub fn check_novation(house: &[u8], novation: &Novation) -> Result<(), String> {
         let first = &novation.after[2 * index];
         let second = &novation.after[2 * index + 1];
         if first.payer != o.payer || first.payee != house {
-            return Err(format!("edge {index} does not run from its payer to the house"));
+            return Err(format!(
+                "edge {index} does not run from its payer to the house"
+            ));
         }
         if second.payer != house || second.payee != o.payee {
-            return Err(format!("edge {index} does not run from the house to its payee"));
+            return Err(format!(
+                "edge {index} does not run from the house to its payee"
+            ));
         }
         // Compared as points rather than as compressed encodings. Ristretto
         // equality is a cross-multiplication; compressing is a field inversion,
@@ -253,7 +294,8 @@ pub fn check_novation(house: &[u8], novation: &Novation) -> Result<(), String> {
         if first.commitment != o.commitment || second.commitment != o.commitment {
             return Err(format!("edge {index} changed amount on the way through"));
         }
-        if o.asset != novation.asset || first.asset != novation.asset
+        if o.asset != novation.asset
+            || first.asset != novation.asset
             || second.asset != novation.asset
         {
             return Err(format!("edge {index} is in another asset"));
@@ -265,18 +307,25 @@ pub fn check_novation(house: &[u8], novation: &Novation) -> Result<(), String> {
         return Err("the published totals are not the totals of the edges".into());
     }
     if to_house != by_house {
-        return Err("the house's book is not flat: it owes something other than \
-                    what it is owed".into());
+        return Err(
+            "the house's book is not flat: it owes something other than \
+                    what it is owed"
+                .into(),
+        );
     }
     Ok(())
 }
 
-pub fn check_attestation(attestation: &Attestation, novation: &Novation,
-                         provider: &VerifyingKey) -> Result<(), &'static str> {
+pub fn check_attestation(
+    attestation: &Attestation,
+    novation: &Novation,
+    provider: &VerifyingKey,
+) -> Result<(), &'static str> {
     if attestation.digest != attestation_digest(novation, &attestation.cycle) {
         return Err("the attestation is over a different trade set");
     }
-    provider.verify(&attestation.digest, &attestation.signature)
+    provider
+        .verify(&attestation.digest, &attestation.signature)
         .map_err(|_| "not signed by that provider")
 }
 
@@ -284,17 +333,17 @@ pub fn check_attestation(attestation: &Attestation, novation: &Novation,
 ///
 /// Two additions a participant and no proof anywhere: a net position under
 /// novation is not derived, it is accumulated.
-pub fn net_positions(novation: &Novation)
-    -> BTreeMap<Vec<u8>, (RistrettoPoint, RistrettoPoint)>
-{
+pub fn net_positions(novation: &Novation) -> BTreeMap<Vec<u8>, (RistrettoPoint, RistrettoPoint)> {
     let mut out: BTreeMap<Vec<u8>, (RistrettoPoint, RistrettoPoint)> = BTreeMap::new();
     for edge in &novation.after {
         if edge.payer == novation.house {
-            let slot = out.entry(edge.payee.clone())
+            let slot = out
+                .entry(edge.payee.clone())
                 .or_insert((RistrettoPoint::identity(), RistrettoPoint::identity()));
             slot.1 += edge.commitment;
         } else {
-            let slot = out.entry(edge.payer.clone())
+            let slot = out
+                .entry(edge.payer.clone())
                 .or_insert((RistrettoPoint::identity(), RistrettoPoint::identity()));
             slot.0 += edge.commitment;
         }
@@ -314,30 +363,56 @@ pub fn net_positions(novation: &Novation)
 pub struct ProviderWaterfall {
     pub provider: String,
     pub tranches: Vec<Tranche>,
+    /// Which tranche is the provider's own capital, by position.
+    ///
+    /// It used to be found by looking for the words "provider capital" in a
+    /// tranche's name. A name is not a commitment --- anybody assembling a
+    /// waterfall can write those words on any layer, or on a layer committing
+    /// zero --- and this is the layer that makes an attestation expensive to
+    /// get wrong, so what identifies it cannot be a label.
+    pub own: usize,
 }
 
 /// The four layers in the order CPMI-IOSCO puts them.
-pub fn for_provider(provider: &str, defaulter_margin: RistrettoPoint,
-                    defaulter_fund: RistrettoPoint, provider_capital: RistrettoPoint,
-                    mutualised: RistrettoPoint) -> ProviderWaterfall {
+pub fn for_provider(
+    provider: &str,
+    defaulter_margin: RistrettoPoint,
+    defaulter_fund: RistrettoPoint,
+    provider_capital: RistrettoPoint,
+    mutualised: RistrettoPoint,
+) -> ProviderWaterfall {
     ProviderWaterfall {
         provider: provider.to_string(),
         tranches: vec![
-            Tranche { name: format!("{provider}:defaulter margin"),
-                      commitment: defaulter_margin },
-            Tranche { name: format!("{provider}:defaulter fund contribution"),
-                      commitment: defaulter_fund },
-            Tranche { name: format!("{provider}:provider capital"),
-                      commitment: provider_capital },
-            Tranche { name: format!("{provider}:mutualised pool"),
-                      commitment: mutualised },
+            Tranche {
+                name: format!("{provider}:defaulter margin"),
+                commitment: defaulter_margin,
+            },
+            Tranche {
+                name: format!("{provider}:defaulter fund contribution"),
+                commitment: defaulter_fund,
+            },
+            Tranche {
+                name: format!("{provider}:provider capital"),
+                commitment: provider_capital,
+            },
+            Tranche {
+                name: format!("{provider}:mutualised pool"),
+                commitment: mutualised,
+            },
         ],
+        own: 2,
     }
 }
 
 impl ProviderWaterfall {
+    /// The provider's own layer, if `own` points at one.
+    pub fn own_capital(&self) -> Option<&Tranche> {
+        self.tranches.get(self.own)
+    }
+
     pub fn has_own_capital(&self) -> bool {
-        self.tranches.iter().any(|t| t.name.contains("provider capital"))
+        self.own_capital().is_some()
     }
 
     pub fn waterfall(&self, key: qomm_zk::pedersen::Pedersen, bits: usize) -> Waterfall {
@@ -348,7 +423,6 @@ impl ProviderWaterfall {
 struct Admitted {
     handle: Vec<u8>,
     identity: VerifyingKey,
-    #[allow(dead_code)]
     margin: CreditLine,
     waterfall: ProviderWaterfall,
 }
@@ -373,17 +447,48 @@ impl ClearingRegistry {
     /// The second condition is not bookkeeping. An attestation from a party
     /// with nothing in the waterfall costs it nothing to get wrong, and an
     /// attestation that costs nothing to get wrong is not an attestation.
-    pub fn admit(&mut self, provider: &ClearingProvider, margin: CreditLine,
-                 waterfall: ProviderWaterfall) -> Result<(), String> {
+    /// `ctx` is the credit context the margin was granted under. Required
+    /// because the margin used to be stored without being verified at all: a
+    /// line built by anybody, over anybody's collateral, proving nothing, and
+    /// the registry then reported the provider as margined.
+    pub fn admit(
+        &mut self,
+        ctx: &CreditCtx,
+        provider: &ClearingProvider,
+        margin: CreditLine,
+        waterfall: ProviderWaterfall,
+    ) -> Result<(), String> {
         if !waterfall.has_own_capital() {
-            return Err(format!("{}: no tranche of its own, so its attestation \
-                                costs it nothing to get wrong", provider.name));
+            return Err(format!(
+                "{}: no tranche of its own, so its attestation \
+                                costs it nothing to get wrong",
+                provider.name
+            ));
         }
-        self.providers.insert(provider.name.clone(), Admitted {
-            handle: provider.handle.clone(),
-            identity: provider.verifying_key(),
-            margin, waterfall,
-        });
+        if waterfall.provider != provider.name {
+            return Err(format!(
+                "{}: a waterfall built for {}",
+                provider.name, waterfall.provider
+            ));
+        }
+        if margin.handle != provider.handle {
+            return Err(format!(
+                "{}: the margin is under another handle, so it \
+                                is not this provider that is margined",
+                provider.name
+            ));
+        }
+        ctx.check(&margin)
+            .map_err(|why| format!("{}: the margin's backing proof: {why}", provider.name))?;
+        self.providers.insert(
+            provider.name.clone(),
+            Admitted {
+                handle: provider.handle.clone(),
+                identity: provider.verifying_key(),
+                margin,
+                waterfall,
+            },
+        );
         Ok(())
     }
 
@@ -396,31 +501,41 @@ impl ClearingRegistry {
     /// `parties` supplies each participant's verifying key. Without it the
     /// agreement check cannot run, and the check is the thing that stops a
     /// house inventing an edge, so it is required rather than optional.
-    pub fn check_cycle(&self, attestation: &Attestation, novation: &Novation,
-                       parties: &BTreeMap<Vec<u8>, VerifyingKey>)
-        -> Result<(), String>
-    {
-        let entry = self.providers.get(&attestation.provider)
-            .ok_or_else(|| format!("{} is not an admitted provider",
-                                   attestation.provider))?;
+    pub fn check_cycle(
+        &self,
+        attestation: &Attestation,
+        novation: &Novation,
+        parties: &BTreeMap<Vec<u8>, VerifyingKey>,
+    ) -> Result<(), String> {
+        let entry = self
+            .providers
+            .get(&attestation.provider)
+            .ok_or_else(|| format!("{} is not an admitted provider", attestation.provider))?;
         if entry.handle != novation.house {
             return Err("novated under a handle this provider did not register".into());
         }
         check_novation(&entry.handle, novation)?;
         for (index, edge) in novation.before.iter().enumerate() {
-            let payer = parties.get(&edge.obligation.payer)
+            let payer = parties
+                .get(&edge.obligation.payer)
                 .ok_or_else(|| format!("edge {index}: the payer is not a known party"))?;
-            let payee = parties.get(&edge.obligation.payee)
+            let payee = parties
+                .get(&edge.obligation.payee)
                 .ok_or_else(|| format!("edge {index}: the payee is not a known party"))?;
-            check_agreement(edge, payer, payee)
-                .map_err(|why| format!("edge {index}: {why}"))?;
+            check_agreement(edge, payer, payee).map_err(|why| format!("edge {index}: {why}"))?;
         }
-        check_attestation(attestation, novation, &entry.identity)
-            .map_err(|why| why.to_string())
+        check_attestation(attestation, novation, &entry.identity).map_err(|why| why.to_string())
     }
 
     pub fn waterfall_for(&self, provider: &str) -> Option<&ProviderWaterfall> {
         self.providers.get(provider).map(|a| &a.waterfall)
+    }
+
+    /// The verified margin line admitted for a provider. Exposing the checked
+    /// value makes collateral monitoring possible without accepting a second,
+    /// unverified copy from an operator.
+    pub fn margin_for(&self, provider: &str) -> Option<&CreditLine> {
+        self.providers.get(provider).map(|a| &a.margin)
     }
 }
 
@@ -438,8 +553,19 @@ pub struct DefaultAcrossProviders {
 
 impl DefaultAcrossProviders {
     /// What the member owes in total, which is the sum and never the net.
+    /// The sum across providers, or `None` if it does not fit.
+    ///
+    /// A wrapped shortfall understates itself, and this number decides how much
+    /// capital is called. The plain `sum` it replaces panicked in debug and
+    /// wrapped in release.
+    pub fn checked_total_shortfall(&self) -> Option<u64> {
+        self.per_provider
+            .iter()
+            .try_fold(0u64, |acc, (_, amount)| acc.checked_add(*amount))
+    }
+
     pub fn total_shortfall(&self) -> u64 {
-        self.per_provider.iter().map(|(_, amount)| amount).sum()
+        self.checked_total_shortfall().unwrap_or(u64::MAX)
     }
 
     /// Stated so a caller cannot mistake the absence of offsetting for an
@@ -456,5 +582,8 @@ impl DefaultAcrossProviders {
 
 /// The compressed form, for a caller that wants to publish the flat book.
 pub fn flat_book(novation: &Novation) -> (CompressedRistretto, CompressedRistretto) {
-    (encode(&novation.owed_to_house), encode(&novation.owed_by_house))
+    (
+        encode(&novation.owed_to_house),
+        encode(&novation.owed_by_house),
+    )
 }

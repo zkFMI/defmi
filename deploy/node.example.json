@@ -1,0 +1,22 @@
+{
+  "node": 0,
+  "host": "0.0.0.0",
+  "port": 9443,
+  "certificate": "pki/node-0.cert.pem",
+  "private_key": "pki/node-0.key.pem",
+  "ca_certificate": "pki/ca.cert.pem",
+  "database": "/var/lib/qomm/node-0.sqlite3",
+  "program_registry": "approved-programs.json",
+  "idle_timeout_seconds": 30,
+  "principals": [
+    {
+      "certificate_der": "pki/client.der",
+      "role": "client",
+      "frame_key_file": "secrets/client-frame.key"
+    },
+    {
+      "certificate_der": "pki/coordinator.der",
+      "role": "coordinator"
+    }
+  ]
+}

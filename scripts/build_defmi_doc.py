@@ -61,11 +61,19 @@ def main() -> int:
     viewing = json.loads(view_path.read_text()) if view_path.exists() else None
     ccp_path = ART / "deccp.json"
     deccp = json.loads(ccp_path.read_text()) if ccp_path.exists() else None
+    vet_path = ART / "vetting.json"
+    vetting = json.loads(vet_path.read_text()) if vet_path.exists() else None
+    avalanche_path = ART / "avalanche_l1_acceptance.json"
+    avalanche = (json.loads(avalanche_path.read_text())
+                 if avalanche_path.exists() else None)
 
     out: list[str] = []
     w = out.append
 
     w("# DeFMI — a settlement layer that never reads the trade\n")
+    w("DeFMI means **Decentralized Financial Market Infrastructure**. It is "
+      "not a stock-only ledger: the chain-neutral state machine registers cash, "
+      "securities, funds, commodities, carbon units and other governed assets.\n")
     w(f"Measured on `{label(d['host'])}` / Python {d['python']} / group {d['group']}.")
     w("This document is generated from the measurement JSON by `make defmi-doc`. "
       "No number in it was typed by hand.\n")
@@ -280,11 +288,17 @@ def main() -> int:
         w("")
         w(f"**The limit is essentially free** ({ms(c['coverage_plain'])} to "
           f"{ms(c['coverage_capped'])} ms --- the same range proof width against a "
-          "different commitment). Admission, pledge, overdraft and payment are "
-          "handled as one event by `admit_with_credit`, because doing them in "
-          "sequence allows either collateral locked with no limit granted or a "
-          "limit standing with no collateral behind it. If the payment does not "
-          "go through, the limit and the pledge are both rolled back.\n")
+          "different commitment). **Admission, pledge, overdraft and payment "
+          "should be one event**, because doing them in sequence allows either "
+          "collateral locked with no limit granted or a limit standing with no "
+          "collateral behind it. **They are not one event here.** This "
+          "paragraph named an `admit_with_credit` that does not exist in the "
+          "Rust implementation: `PositionBook::grant` and `Cycle::admit` are "
+          "separate calls, and a grant that succeeds before an admit that fails "
+          "leaves the credit standing. There is also no state that locks and "
+          "unlocks pledged collateral. What is measured above is the cost of "
+          "the limit, which is real; the atomicity is a design requirement that "
+          "is written down and not built.\n")
         if c.get("waterfall"):
             w("### 4.2 The default waterfall\n")
             w("A net rail can fail at the close. The order in which that failure "
@@ -361,10 +375,15 @@ def main() -> int:
           "at another --- cross-margining is a different problem and is not "
           "solved here. Novation being free arithmetically says nothing about it "
           "being valid legally, which is the register's rulebook and not this "
-          "code. And **the trade set is attested, not verified**: a house that "
-          "novated trades nobody made would produce a cycle that checks out, "
-          "which a test states outright. The arithmetic cannot tell. The tranche "
-          "is what makes getting it wrong expensive.\n")
+          "code. And **the house can leave a trade out, though it can no longer "
+          "invent one**: `check_novation` requires both counterparties' "
+          "signatures on every edge of the before graph, so a trade nobody made "
+          "is refused --- this paragraph used to say a house could novate "
+          "invented trades and produce a cycle that checked out, and that "
+          "stopped being true when the signatures went in. Omission is what "
+          "remains, and the arithmetic cannot tell: a graph missing an edge is "
+          "a consistent graph. The tranche is what makes getting it wrong "
+          "expensive.\n")
 
         w("## 5. Hiding who paid whom (the note ledger)\n")
         w("The asset tag hides *what*. An account ledger still names four "
@@ -850,6 +869,144 @@ def main() -> int:
           "nothing in the protocol stops them. That is an operational control "
           "wearing a cryptographic coat, and it is worth knowing which it is.\n")
 
+    if vetting:
+        rows = {r["crowd"]: r for r in vetting["rows"]}
+        default = max(r for r in rows if r <= 128)
+        big, small = rows[default], rows[16]
+        w("## 6.7 Who is allowed to hold a handle\n")
+        w("A handle is `A = a.G` and anyone can pick `a`. Nobody's permission is "
+          "needed to make one, and that is deliberate --- the chain should not "
+          "have an opinion about who opens an address. What needs permission is "
+          "being **vetted**, and `rust/qomm-defmi/src/vetting.rs` is where that "
+          "is recorded.\n")
+        w("**The list holds sealed envelopes, not handles.** An envelope is "
+          "`C = a.G + r.h`, so `C - A = r.h`: the envelope is the handle plus a "
+          "blinding nobody else knows, and adding one to the public list reveals "
+          "a uniformly random point.\n")
+        w("That matters more than it first looks. Putting the *handle* in the "
+          "list would mean anyone who could work out from the timing which entry "
+          "belonged to which firm --- they onboarded that week, one entry "
+          "appeared that week --- would have that firm's handle. The handle is "
+          "what appears on chain when the account moves, so they would then have "
+          "its entire settlement history. Sealing the entry closes that: the "
+          "timing still says somebody joined, and says nothing about which entry "
+          "is theirs.\n")
+        w("**The group is fixed, which is why it is private.** Membership is "
+          "proved one-out-of-many over a group: subtract the handle from every "
+          "envelope, exactly one difference is a commitment to zero, and the "
+          "proof says so without saying which. Drawing a fresh ring per proof "
+          "would look more private and be less --- rings that overlap "
+          "differently each time can be intersected and the real member falls "
+          "out. The same group every time gives an observer nothing to "
+          "intersect. A group also carries its cohort, so proving membership "
+          "proves the attribute.\n")
+        w("**A vetting yields one handle, not a family of them.** The ring proof "
+          "alone says only that `C_l - A` is a multiple of `h`, so `A + d.h` "
+          "would satisfy it for any `d` the holder picks --- one vetting, "
+          "unboundedly many usable handles, every per-firm cap void. A Schnorr "
+          "proof that the handle is a bare power of the base point pins it to "
+          "the one the envelope determines. That is a test, not a comment.\n")
+        w("**Whose privacy this is.** The seal hides the entry from "
+          "*observers* and not from the operator: `vouch` takes the handle's "
+          "secret, picks the blinding and picks the slot. An enrolment in "
+          "which it does not --- the party proving knowledge of its secret and "
+          "receiving a jointly chosen blinding --- is not built. What the seal "
+          "establishes is that dating an onboarding tells a third party "
+          "nothing about which entry it is.\n")
+        w("**A verifier must know which roll it is checking against.** "
+          "`check_membership` proves a handle is in the roll it is *given*, so "
+          "a proof that arrives with its own roll proves nothing --- `Group` is "
+          "not constructible from outside the crate and `Roll::digest()` is "
+          "what a verifier compares against whatever the chain published. This "
+          "used to be neither: every field was public, so a caller could push a "
+          "group holding an envelope of its own, cut a seal by hand, and pass "
+          "the check without the operator ever running.\n")
+        w("**What is public on purpose.** `Roll::vetted()` counts the real "
+          "envelopes and `Roll::crowd()` gives the group size, so anyone can "
+          "check the claim rather than take it. Decoy seats are hashed rather "
+          "than drawn, so no opening exists for them --- not even the "
+          "operator's --- which is what makes that count honest. It counts "
+          "calls to `vouch` and not distinct legal entities: nothing here "
+          "deduplicates one, and the per-entity cap that would is the "
+          "operator's.\n")
+        w("The alternative is worth naming. Hiding that a vetting happened at "
+          "all --- making onboarding indistinguishable from ordinary settlement "
+          "traffic --- means padding the roll with entries nobody can tell from "
+          "real ones, and then nobody can count the real ones either, including "
+          "a regulator asking how large the anonymity set is. **Hiding the "
+          "vetting event and proving the size of the crowd are the same "
+          "information.** One or the other.\n")
+        w(f"Measured on `{label(vetting['host'])}`, "
+          f"{vetting['repeats']} repeats, medians.\n")
+        w("| crowd | prove | verify | proof | ring |")
+        w("|---:|---:|---:|---:|---:|")
+        for crowd in sorted(rows):
+            r = rows[crowd]
+            w(f"| {crowd} | {ms(r['prove_ms'], 2)} | {ms(r['verify_ms'], 2)} | "
+              f"{r['proof_bytes']} B | {r['ring_bytes']} B |")
+        w("")
+        step = rows[32]["proof_bytes"] - rows[16]["proof_bytes"]
+        w(f"The size was predicted exactly: {small['proof_bytes']} bytes at a "
+          f"crowd of 16, of which {small['ring_bytes']} is the ring, 64 the "
+          f"control proof and 12 the group and epoch. Every doubling adds "
+          f"exactly {step} --- one point in each of the ring's four vectors and "
+          f"one scalar in each of its three.\n")
+        ratio = big["verify_ms"]["median"] / rows[4]["verify_ms"]["median"]
+        grew = big["crowd"] // 4
+        w(f"**Two predictions missed, and the second changed a design choice.** "
+          f"Verifying was predicted under 1 ms in Rust against Python's 1.81 ms "
+          f"at a crowd of 16; it came in at {ms(small['verify_ms'], 2)}, a factor "
+          f"of 1.4. The reason is the one `BINDING.md` gives about VOLEitH: the "
+          f"Python side already runs its group arithmetic in C through PyNaCl, "
+          f"so Rust wins the glue and not the arithmetic. The Rust figure also "
+          f"does strictly more --- it verifies the control proof and shifts "
+          f"every envelope.\n")
+        w(f"The consequential miss is the second. **Verification was predicted "
+          f"to double with the crowd and grows about 1.4x instead**: {grew}x the "
+          f"crowd costs {ratio:.1f}x the work, which is the batched "
+          f"multi-scalar multiplication showing through. The crowd had been "
+          f"capped at 16 on a belief about linearity the measurement does not "
+          f"support. At {big['crowd']} the check is {ms(big['verify_ms'], 2)} "
+          f"against the 51.9 ms a note settlement already costs, and the wire "
+          f"grows by {big['proof_bytes'] - small['proof_bytes']} bytes. "
+          f"**{big['crowd']} is the default the code carries** "
+          f"(`vetting::CROWD`).\n")
+        w("What stays out of reach is a crowd of thousands. That needs a Merkle "
+          "tree checked inside a circuit --- a different proof system from the "
+          "sigma protocols and Bulletproofs this stack is built on, with a "
+          "compiler and a setup behind it.\n")
+        w("**Where the check runs.** The node committee verifies the complete "
+          "proof before it signs. The dedicated Avalanche VM verifies the "
+          "3-of-7 approval and binds it to the proof digest, chain, rail, "
+          "deadline, sequence and previous state root. Validators do not yet "
+          "re-run every Bulletproof; that remaining trust boundary is explicit "
+          "in `ZKPI_WIRE.md`.\n")
+
+    if avalanche:
+        timings = avalanche["operation_timings_ms"]
+        accepted = avalanche["accepted_transitions"]
+        heights = ", ".join(str(accepted[k]["height"]) for k in
+                            ("bootstrap_asset", "instrument_asset",
+                             "left_account", "right_account", "settlement"))
+        w("### 6.8 Native Avalanche L1 acceptance\n")
+        w("The deployed execution path is a dedicated non-EVM Avalanche custom "
+          "VM in `avalanche/defmivm/`. It has native transitions for asset "
+          "registration, account opening and atomic multi-leg settlement; it "
+          "does not execute Solidity or EVM bytecode.\n")
+        w("| property | observed result |")
+        w("| --- | ---: |")
+        w(f"| local AvalancheGo processes | {avalanche['nodes']} |")
+        w(f"| accepted heights | {heights} |")
+        w(f"| settlement acceptance | {timings['settlement_ms']:.1f} ms |")
+        w(f"| two account openings | {timings['two_accounts_ms']:.1f} ms |")
+        w(f"| node restart and state recovery | {avalanche['restart']['elapsed_ms']:.1f} ms |")
+        w(f"| one state root before restart | {'yes' if len(set(avalanche['roots_before_restart'])) == 1 else 'no'} |")
+        w(f"| same state root after restart | {'yes' if avalanche['restart']['root_recovered'] else 'no'} |")
+        w("")
+        w("The run uses five processes on one host. It proves native consensus "
+          "acceptance, idempotent crash recovery and state-root agreement, not "
+          "five independent organisations or public-network readiness.\n")
+
     if d.get("parallel"):
         w("## 7. What one settlement node can take\n")
         w("Verification only --- proving is the counterparty's work and the clock "
@@ -964,6 +1121,10 @@ def main() -> int:
           "difference to swallow that.\n")
 
     w("## 9. What is still missing\n")
+
+    w("- Avalanche validators verify the committee approval and proof digest, "
+      "not the complete zero-knowledge proof. Removing that committee trust "
+      "requires a consensus-safe verifier inside the VM and a separate audit.")
 
     if not d.get("note_settlement"):
         w("- The note ledger and DvP settlement are not yet joined. Notes work "

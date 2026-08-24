@@ -14,11 +14,11 @@
 //! every time and making double spending free.
 
 use bulletproofs::{BulletproofGens, PedersenGens, RangeProof};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::Identity;
+use ed25519_dalek::{Signature, VerifyingKey};
 use merlin::Transcript;
 use qomm_zk::oneofmany::{self, GkProof};
 use qomm_zk::pedersen::Pedersen;
@@ -39,18 +39,32 @@ fn scalar_from(label: &[u8], parts: &[&[u8]]) -> Scalar {
 }
 
 #[derive(Clone, Copy)]
-pub struct Address { pub view: RistrettoPoint, pub spend: RistrettoPoint }
+pub struct Address {
+    pub view: RistrettoPoint,
+    pub spend: RistrettoPoint,
+}
 
 /// The two secrets behind an address, split because they do different jobs: the
 /// view key finds your own notes and could be handed to an auditor, while only
 /// the spend key turns a note into a serial number.
-pub struct Wallet { view: Scalar, spend: Scalar, pub address: Address }
+pub struct Wallet {
+    view: Scalar,
+    spend: Scalar,
+    pub address: Address,
+}
 
 impl Wallet {
     pub fn new<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
         let view = Scalar::random(rng);
         let spend = Scalar::random(rng);
-        Wallet { view, spend, address: Address { view: G * view, spend: G * spend } }
+        Wallet {
+            view,
+            spend,
+            address: Address {
+                view: G * view,
+                spend: G * spend,
+            },
+        }
     }
 
     /// A wallet from scalars somebody else derived.
@@ -59,7 +73,14 @@ impl Wallet {
     /// auditor one scope's view key hands it that scope and nothing else. The
     /// wallet is otherwise ordinary: this is what spends.
     pub fn from_parts(view: Scalar, spend: Scalar) -> Self {
-        Wallet { view, spend, address: Address { view: G * view, spend: G * spend } }
+        Wallet {
+            view,
+            spend,
+            address: Address {
+                view: G * view,
+                spend: G * spend,
+            },
+        }
     }
 
     /// The half that finds notes and cannot move them.
@@ -79,15 +100,24 @@ impl Wallet {
 /// Withholding the spend key is not a policy here: the scalar a serial number
 /// needs is simply not in this type, so there is no method to refuse.
 #[derive(Clone)]
-pub struct ViewKey { pub(crate) scalar: Scalar }
+pub struct ViewKey {
+    pub(crate) scalar: Scalar,
+}
 
 impl ViewKey {
-    pub fn new(scalar: Scalar) -> Self { ViewKey { scalar } }
+    pub fn new(scalar: Scalar) -> Self {
+        ViewKey { scalar }
+    }
 
-    pub fn address_view(&self) -> RistrettoPoint { G * self.scalar }
+    pub fn address_view(&self) -> RistrettoPoint {
+        G * self.scalar
+    }
 
     pub(crate) fn shared(&self, ephemeral: &RistrettoPoint) -> Scalar {
-        scalar_from(b"shared", &[(ephemeral * self.scalar).compress().as_bytes()])
+        scalar_from(
+            b"shared",
+            &[(ephemeral * self.scalar).compress().as_bytes()],
+        )
     }
 }
 
@@ -104,10 +134,17 @@ pub struct Note {
 }
 
 #[derive(Clone, Copy)]
-pub struct Opening { pub value: u64, pub blinding: Scalar, pub serial: Scalar }
+pub struct Opening {
+    pub value: u64,
+    pub blinding: Scalar,
+    pub serial: Scalar,
+}
 
 /// Knowledge of the discrete log of the published serial point.
-pub struct SerialProof { pub t: RistrettoPoint, pub z: Scalar }
+pub struct SerialProof {
+    pub t: RistrettoPoint,
+    pub z: Scalar,
+}
 
 /// What a spend hands back: the proof that goes on the wire, the notes that go
 /// into the pool, and the blindings the payer keeps.
@@ -157,14 +194,24 @@ impl NoteLedger {
     pub fn new(key: Pedersen, bits: usize) -> Self {
         let mut rolling = sha2::Sha256::new();
         rolling.update(b"QOMM:DEFMI:NOTES:v1");
-        NoteLedger { gens: BulletproofGens::new(bits, 2), key, bits,
-                     notes: Vec::new(), spent: HashSet::new(), rolling,
-                     issuer: None, issued: std::collections::BTreeSet::new() }
+        NoteLedger {
+            gens: BulletproofGens::new(bits, 2),
+            key,
+            bits,
+            notes: Vec::new(),
+            spent: HashSet::new(),
+            rolling,
+            issuer: None,
+            issued: std::collections::BTreeSet::new(),
+        }
     }
 
     fn masks(&self, shared: &Scalar) -> (Scalar, Scalar) {
         let encoded = shared.to_bytes();
-        (scalar_from(b"mask:value", &[&encoded]), scalar_from(b"mask:blinding", &[&encoded]))
+        (
+            scalar_from(b"mask:value", &[&encoded]),
+            scalar_from(b"mask:blinding", &[&encoded]),
+        )
     }
 
     fn one_time_point(&self, address: &Address, shared: &Scalar) -> RistrettoPoint {
@@ -176,13 +223,19 @@ impl NoteLedger {
     /// under the bare asset generator, so `effective_blinding` is the exponent
     /// of h in that form.
     pub fn build_note<R: RngCore + CryptoRng>(
-        &self, address: &Address, value: u64, value_commitment: RistrettoPoint,
-        effective_blinding: &Scalar, rng: &mut R,
+        &self,
+        address: &Address,
+        value: u64,
+        value_commitment: RistrettoPoint,
+        effective_blinding: &Scalar,
+        rng: &mut R,
     ) -> Note {
         let ephemeral_secret = Scalar::random(rng);
         let ephemeral = G * ephemeral_secret;
-        let shared = scalar_from(b"shared",
-            &[(address.view * ephemeral_secret).compress().as_bytes()]);
+        let shared = scalar_from(
+            b"shared",
+            &[(address.view * ephemeral_secret).compress().as_bytes()],
+        );
         let (mv, mb) = self.masks(&shared);
         Note {
             one_time: self.one_time_point(address, &shared),
@@ -204,13 +257,16 @@ impl NoteLedger {
     /// it directly is issuance, and a ledger under an issuer refuses it --- see
     /// `add_issued`.
     pub fn add(&mut self, note: Note) -> usize {
-        assert!(self.issuer.is_none(),
-                "this ledger has an issuer; use add_issued");
+        assert!(
+            self.issuer.is_none(),
+            "this ledger has an issuer; use add_issued"
+        );
         self.append(note)
     }
 
     fn append(&mut self, note: Note) -> usize {
-        self.rolling.update(self.commitment_of(&note).compress().as_bytes());
+        self.rolling
+            .update(self.commitment_of(&note).compress().as_bytes());
         self.notes.push(note);
         self.notes.len() - 1
     }
@@ -221,14 +277,19 @@ impl NoteLedger {
     /// caller could mint a note and the pool's conservation was conservation
     /// after admission there too. Same shape: a signature over the note's
     /// commitment and a nonce, and a nonce is spent once.
-    pub fn add_issued(&mut self, note: Note, nonce: &[u8],
-                      authorisation: &Signature) -> Result<usize, &'static str> {
+    pub fn add_issued(
+        &mut self,
+        note: Note,
+        nonce: &[u8],
+        authorisation: &Signature,
+    ) -> Result<usize, &'static str> {
         let issuer = self.issuer.as_ref().ok_or("this ledger has no issuer")?;
         let body = note_issuance_body(&self.commitment_of(&note), nonce);
         if self.issued.contains(&body) {
             return Err("that issuance authorisation was already used");
         }
-        issuer.verify_strict(&body, authorisation)
+        issuer
+            .verify_strict(&body, authorisation)
             .map_err(|_| "the note is not signed by the issuer")?;
         self.issued.insert(body);
         Ok(self.append(note))
@@ -249,11 +310,20 @@ impl NoteLedger {
             let value_scalar = note.masked_value - mv;
             let blinding = note.masked_blinding - mb;
             // recover the value only if it is a small integer
-            let Some(value) = small_scalar(&value_scalar, self.bits) else { continue };
+            let Some(value) = small_scalar(&value_scalar, self.bits) else {
+                continue;
+            };
             let expected = self.one_time_point(&wallet.address, &shared)
                 + asset_key.commit_u64(value, &blinding);
             if expected == self.commitment_of(note) {
-                found.push((index, Opening { value, blinding, serial: wallet.serial(&note.ephemeral) }));
+                found.push((
+                    index,
+                    Opening {
+                        value,
+                        blinding,
+                        serial: wallet.serial(&note.ephemeral),
+                    },
+                ));
             }
         }
         found
@@ -265,18 +335,23 @@ impl NoteLedger {
     /// One scalar multiplication a note, the same as a wallet scanning for
     /// itself. What differs is the tuple that comes back: there is nowhere to
     /// put a serial, so an auditor cannot be handed one by accident.
-    pub fn scan_view(&self, view: &ViewKey, address: &Address, asset_key: &Pedersen)
-        -> Vec<(usize, u64, Scalar)>
-    {
+    pub fn scan_view(
+        &self,
+        view: &ViewKey,
+        address: &Address,
+        asset_key: &Pedersen,
+    ) -> Vec<(usize, u64, Scalar)> {
         let mut found = Vec::new();
         for (index, note) in self.notes.iter().enumerate() {
             let shared = view.shared(&note.ephemeral);
             let (mv, mb) = self.masks(&shared);
             let value_scalar = note.masked_value - mv;
             let blinding = note.masked_blinding - mb;
-            let Some(value) = small_scalar(&value_scalar, self.bits) else { continue };
-            let expected = self.one_time_point(address, &shared)
-                + asset_key.commit_u64(value, &blinding);
+            let Some(value) = small_scalar(&value_scalar, self.bits) else {
+                continue;
+            };
+            let expected =
+                self.one_time_point(address, &shared) + asset_key.commit_u64(value, &blinding);
             if expected == self.commitment_of(note) {
                 found.push((index, value, blinding));
             }
@@ -314,16 +389,30 @@ impl NoteLedger {
 
     #[allow(clippy::too_many_arguments)]
     pub fn build_spend<R: RngCore + CryptoRng>(
-        &self, ring: &[usize], index: usize, opening: &Opening,
-        tag: &RistrettoPoint, gamma: &Scalar,
-        outputs: &[(Address, u64)], context: &[u8], rng: &mut R,
+        &self,
+        ring: &[usize],
+        index: usize,
+        opening: &Opening,
+        tag: &RistrettoPoint,
+        gamma: &Scalar,
+        outputs: &[(Address, u64)],
+        context: &[u8],
+        rng: &mut R,
     ) -> Result<Spend, &'static str> {
-        let position = ring.iter().position(|i| *i == index).ok_or("the ring omits the note")?;
+        let position = ring
+            .iter()
+            .position(|i| *i == index)
+            .ok_or("the ring omits the note")?;
         let total: u64 = outputs.iter().map(|(_, v)| *v).sum();
-        if total != opening.value { return Err("outputs do not sum to the note being spent"); }
+        if total != opening.value {
+            return Err("outputs do not sum to the note being spent");
+        }
         let ctx = Self::tagged_context(context, tag);
         let tagged = self.key.with_value_generator(*tag);
-        let pc = PedersenGens { B: *tag, B_blinding: self.key.h };
+        let pc = PedersenGens {
+            B: *tag,
+            B_blinding: self.key.h,
+        };
 
         let serial_point = G * opening.serial;
         let serial_proof = self.prove_serial(&serial_point, &opening.serial, &ctx, rng);
@@ -333,36 +422,65 @@ impl NoteLedger {
         let pseudo_effective = gamma * Scalar::from(opening.value) + pseudo_blinding;
 
         let offset = serial_point + pseudo;
-        let members: Vec<RistrettoPoint> = ring.iter()
-            .map(|i| self.commitment_of(&self.notes[*i]) - offset).collect();
-        let ring_proof = oneofmany::prove(&self.key, &mut Self::ring_transcript(&ctx),
-                                          &members, position,
-                                          &(opening.blinding - pseudo_effective), rng)?;
+        let members: Vec<RistrettoPoint> = ring
+            .iter()
+            .map(|i| self.commitment_of(&self.notes[*i]) - offset)
+            .collect();
+        let ring_proof = oneofmany::prove(
+            &self.key,
+            &mut Self::ring_transcript(&ctx),
+            &members,
+            position,
+            &(opening.blinding - pseudo_effective),
+            rng,
+        )?;
 
         let values: Vec<u64> = outputs.iter().map(|(_, v)| *v).collect();
         let blindings: Vec<Scalar> = outputs.iter().map(|_| Scalar::random(rng)).collect();
         let (output_range, output_range_commitments) = RangeProof::prove_multiple(
-            &self.gens, &pc, &mut Self::range_transcript(&ctx), &values, &blindings, self.bits)
-            .map_err(|_| "an output is not in range")?;
+            &self.gens,
+            &pc,
+            &mut Self::range_transcript(&ctx),
+            &values,
+            &blindings,
+            self.bits,
+        )
+        .map_err(|_| "an output is not in range")?;
 
         let mut notes = Vec::with_capacity(outputs.len());
         let mut commitments = Vec::with_capacity(outputs.len());
         for ((address, value), blinding) in outputs.iter().zip(blindings.iter()) {
             let commitment = tagged.commit_u64(*value, blinding);
-            notes.push(self.build_note(address, *value, commitment,
-                                       &(gamma * Scalar::from(*value) + blinding), rng));
+            notes.push(self.build_note(
+                address,
+                *value,
+                commitment,
+                &(gamma * Scalar::from(*value) + blinding),
+                rng,
+            ));
             commitments.push(commitment);
         }
         let residual = pseudo - commitments.iter().sum::<RistrettoPoint>();
         let tagged_sum: Scalar = blindings.iter().sum();
-        let balance = prove_opening(&self.key, &mut Self::balance_transcript(&ctx),
-                                    &residual, &Scalar::ZERO,
-                                    &(pseudo_blinding - tagged_sum), rng);
+        let balance = prove_opening(
+            &self.key,
+            &mut Self::balance_transcript(&ctx),
+            &residual,
+            &Scalar::ZERO,
+            &(pseudo_blinding - tagged_sum),
+            rng,
+        );
         Ok(Spend {
             proof: SpendProof {
-                serial_point, serial_proof, pseudo, ring: ring_proof,
-                outputs: commitments, output_range, output_range_commitments,
-                balance, tag: *tag,
+                serial_point,
+                serial_proof,
+                pseudo,
+                ring: ring_proof,
+                outputs: commitments,
+                output_range,
+                output_range_commitments,
+                balance,
+                tag: *tag,
             },
             notes,
             // Against the tag, not against the bare generator: a settlement
@@ -374,7 +492,11 @@ impl NoteLedger {
     }
 
     fn prove_serial<R: RngCore + CryptoRng>(
-        &self, point: &RistrettoPoint, serial: &Scalar, context: &[u8], rng: &mut R,
+        &self,
+        point: &RistrettoPoint,
+        serial: &Scalar,
+        context: &[u8],
+        rng: &mut R,
     ) -> SerialProof {
         let witness = Scalar::random(rng);
         let t = G * witness;
@@ -382,7 +504,10 @@ impl NoteLedger {
         transcript.append_point(b"N", point);
         transcript.append_point(b"T", &t);
         let c = transcript.challenge_scalar(b"c");
-        SerialProof { t, z: witness + c * serial }
+        SerialProof {
+            t,
+            z: witness + c * serial,
+        }
     }
 
     fn check_serial(&self, point: &RistrettoPoint, proof: &SerialProof, context: &[u8]) -> bool {
@@ -394,54 +519,98 @@ impl NoteLedger {
     }
 
     pub fn check_spend<R: RngCore + CryptoRng>(
-        &self, ring: &[usize], proof: &SpendProof, context: &[u8], rng: &mut R,
+        &self,
+        ring: &[usize],
+        proof: &SpendProof,
+        context: &[u8],
+        rng: &mut R,
     ) -> Result<(), &'static str> {
         let key = proof.serial_point.compress().to_bytes();
-        if self.spent.contains(&key) { return Err("serial already spent"); }
+        if self.spent.contains(&key) {
+            return Err("serial already spent");
+        }
         let ctx = Self::tagged_context(context, &proof.tag);
         if !self.check_serial(&proof.serial_point, &proof.serial_proof, &ctx) {
             return Err("the serial is not a bare power of the base point");
         }
-        if ring.iter().any(|i| *i >= self.notes.len()) { return Err("the ring names an absent note"); }
+        if ring.iter().any(|i| *i >= self.notes.len()) {
+            return Err("the ring names an absent note");
+        }
         let unique: HashSet<_> = ring.iter().collect();
-        if unique.len() != ring.len() { return Err("the ring repeats a note"); }
+        if unique.len() != ring.len() {
+            return Err("the ring repeats a note");
+        }
 
         let offset = proof.serial_point + proof.pseudo;
-        let members: Vec<RistrettoPoint> = ring.iter()
-            .map(|i| self.commitment_of(&self.notes[*i]) - offset).collect();
-        if !oneofmany::verify(&self.key, &mut Self::ring_transcript(&ctx), &members, &proof.ring) {
+        let members: Vec<RistrettoPoint> = ring
+            .iter()
+            .map(|i| self.commitment_of(&self.notes[*i]) - offset)
+            .collect();
+        if !oneofmany::verify(
+            &self.key,
+            &mut Self::ring_transcript(&ctx),
+            &members,
+            &proof.ring,
+        ) {
             return Err("no note in the ring carries this serial");
         }
 
-        let pc = PedersenGens { B: proof.tag, B_blinding: self.key.h };
+        let pc = PedersenGens {
+            B: proof.tag,
+            B_blinding: self.key.h,
+        };
         if proof.output_range_commitments.len() != proof.outputs.len()
-            || proof.output_range_commitments.iter().zip(proof.outputs.iter())
+            || proof
+                .output_range_commitments
+                .iter()
+                .zip(proof.outputs.iter())
                 .any(|(c, o)| *c != o.compress())
         {
             return Err("the range proof is about other outputs");
         }
-        proof.output_range
-            .verify_multiple(&self.gens, &pc, &mut Self::range_transcript(&ctx),
-                             &proof.output_range_commitments, self.bits)
+        proof
+            .output_range
+            .verify_multiple(
+                &self.gens,
+                &pc,
+                &mut Self::range_transcript(&ctx),
+                &proof.output_range_commitments,
+                self.bits,
+            )
             .map_err(|_| "an output is not shown to be in range")?;
 
         let residual = proof.pseudo - proof.outputs.iter().sum::<RistrettoPoint>();
         let mut batch = Batch::new();
-        let (s, p) = opening_terms(&self.key, &mut Self::balance_transcript(&ctx),
-                                   &residual, &proof.balance, &Batch::weight(rng));
+        let (s, p) = opening_terms(
+            &self.key,
+            &mut Self::balance_transcript(&ctx),
+            &residual,
+            &proof.balance,
+            &Batch::weight(rng),
+        );
         batch.push(s, p);
-        if !batch.verify() { return Err("outputs do not add up to the note being spent"); }
+        if !batch.verify() {
+            return Err("outputs do not add up to the note being spent");
+        }
         Ok(())
     }
 
-    pub fn apply_spend(&mut self, proof: &SpendProof, notes: Vec<Note>) -> Result<(), &'static str> {
+    pub fn apply_spend(
+        &mut self,
+        proof: &SpendProof,
+        notes: Vec<Note>,
+    ) -> Result<(), &'static str> {
         let key = proof.serial_point.compress().to_bytes();
-        if !self.spent.insert(key) { return Err("serial already spent"); }
+        if !self.spent.insert(key) {
+            return Err("serial already spent");
+        }
         self.rolling.update(b"s");
         self.rolling.update(key);
         // spent notes stay in the pool: removing them would say which one went
         // balanced against the note that funded them, so not issuance
-        for note in notes { self.append(note); }
+        for note in notes {
+            self.append(note);
+        }
         Ok(())
     }
 
@@ -482,11 +651,15 @@ impl NoteLedger {
 /// Recover a small integer from a scalar, or nothing.
 fn small_scalar(scalar: &Scalar, bits: usize) -> Option<u64> {
     let bytes = scalar.to_bytes();
-    if bytes[8..].iter().any(|b| *b != 0) { return None; }
+    if bytes[8..].iter().any(|b| *b != 0) {
+        return None;
+    }
     let mut value = [0u8; 8];
     value.copy_from_slice(&bytes[..8]);
     let value = u64::from_le_bytes(value);
-    if bits < 64 && value >= (1u64 << bits) { return None; }
+    if bits < 64 && value >= (1u64 << bits) {
+        return None;
+    }
     Some(value)
 }
 
@@ -503,11 +676,22 @@ fn small_scalar(scalar: &Scalar, bits: usize) -> Option<u64> {
 /// is how far back that is, in notes; a pool shorter than the window falls back
 /// to the whole pool, which is the same thing when there is no history to
 /// stand out against.
-pub fn ring_recent(pool: usize, index: usize, size: usize, window: usize, seed: u64)
-    -> Result<Vec<usize>, &'static str> {
-    if size < 2 || !size.is_power_of_two() { return Err("ring size must be a power of two, at least two"); }
-    if pool < size { return Err("the pool is smaller than the ring"); }
-    if index >= pool { return Err("the note is not in the pool"); }
+pub fn ring_recent(
+    pool: usize,
+    index: usize,
+    size: usize,
+    window: usize,
+    seed: u64,
+) -> Result<Vec<usize>, &'static str> {
+    if size < 2 || !size.is_power_of_two() {
+        return Err("ring size must be a power of two, at least two");
+    }
+    if pool < size {
+        return Err("the pool is smaller than the ring");
+    }
+    if index >= pool {
+        return Err("the note is not in the pool");
+    }
     // The window has to hold the ring, and it has to reach back far enough to
     // cover the real note --- a window that excluded it would name it outright.
     let span = window.max(size).max(pool - index);
@@ -517,32 +701,53 @@ pub fn ring_recent(pool: usize, index: usize, size: usize, window: usize, seed: 
     ring.push(index);
     let mut state = seed | 1;
     while ring.len() < size {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let candidate = floor + (state >> 33) as usize % span;
-        if !ring.contains(&candidate) { ring.push(candidate); }
+        if !ring.contains(&candidate) {
+            ring.push(candidate);
+        }
     }
     for i in (1..ring.len()).rev() {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ring.swap(i, (state >> 33) as usize % (i + 1));
     }
     Ok(ring)
 }
 
 /// Decoys drawn from the pool, with the real note somewhere inside.
-pub fn ring_for(pool: usize, index: usize, size: usize, seed: u64) -> Result<Vec<usize>, &'static str> {
-    if size < 2 || !size.is_power_of_two() { return Err("ring size must be a power of two, at least two"); }
-    if pool < size { return Err("the pool is smaller than the ring"); }
+pub fn ring_for(
+    pool: usize,
+    index: usize,
+    size: usize,
+    seed: u64,
+) -> Result<Vec<usize>, &'static str> {
+    if size < 2 || !size.is_power_of_two() {
+        return Err("ring size must be a power of two, at least two");
+    }
+    if pool < size {
+        return Err("the pool is smaller than the ring");
+    }
     let mut ring: Vec<usize> = Vec::with_capacity(size);
     ring.push(index);
     let mut state = seed | 1;
     while ring.len() < size {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let candidate = (state >> 33) as usize % pool;
-        if !ring.contains(&candidate) { ring.push(candidate); }
+        if !ring.contains(&candidate) {
+            ring.push(candidate);
+        }
     }
     // deterministic shuffle, so the real note is not always first
     for i in (1..ring.len()).rev() {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ring.swap(i, (state >> 33) as usize % (i + 1));
     }
     let _ = RistrettoPoint::identity();

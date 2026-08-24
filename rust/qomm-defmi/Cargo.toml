@@ -61,3 +61,7 @@ harness = false
 [[bench]]
 name = "note_dvp"
 harness = false
+
+[[bench]]
+name = "vetting"
+harness = false

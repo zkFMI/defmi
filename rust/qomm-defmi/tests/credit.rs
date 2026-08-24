@@ -6,14 +6,25 @@ use qomm_defmi::credit::*;
 use qomm_zk::pedersen::Pedersen;
 use rand::rngs::OsRng;
 
-fn key() -> Pedersen { Pedersen::new(b"qomm:defmi:v1") }
+fn key() -> Pedersen {
+    Pedersen::new(b"qomm:defmi:v1")
+}
 
 #[test]
 fn a_cap_covered_by_collateral_is_underwritten() {
     let mut rng = OsRng;
     let ctx = CreditCtx::new(key(), 64);
-    let line = ctx.grant(b"p0", "securities", 8_000_000, &Scalar::random(&mut rng),
-                         10_000_000, &Scalar::random(&mut rng), 500).unwrap();
+    let line = ctx
+        .grant(
+            b"p0",
+            "securities",
+            8_000_000,
+            &Scalar::random(&mut rng),
+            10_000_000,
+            &Scalar::random(&mut rng),
+            500,
+        )
+        .unwrap();
     assert_eq!(ctx.check(&line), Ok(()));
 }
 
@@ -22,19 +33,46 @@ fn a_cap_the_collateral_does_not_support_is_refused() {
     let mut rng = OsRng;
     let ctx = CreditCtx::new(key(), 64);
     assert_eq!(
-        ctx.grant(b"p0", "cash", 10_000_000, &Scalar::random(&mut rng),
-                  10_000_000, &Scalar::random(&mut rng), 500).err(),
-        Some("the pledged collateral does not cover the cap"));
+        ctx.grant(
+            b"p0",
+            "cash",
+            10_000_000,
+            &Scalar::random(&mut rng),
+            10_000_000,
+            &Scalar::random(&mut rng),
+            500
+        )
+        .err(),
+        Some("the pledged collateral does not cover the cap")
+    );
 }
 
 #[test]
 fn a_backing_proof_from_another_line_does_not_transfer() {
     let mut rng = OsRng;
     let ctx = CreditCtx::new(key(), 64);
-    let mut line = ctx.grant(b"p0", "cash", 8_000_000, &Scalar::random(&mut rng),
-                             10_000_000, &Scalar::random(&mut rng), 500).unwrap();
-    let other = ctx.grant(b"p1", "cash", 1_000, &Scalar::random(&mut rng),
-                          10_000_000, &Scalar::random(&mut rng), 500).unwrap();
+    let mut line = ctx
+        .grant(
+            b"p0",
+            "cash",
+            8_000_000,
+            &Scalar::random(&mut rng),
+            10_000_000,
+            &Scalar::random(&mut rng),
+            500,
+        )
+        .unwrap();
+    let other = ctx
+        .grant(
+            b"p1",
+            "cash",
+            1_000,
+            &Scalar::random(&mut rng),
+            10_000_000,
+            &Scalar::random(&mut rng),
+            500,
+        )
+        .unwrap();
     line.backing = other.backing;
     line.backing_commitment = other.backing_commitment;
     assert!(ctx.check(&line).is_err());
@@ -43,9 +81,16 @@ fn a_backing_proof_from_another_line_does_not_transfer() {
 fn waterfall(rng: &mut OsRng, balances: &[u64]) -> (Waterfall, Vec<Scalar>) {
     let k = key();
     let blindings: Vec<Scalar> = balances.iter().map(|_| Scalar::random(rng)).collect();
-    let names = ["defaulter collateral", "defaulter fund share", "FMI capital",
-                 "surviving members"];
-    let tranches = balances.iter().zip(blindings.iter()).enumerate()
+    let names = [
+        "defaulter collateral",
+        "defaulter fund share",
+        "FMI capital",
+        "surviving members",
+    ];
+    let tranches = balances
+        .iter()
+        .zip(blindings.iter())
+        .enumerate()
         .map(|(i, (b, r))| Tranche {
             name: names.get(i).unwrap_or(&"further").to_string(),
             commitment: k.commit_u64(*b, r),
@@ -65,7 +110,13 @@ fn the_waterfall_consumes_tranches_in_order() {
         (1_200, vec![300, 200, 500, 200]),
     ] {
         let (resolution, amounts) = wf
-            .build(shortfall, &Scalar::random(&mut rng), &balances, &blindings, &mut rng)
+            .build(
+                shortfall,
+                &Scalar::random(&mut rng),
+                &balances,
+                &blindings,
+                &mut rng,
+            )
             .unwrap();
         assert_eq!(amounts, expected);
         assert_eq!(wf.check(&resolution, &mut rng), Ok(()));
@@ -78,9 +129,16 @@ fn a_shortfall_larger_than_the_waterfall_is_refused() {
     let balances = [300u64, 200, 500, 5_000];
     let (wf, blindings) = waterfall(&mut rng, &balances);
     assert_eq!(
-        wf.build(99_999, &Scalar::random(&mut rng), &balances, &blindings, &mut rng)
-            .err(),
-        Some("the shortfall exceeds what the waterfall holds"));
+        wf.build(
+            99_999,
+            &Scalar::random(&mut rng),
+            &balances,
+            &blindings,
+            &mut rng
+        )
+        .err(),
+        Some("the shortfall exceeds what the waterfall holds")
+    );
 }
 
 #[test]
@@ -97,44 +155,87 @@ fn skipping_a_tranche_is_caught_by_the_ordering_proof() {
     let mut draws = Vec::new();
     for (index, (balance, blinding)) in balances.iter().zip(blindings.iter()).enumerate() {
         let amount = if index == 1 { shortfall } else { 0 };
-        let amount_blinding = if index == 1 { shortfall_blinding } else { Scalar::ZERO };
+        let amount_blinding = if index == 1 {
+            shortfall_blinding
+        } else {
+            Scalar::ZERO
+        };
         let left = balance - amount;
         let left_blinding = blinding - amount_blinding;
         let mut t = merlin::Transcript::new(b"qomm:waterfall:within");
         t.append_u64(b"k", index as u64);
         let (within, commitments) = bulletproofs::RangeProof::prove_multiple(
             &bulletproofs::BulletproofGens::new(32, 1),
-            &bulletproofs::PedersenGens { B: k.g, B_blinding: k.h },
-            &mut t, &[left], &[left_blinding], 32).unwrap();
-        let ordering = if index == 0 { None } else {
+            &bulletproofs::PedersenGens {
+                B: k.g,
+                B_blinding: k.h,
+            },
+            &mut t,
+            &[left],
+            &[left_blinding],
+            32,
+        )
+        .unwrap();
+        let ordering = if index == 0 {
+            None
+        } else {
             let above_value = balances[index - 1] - if index - 1 == 1 { shortfall } else { 0 };
             let above_blinding = blindings[index - 1];
             let mut t = merlin::Transcript::new(b"qomm:waterfall:order");
             t.append_u64(b"k", index as u64);
-            Some(prove_product(&k, &mut t, &k.commit_u64(above_value, &above_blinding),
-                               &Scalar::from(above_value), &above_blinding,
-                               &Scalar::from(amount), &amount_blinding, &Scalar::ZERO,
-                               &mut rng))
+            Some(prove_product(
+                &k,
+                &mut t,
+                &k.commit_u64(above_value, &above_blinding),
+                &Scalar::from(above_value),
+                &above_blinding,
+                &Scalar::from(amount),
+                &amount_blinding,
+                &Scalar::ZERO,
+                &mut rng,
+            ))
         };
         draws.push(Draw {
             tranche: index,
             amount_commitment: k.commit_u64(amount, &amount_blinding),
-            within, within_commitment: commitments[0], ordering,
+            within,
+            within_commitment: commitments[0],
+            ordering,
         });
     }
     let residual = k.commit_u64(shortfall, &shortfall_blinding)
-        - draws.iter().map(|d| d.amount_commitment).sum::<RistrettoPoint>();
+        - draws
+            .iter()
+            .map(|d| d.amount_commitment)
+            .sum::<RistrettoPoint>();
     let mut t = merlin::Transcript::new(b"qomm:waterfall:balance");
-    let balance = qomm_zk::sigma::prove_opening(&k, &mut t, &residual, &Scalar::ZERO,
-                                                &Scalar::ZERO, &mut rng);
+    let balance = qomm_zk::sigma::prove_opening(
+        &k,
+        &mut t,
+        &residual,
+        &Scalar::ZERO,
+        &Scalar::ZERO,
+        &mut rng,
+    );
     let mut st = merlin::Transcript::new(b"qomm:waterfall:shortfall");
     let (shortfall_range, sc) = bulletproofs::RangeProof::prove_multiple(
         &bulletproofs::BulletproofGens::new(32, 1),
-        &bulletproofs::PedersenGens { B: k.g, B_blinding: k.h },
-        &mut st, &[shortfall], &[shortfall_blinding], 32).unwrap();
+        &bulletproofs::PedersenGens {
+            B: k.g,
+            B_blinding: k.h,
+        },
+        &mut st,
+        &[shortfall],
+        &[shortfall_blinding],
+        32,
+    )
+    .unwrap();
     let forged = Resolution {
         shortfall_commitment: k.commit_u64(shortfall, &shortfall_blinding),
-        shortfall_range, shortfall_range_commitment: sc[0], draws, balance,
+        shortfall_range,
+        shortfall_range_commitment: sc[0],
+        draws,
+        balance,
     };
     assert!(wf.check(&forged, &mut rng).is_err());
 }
@@ -145,10 +246,24 @@ fn the_tranches_after_a_resolution_are_still_commitments() {
     let balances = [300u64, 200, 500, 5_000];
     let (wf, blindings) = waterfall(&mut rng, &balances);
     let (resolution, amounts) = wf
-        .build(700, &Scalar::random(&mut rng), &balances, &blindings, &mut rng).unwrap();
+        .build(
+            700,
+            &Scalar::random(&mut rng),
+            &balances,
+            &blindings,
+            &mut rng,
+        )
+        .unwrap();
     let after = wf.applied(&resolution);
-    for ((tranche, before), draw) in after.iter().zip(wf.tranches.iter()).zip(resolution.draws.iter()) {
-        assert_eq!(tranche.commitment, before.commitment - draw.amount_commitment);
+    for ((tranche, before), draw) in after
+        .iter()
+        .zip(wf.tranches.iter())
+        .zip(resolution.draws.iter())
+    {
+        assert_eq!(
+            tranche.commitment,
+            before.commitment - draw.amount_commitment
+        );
     }
     assert_eq!(amounts.iter().sum::<u64>(), 700);
 }
@@ -171,7 +286,8 @@ fn a_pledge_is_valued_at_a_price_the_member_did_not_choose() {
     let vb = Scalar::random(&mut rng);
     let quoted = signed_price(&ctx, p, &pb);
 
-    let (pledge, value) = ctx.value_pledge(q, &qb, p, &pb, &vb, &quoted, &mut rng)
+    let (pledge, value) = ctx
+        .value_pledge(q, &qb, p, &pb, &vb, &quoted, &mut rng)
         .unwrap();
     assert_eq!(value, 10_000_000);
     assert_eq!(ctx.check_pledge(&pledge, &quoted), Ok(()));
@@ -186,9 +302,19 @@ fn a_member_cannot_value_its_pledge_at_a_price_no_quorum_signed() {
     let (p, pb) = (25_000u64, Scalar::random(&mut rng));
     let quoted = signed_price(&ctx, p, &pb);
     // it tries a better price
-    assert_eq!(ctx.value_pledge(400, &Scalar::random(&mut rng), p * 2, &pb,
-                                &Scalar::random(&mut rng), &quoted, &mut rng).err(),
-               Some("that is not the price the quorum signed"));
+    assert_eq!(
+        ctx.value_pledge(
+            400,
+            &Scalar::random(&mut rng),
+            p * 2,
+            &pb,
+            &Scalar::random(&mut rng),
+            &quoted,
+            &mut rng
+        )
+        .err(),
+        Some("that is not the price the quorum signed")
+    );
 }
 
 #[test]
@@ -197,9 +323,17 @@ fn a_valuation_moved_to_another_price_is_refused() {
     let ctx = CreditCtx::new(key(), 64);
     let (p, pb) = (25_000u64, Scalar::random(&mut rng));
     let quoted = signed_price(&ctx, p, &pb);
-    let (pledge, _) = ctx.value_pledge(400, &Scalar::random(&mut rng), p, &pb,
-                                       &Scalar::random(&mut rng), &quoted,
-                                       &mut rng).unwrap();
+    let (pledge, _) = ctx
+        .value_pledge(
+            400,
+            &Scalar::random(&mut rng),
+            p,
+            &pb,
+            &Scalar::random(&mut rng),
+            &quoted,
+            &mut rng,
+        )
+        .unwrap();
     let elsewhere = signed_price(&ctx, p + 1, &pb);
     assert!(ctx.check_pledge(&pledge, &elsewhere).is_err());
 }
@@ -212,18 +346,41 @@ fn a_line_granted_against_a_valued_pledge_underwrites_the_same_way() {
     let (p, pb) = (25_000u64, Scalar::random(&mut rng));
     let vb = Scalar::random(&mut rng);
     let quoted = signed_price(&ctx, p, &pb);
-    let (pledge, value) = ctx.value_pledge(q, &qb, p, &pb, &vb, &quoted, &mut rng)
+    let (pledge, value) = ctx
+        .value_pledge(q, &qb, p, &pb, &vb, &quoted, &mut rng)
         .unwrap();
 
     let cap_blinding = Scalar::random(&mut rng);
-    let line = ctx.grant_against(b"p0", "cash", 8_000_000, &cap_blinding,
-                                 &pledge, value, &vb, 500, &quoted).unwrap();
+    let line = ctx
+        .grant_against(
+            b"p0",
+            "cash",
+            8_000_000,
+            &cap_blinding,
+            &pledge,
+            value,
+            &vb,
+            500,
+            &quoted,
+        )
+        .unwrap();
     assert_eq!(ctx.check(&line), Ok(()));
 
     // and a cap the valuation does not support is refused downstream, the same
     // way it would be for cash
-    assert!(ctx.grant_against(b"p0", "cash", 9_999_999, &cap_blinding, &pledge,
-                              value, &vb, 500, &quoted).is_err());
+    assert!(ctx
+        .grant_against(
+            b"p0",
+            "cash",
+            9_999_999,
+            &cap_blinding,
+            &pledge,
+            value,
+            &vb,
+            500,
+            &quoted
+        )
+        .is_err());
 }
 
 #[test]
@@ -233,11 +390,32 @@ fn an_opening_that_is_not_the_value_that_was_proved_is_refused() {
     let (p, pb) = (25_000u64, Scalar::random(&mut rng));
     let vb = Scalar::random(&mut rng);
     let quoted = signed_price(&ctx, p, &pb);
-    let (pledge, value) = ctx.value_pledge(400, &Scalar::random(&mut rng), p, &pb,
-                                           &vb, &quoted, &mut rng).unwrap();
-    assert_eq!(ctx.grant_against(b"p0", "cash", 1_000, &Scalar::random(&mut rng),
-                                 &pledge, value + 1, &vb, 500, &quoted).err(),
-               Some("the opening offered is not the value that was proved"));
+    let (pledge, value) = ctx
+        .value_pledge(
+            400,
+            &Scalar::random(&mut rng),
+            p,
+            &pb,
+            &vb,
+            &quoted,
+            &mut rng,
+        )
+        .unwrap();
+    assert_eq!(
+        ctx.grant_against(
+            b"p0",
+            "cash",
+            1_000,
+            &Scalar::random(&mut rng),
+            &pledge,
+            value + 1,
+            &vb,
+            500,
+            &quoted
+        )
+        .err(),
+        Some("the opening offered is not the value that was proved")
+    );
 }
 
 // --- writing the tranches down --------------------------------------------
@@ -248,12 +426,25 @@ fn a_resolution_is_written_down_once() {
     let k = key();
     let amounts = [100u64, 200, 400, 5_000];
     let blindings: Vec<Scalar> = amounts.iter().map(|_| Scalar::random(&mut rng)).collect();
-    let tranches: Vec<Tranche> = amounts.iter().zip(&blindings).enumerate()
-        .map(|(i, (a, b))| Tranche { name: format!("t{i}"), commitment: k.commit_u64(*a, b) })
+    let tranches: Vec<Tranche> = amounts
+        .iter()
+        .zip(&blindings)
+        .enumerate()
+        .map(|(i, (a, b))| Tranche {
+            name: format!("t{i}"),
+            commitment: k.commit_u64(*a, b),
+        })
         .collect();
     let waterfall = Waterfall::new(k.clone(), tranches.clone(), 64);
-    let (resolution, drawn) = waterfall.build(
-        500, &Scalar::random(&mut rng), &amounts, &blindings, &mut rng).unwrap();
+    let (resolution, drawn) = waterfall
+        .build(
+            500,
+            &Scalar::random(&mut rng),
+            &amounts,
+            &blindings,
+            &mut rng,
+        )
+        .unwrap();
     assert_eq!(drawn, vec![100, 200, 200, 0]);
 
     let tranches_before = tranches.clone();
@@ -268,8 +459,10 @@ fn a_resolution_is_written_down_once() {
         assert_ne!(after.commitment, before.commitment);
     }
     // and a second application of the same one is refused
-    assert_eq!(book.apply(k, 64, &resolution, &mut rng).err(),
-               Some("this resolution has already been written down"));
+    assert_eq!(
+        book.apply(k, 64, &resolution, &mut rng).err(),
+        Some("this resolution has already been written down")
+    );
 }
 
 #[test]
@@ -279,14 +472,34 @@ fn a_resolution_proved_against_a_fuller_book_does_not_verify_against_a_drawn_one
     let k = key();
     let amounts = [100u64, 200, 400, 5_000];
     let blindings: Vec<Scalar> = amounts.iter().map(|_| Scalar::random(&mut rng)).collect();
-    let tranches: Vec<Tranche> = amounts.iter().zip(&blindings).enumerate()
-        .map(|(i, (a, b))| Tranche { name: format!("t{i}"), commitment: k.commit_u64(*a, b) })
+    let tranches: Vec<Tranche> = amounts
+        .iter()
+        .zip(&blindings)
+        .enumerate()
+        .map(|(i, (a, b))| Tranche {
+            name: format!("t{i}"),
+            commitment: k.commit_u64(*a, b),
+        })
         .collect();
     let waterfall = Waterfall::new(k.clone(), tranches.clone(), 64);
-    let (first, _) = waterfall.build(500, &Scalar::random(&mut rng), &amounts,
-                                     &blindings, &mut rng).unwrap();
-    let (second, _) = waterfall.build(120, &Scalar::random(&mut rng), &amounts,
-                                      &blindings, &mut rng).unwrap();
+    let (first, _) = waterfall
+        .build(
+            500,
+            &Scalar::random(&mut rng),
+            &amounts,
+            &blindings,
+            &mut rng,
+        )
+        .unwrap();
+    let (second, _) = waterfall
+        .build(
+            120,
+            &Scalar::random(&mut rng),
+            &amounts,
+            &blindings,
+            &mut rng,
+        )
+        .unwrap();
 
     let mut book = TrancheBook::new(tranches);
     assert_eq!(book.apply(k.clone(), 64, &first, &mut rng), Ok(()));
@@ -300,14 +513,34 @@ fn two_resolutions_of_the_same_shortfall_drawing_differently_are_different() {
     let k = key();
     let amounts = [1_000u64, 200];
     let blindings: Vec<Scalar> = amounts.iter().map(|_| Scalar::random(&mut rng)).collect();
-    let tranches: Vec<Tranche> = amounts.iter().zip(&blindings).enumerate()
-        .map(|(i, (a, b))| Tranche { name: format!("t{i}"), commitment: k.commit_u64(*a, b) })
+    let tranches: Vec<Tranche> = amounts
+        .iter()
+        .zip(&blindings)
+        .enumerate()
+        .map(|(i, (a, b))| Tranche {
+            name: format!("t{i}"),
+            commitment: k.commit_u64(*a, b),
+        })
         .collect();
     let waterfall = Waterfall::new(k, tranches, 64);
-    let (a, _) = waterfall.build(300, &Scalar::random(&mut rng), &amounts,
-                                 &blindings, &mut rng).unwrap();
-    let (b, _) = waterfall.build(300, &Scalar::random(&mut rng), &amounts,
-                                 &blindings, &mut rng).unwrap();
+    let (a, _) = waterfall
+        .build(
+            300,
+            &Scalar::random(&mut rng),
+            &amounts,
+            &blindings,
+            &mut rng,
+        )
+        .unwrap();
+    let (b, _) = waterfall
+        .build(
+            300,
+            &Scalar::random(&mut rng),
+            &amounts,
+            &blindings,
+            &mut rng,
+        )
+        .unwrap();
     // different blindings, so different commitments, so different identifiers
     assert_ne!(resolution_id(&a), resolution_id(&b));
 }

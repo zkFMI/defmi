@@ -39,7 +39,10 @@ impl BlindedTag {
     /// Range proofs are stated against the tag, which the audited crate accepts
     /// as a value generator without modification.
     pub fn gens(&self, key: &Pedersen) -> PedersenGens {
-        PedersenGens { B: self.point, B_blinding: key.h }
+        PedersenGens {
+            B: self.point,
+            B_blinding: key.h,
+        }
     }
 }
 
@@ -59,18 +62,33 @@ impl AssetRegistry {
         AssetRegistry { key, count, tags }
     }
 
-    pub fn size(&self) -> usize { self.tags.len() }
+    pub fn size(&self) -> usize {
+        self.tags.len()
+    }
 
     pub fn blind<R: RngCore + CryptoRng>(
-        &self, asset_id: u32, prove_membership: bool, rng: &mut R,
+        &self,
+        asset_id: u32,
+        prove_membership: bool,
+        rng: &mut R,
     ) -> Result<(BlindedTag, Scalar), &'static str> {
-        if asset_id >= self.count { return Err("asset is not registered"); }
+        if asset_id >= self.count {
+            return Err("asset is not registered");
+        }
         let gamma = Scalar::random(rng);
         let point = self.tags[asset_id as usize] + self.key.h * gamma;
         let membership = if prove_membership {
-            Some(oneofmany::prove(&self.key, &mut Transcript::new(b"qomm:asset"),
-                                  &self.quotients(&point), asset_id as usize, &gamma, rng)?)
-        } else { None };
+            Some(oneofmany::prove(
+                &self.key,
+                &mut Transcript::new(b"qomm:asset"),
+                &self.quotients(&point),
+                asset_id as usize,
+                &gamma,
+                rng,
+            )?)
+        } else {
+            None
+        };
         Ok((BlindedTag { point, membership }, gamma))
     }
 
@@ -83,8 +101,11 @@ impl AssetRegistry {
         match &tag.membership {
             None => false,
             Some(proof) => oneofmany::verify(
-                &self.key, &mut Transcript::new(b"qomm:asset"),
-                &self.quotients(&tag.point), proof),
+                &self.key,
+                &mut Transcript::new(b"qomm:asset"),
+                &self.quotients(&tag.point),
+                proof,
+            ),
         }
     }
 }

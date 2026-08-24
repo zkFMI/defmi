@@ -1,0 +1,90 @@
+{
+  "accepted_transitions": {
+    "bootstrap_asset": {
+      "height": 1,
+      "tx_id": "2HRvkt4G217tQYjzMChaUgnnUdfWkA49Qa5y3QH5H6hhnNTXvg"
+    },
+    "instrument_asset": {
+      "height": 2,
+      "tx_id": "2XbwNATCeLAnAk3HAah5bMmKFhFbVHbVyqdeLk8LUbChY7sScY"
+    },
+    "left_account": {
+      "height": 3,
+      "tx_id": "VwXcXd2jUPQqgAZwvowNx9w1gdp4qCTczyUUj45es7gbQKqNW"
+    },
+    "right_account": {
+      "height": 4,
+      "tx_id": "snaEdf57iX8UpcdXT4tHz4pyVsCCTEQZYonFG7S1ppxpTZyiB"
+    },
+    "settlement": {
+      "height": 5,
+      "tx_id": "2C1KP5biKV9KhUH92o6boecCnYhvCnbYAhfWS24sGpHnCTYARF"
+    }
+  },
+  "chain_id": "xTqnS9sudzodVpxzbE7F1Vkogv7GAeGAiQgBZvV9E98u61pBs",
+  "crash_recovery": {
+    "accepted_height": 2,
+    "same_transaction": true,
+    "transaction_id": "2XbwNATCeLAnAk3HAah5bMmKFhFbVHbVyqdeLk8LUbChY7sScY"
+  },
+  "elapsed_seconds": 2.7433073749998584,
+  "environment": "5 local AvalancheGo processes on one host; not geographically separate validators",
+  "evm_used": false,
+  "external_binaries": {
+    "avalanche_network_runner": {
+      "sha256": "a20d3bc533afb3e1c3aafbc980194a15b71de97f8a4eba92153456e263aececb",
+      "version": "avalanche-network-runner version 1.8.3"
+    },
+    "avalanchego": {
+      "sha256": "33cffd0d95accb6adffdaf163ac06a747877accbc273925cd37b1624d00a30ca",
+      "version": "avalanchego/1.14.2 [database=v1.4.5, rpcchainvm=45, commit=6e5acf909c7a16b991142d6b3979bac5699bdb68, go=1.25.8]"
+    }
+  },
+  "final_root": "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
+  "initial_roots": [
+    "9aec52fd1daadc2090f8c5bb3b26234b9f50343c6caf1c3244d53e4592a43d14",
+    "9aec52fd1daadc2090f8c5bb3b26234b9f50343c6caf1c3244d53e4592a43d14",
+    "9aec52fd1daadc2090f8c5bb3b26234b9f50343c6caf1c3244d53e4592a43d14",
+    "9aec52fd1daadc2090f8c5bb3b26234b9f50343c6caf1c3244d53e4592a43d14",
+    "9aec52fd1daadc2090f8c5bb3b26234b9f50343c6caf1c3244d53e4592a43d14"
+  ],
+  "last_accepted_block_id": "goQBuTbZtguijYViiuRVbJJJFXgzSdDzqmEwRNmD9S7ob2bfu",
+  "local_receipt": {
+    "after_root": "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
+    "before_root": "385b15e88e9e0c7a106ab0340e7880a185ef9879f284a736cfd7349d366e948d",
+    "digest": "521bf447d8585cf7e7fa4c63e3f9ad7d11ea9428c04e86c3612ce0e0f3fc0847",
+    "verified_chain": true
+  },
+  "network": {
+    "chainID": "xTqnS9sudzodVpxzbE7F1Vkogv7GAeGAiQgBZvV9E98u61pBs",
+    "networkID": 1337,
+    "subnetID": "99qx6GvmNDqvtLVdVkzBJs2qrjVJ94gZKmauAUWJGJDMdHA41"
+  },
+  "nodes": 5,
+  "operation_timings_ms": {
+    "bootstrap_or_recovery_ms": 213.4424999821931,
+    "crash_window_recovery_ms": 2.628208021633327,
+    "settlement_ms": 218.19933300139382,
+    "two_accounts_ms": 426.24870798317716
+  },
+  "passed": true,
+  "restart": {
+    "elapsed_ms": 648.6071249819361,
+    "node": "node3",
+    "root_recovered": true
+  },
+  "roots_after_restart": [
+    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
+    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
+    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
+    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
+    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83"
+  ],
+  "roots_before_restart": [
+    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
+    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
+    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
+    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
+    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83"
+  ]
+}

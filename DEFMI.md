@@ -1,5 +1,7 @@
 # DeFMI — a settlement layer that never reads the trade
 
+DeFMI means **Decentralized Financial Market Infrastructure**. It is not a stock-only ledger: the chain-neutral state machine registers cash, securities, funds, commodities, carbon units and other governed assets.
+
 Measured on `host-c` / Python 3.13.5 / group ed25519.
 This document is generated from the measurement JSON by `make defmi-doc`. No number in it was typed by hand.
 
@@ -117,7 +119,7 @@ The limit is a **commitment**, and not only to hide its size. Coverage is then p
 | coverage proof, no limit | 9.4 ± 0.3 (n=15) ms | per participant per rail, at the close |
 | coverage proof, with a limit | 9.5 ± 0.2 (n=15) ms | as above |
 
-**The limit is essentially free** (9.4 ± 0.3 (n=15) to 9.5 ± 0.2 (n=15) ms --- the same range proof width against a different commitment). Admission, pledge, overdraft and payment are handled as one event by `admit_with_credit`, because doing them in sequence allows either collateral locked with no limit granted or a limit standing with no collateral behind it. If the payment does not go through, the limit and the pledge are both rolled back.
+**The limit is essentially free** (9.4 ± 0.3 (n=15) to 9.5 ± 0.2 (n=15) ms --- the same range proof width against a different commitment). **Admission, pledge, overdraft and payment should be one event**, because doing them in sequence allows either collateral locked with no limit granted or a limit standing with no collateral behind it. **They are not one event here.** This paragraph named an `admit_with_credit` that does not exist in the Rust implementation: `PositionBook::grant` and `Cycle::admit` are separate calls, and a grant that succeeds before an admit that fails leaves the credit standing. There is also no state that locks and unlocks pledged collateral. What is measured above is the cost of the limit, which is real; the atomicity is a design requirement that is written down and not built.
 
 ### 4.2 The default waterfall
 
@@ -152,7 +154,7 @@ So the speed was never the contribution --- the attested arm already had it. **W
 
 A slot rather than a dependency. A deployment names the providers it accepts and several may coexist; nothing in the netting cycle or the settlement layer knows which house cleared a trade, and a deployment with no provider at all is the bilateral case, which still works and pays per-trade proofs for it.
 
-**Four things it does not do.** Obligation graphs are per asset, so a novation that mixed instruments is refused rather than netted across them. Several providers make the waterfall a forest and not a list, and a position at one provider is **not** offset against a position at another --- cross-margining is a different problem and is not solved here. Novation being free arithmetically says nothing about it being valid legally, which is the register's rulebook and not this code. And **the trade set is attested, not verified**: a house that novated trades nobody made would produce a cycle that checks out, which a test states outright. The arithmetic cannot tell. The tranche is what makes getting it wrong expensive.
+**Four things it does not do.** Obligation graphs are per asset, so a novation that mixed instruments is refused rather than netted across them. Several providers make the waterfall a forest and not a list, and a position at one provider is **not** offset against a position at another --- cross-margining is a different problem and is not solved here. Novation being free arithmetically says nothing about it being valid legally, which is the register's rulebook and not this code. And **the house can leave a trade out, though it can no longer invent one**: `check_novation` requires both counterparties' signatures on every edge of the before graph, so a trade nobody made is refused --- this paragraph used to say a house could novate invented trades and produce a cycle that checked out, and that stopped being true when the signatures went in. Omission is what remains, and the arithmetic cannot tell: a graph missing an edge is a consistent graph. The tranche is what makes getting it wrong expensive.
 
 ## 5. Hiding who paid whom (the note ledger)
 
@@ -400,6 +402,63 @@ Which is why the schedule is an object rather than a discipline. `Rolling` says 
 
 **Scoping is only as fine as the payers cooperate.** A scope exists because counterparties were told to pay to that address; one who uses last quarter's address puts the note in last quarter's scope and nothing in the protocol stops them. That is an operational control wearing a cryptographic coat, and it is worth knowing which it is.
 
+## 6.7 Who is allowed to hold a handle
+
+A handle is `A = a.G` and anyone can pick `a`. Nobody's permission is needed to make one, and that is deliberate --- the chain should not have an opinion about who opens an address. What needs permission is being **vetted**, and `rust/qomm-defmi/src/vetting.rs` is where that is recorded.
+
+**The list holds sealed envelopes, not handles.** An envelope is `C = a.G + r.h`, so `C - A = r.h`: the envelope is the handle plus a blinding nobody else knows, and adding one to the public list reveals a uniformly random point.
+
+That matters more than it first looks. Putting the *handle* in the list would mean anyone who could work out from the timing which entry belonged to which firm --- they onboarded that week, one entry appeared that week --- would have that firm's handle. The handle is what appears on chain when the account moves, so they would then have its entire settlement history. Sealing the entry closes that: the timing still says somebody joined, and says nothing about which entry is theirs.
+
+**The group is fixed, which is why it is private.** Membership is proved one-out-of-many over a group: subtract the handle from every envelope, exactly one difference is a commitment to zero, and the proof says so without saying which. Drawing a fresh ring per proof would look more private and be less --- rings that overlap differently each time can be intersected and the real member falls out. The same group every time gives an observer nothing to intersect. A group also carries its cohort, so proving membership proves the attribute.
+
+**A vetting yields one handle, not a family of them.** The ring proof alone says only that `C_l - A` is a multiple of `h`, so `A + d.h` would satisfy it for any `d` the holder picks --- one vetting, unboundedly many usable handles, every per-firm cap void. A Schnorr proof that the handle is a bare power of the base point pins it to the one the envelope determines. That is a test, not a comment.
+
+**Whose privacy this is.** The seal hides the entry from *observers* and not from the operator: `vouch` takes the handle's secret, picks the blinding and picks the slot. An enrolment in which it does not --- the party proving knowledge of its secret and receiving a jointly chosen blinding --- is not built. What the seal establishes is that dating an onboarding tells a third party nothing about which entry it is.
+
+**A verifier must know which roll it is checking against.** `check_membership` proves a handle is in the roll it is *given*, so a proof that arrives with its own roll proves nothing --- `Group` is not constructible from outside the crate and `Roll::digest()` is what a verifier compares against whatever the chain published. This used to be neither: every field was public, so a caller could push a group holding an envelope of its own, cut a seal by hand, and pass the check without the operator ever running.
+
+**What is public on purpose.** `Roll::vetted()` counts the real envelopes and `Roll::crowd()` gives the group size, so anyone can check the claim rather than take it. Decoy seats are hashed rather than drawn, so no opening exists for them --- not even the operator's --- which is what makes that count honest. It counts calls to `vouch` and not distinct legal entities: nothing here deduplicates one, and the per-entity cap that would is the operator's.
+
+The alternative is worth naming. Hiding that a vetting happened at all --- making onboarding indistinguishable from ordinary settlement traffic --- means padding the roll with entries nobody can tell from real ones, and then nobody can count the real ones either, including a regulator asking how large the anonymity set is. **Hiding the vetting event and proving the size of the crowd are the same information.** One or the other.
+
+Measured on `host-c`, 200 repeats, medians.
+
+| crowd | prove | verify | proof | ring |
+|---:|---:|---:|---:|---:|
+| 4 | 0.81 ± 0.05 (n=200) | 0.66 ± 0.04 (n=200) | 556 B | 480 B |
+| 8 | 1.25 ± 0.05 (n=200) | 0.96 ± 0.05 (n=200) | 780 B | 704 B |
+| 16 | 1.88 ± 0.07 (n=200) | 1.33 ± 0.07 (n=200) | 1004 B | 928 B |
+| 32 | 2.91 ± 0.09 (n=200) | 1.82 ± 0.07 (n=200) | 1228 B | 1152 B |
+| 64 | 4.90 ± 0.37 (n=200) | 2.61 ± 0.24 (n=200) | 1452 B | 1376 B |
+| 128 | 9.02 ± 0.56 (n=200) | 3.84 ± 0.39 (n=200) | 1676 B | 1600 B |
+
+The size was predicted exactly: 1004 bytes at a crowd of 16, of which 928 is the ring, 64 the control proof and 12 the group and epoch. Every doubling adds exactly 224 --- one point in each of the ring's four vectors and one scalar in each of its three.
+
+**Two predictions missed, and the second changed a design choice.** Verifying was predicted under 1 ms in Rust against Python's 1.81 ms at a crowd of 16; it came in at 1.33 ± 0.07 (n=200), a factor of 1.4. The reason is the one `BINDING.md` gives about VOLEitH: the Python side already runs its group arithmetic in C through PyNaCl, so Rust wins the glue and not the arithmetic. The Rust figure also does strictly more --- it verifies the control proof and shifts every envelope.
+
+The consequential miss is the second. **Verification was predicted to double with the crowd and grows about 1.4x instead**: 32x the crowd costs 5.8x the work, which is the batched multi-scalar multiplication showing through. The crowd had been capped at 16 on a belief about linearity the measurement does not support. At 128 the check is 3.84 ± 0.39 (n=200) against the 51.9 ms a note settlement already costs, and the wire grows by 672 bytes. **128 is the default the code carries** (`vetting::CROWD`).
+
+What stays out of reach is a crowd of thousands. That needs a Merkle tree checked inside a circuit --- a different proof system from the sigma protocols and Bulletproofs this stack is built on, with a compiler and a setup behind it.
+
+**Where the check runs.** The node committee verifies the complete proof before it signs. The dedicated Avalanche VM verifies the 3-of-7 approval and binds it to the proof digest, chain, rail, deadline, sequence and previous state root. Validators do not yet re-run every Bulletproof; that remaining trust boundary is explicit in `ZKPI_WIRE.md`.
+
+### 6.8 Native Avalanche L1 acceptance
+
+The deployed execution path is a dedicated non-EVM Avalanche custom VM in `avalanche/defmivm/`. It has native transitions for asset registration, account opening and atomic multi-leg settlement; it does not execute Solidity or EVM bytecode.
+
+| property | observed result |
+| --- | ---: |
+| local AvalancheGo processes | 5 |
+| accepted heights | 1, 2, 3, 4, 5 |
+| settlement acceptance | 218.2 ms |
+| two account openings | 426.2 ms |
+| node restart and state recovery | 648.6 ms |
+| one state root before restart | yes |
+| same state root after restart | yes |
+
+The run uses five processes on one host. It proves native consensus acceptance, idempotent crash recovery and state-root agreement, not five independent organisations or public-network readiness.
+
 ## 7. What one settlement node can take
 
 Verification only --- proving is the counterparty's work and the clock is stopped for it. Every worker meets at a barrier before the measured section begins.
@@ -433,6 +492,7 @@ Per core that is 20.5 to 128.5 settlements per second. Parallelism is independen
 
 ## 9. What is still missing
 
+- Avalanche validators verify the committee approval and proof digest, not the complete zero-knowledge proof. Removing that committee trust requires a consensus-safe verifier inside the VM and a separate audit.
 - A tagged cash leg needs cash accounts opened under that currency's tag; the remainder proof opens against the balance the payer already has, so a leg cannot claim a currency the account is not denominated in. That is the property doing the work, and it means adding a second settlement currency is an account-opening decision rather than a code change.
 - Whoever sent a note can tell that it was spent, because they know the `g^S` they built. That is unavoidable in this construction. To a third party the ring size is the limit of what is learned.
 - The note rail's decoy selection is uniform over the pool, and a real spend is of a recently received note. Section 5's finding stands: an anonymity set is other people's traffic, and the decoy rule only decides whether the ring can use it.

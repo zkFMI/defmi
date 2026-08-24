@@ -4,6 +4,7 @@
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
+use merlin::Transcript;
 use qomm_defmi::assets::AssetRegistry;
 use qomm_defmi::ledger::Ledger;
 use qomm_defmi::settlement::*;
@@ -14,7 +15,6 @@ use qomm_zkpi::{deal_quorum, frost, Bounds, Issuer, Venue};
 use rand::rngs::OsRng;
 use std::collections::BTreeMap;
 use std::time::Instant;
-use merlin::Transcript;
 
 const QTY: u64 = 100;
 const PRICE: u64 = 99_990;
@@ -23,7 +23,11 @@ const PRICE: u64 = 99_990;
 /// width, never on the value inside it, so shrinking the trade to fit a narrow
 /// rail does not distort the comparison.
 fn trade_for(bits: usize) -> (u64, u64) {
-    let ceiling = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
+    let ceiling = if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
     let quantity = QTY.min((ceiling / 2).max(1));
     let price = PRICE.min(((ceiling / 2) / quantity).max(1));
     (quantity, price)
@@ -42,12 +46,15 @@ struct Row {
     package_bytes: usize,
 }
 
-
 /// The two firms, named as the design says: one seed each, a handle for this
 /// venue, and account names derived from that handle.
 const VENUE: &[u8] = b"defmi:bench";
-fn seller() -> RistrettoPoint { Identity::from_seed([11u8; 32]).handle(VENUE).point }
-fn buyer() -> RistrettoPoint { Identity::from_seed([22u8; 32]).handle(VENUE).point }
+fn seller() -> RistrettoPoint {
+    Identity::from_seed([11u8; 32]).handle(VENUE).point
+}
+fn buyer() -> RistrettoPoint {
+    Identity::from_seed([22u8; 32]).handle(VENUE).point
+}
 
 fn median(mut xs: Vec<f64>) -> f64 {
     xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -59,10 +66,15 @@ fn run(bits: usize, repeats: usize) -> Row {
     let key = Pedersen::new(b"qomm:defmi:v1");
     let registry = AssetRegistry::new(key.clone(), 16);
     let (secret, public) = deal_quorum(7, 3, &mut rng).unwrap();
-    let shares: BTreeMap<_, _> = secret.into_iter()
+    let shares: BTreeMap<_, _> = secret
+        .into_iter()
         .map(|(id, s)| (id, frost::keys::KeyPackage::try_from(s).unwrap()))
         .collect();
-    let bounds = Bounds { amount_bits: bits, price_bits: bits, ..Bounds::default() };
+    let bounds = Bounds {
+        amount_bits: bits,
+        price_bits: bits,
+        ..Bounds::default()
+    };
     let issuer = Issuer::new(key.clone(), bounds.clone());
 
     let mut issue_ms = Vec::new();
@@ -73,25 +85,51 @@ fn run(bits: usize, repeats: usize) -> Row {
     let (qty, price) = trade_for(bits);
     for nonce in 0..repeats {
         let asset_key = key.with_value_generator(registry.tags[3]);
-        let ceiling = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
+        let ceiling = if bits >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << bits) - 1
+        };
         let sec = (5_000u64.max(qty).min(ceiling), Scalar::random(&mut rng));
-        let cash_holding = (50_000_000u64.max(qty * price).min(ceiling),
-                            Scalar::random(&mut rng));
+        let cash_holding = (
+            50_000_000u64.max(qty * price).min(ceiling),
+            Scalar::random(&mut rng),
+        );
         let mut securities = Ledger::new(key.clone(), bits);
         let mut cash = Ledger::new(key.clone(), bits);
-        securities.open(&account_of(&seller(), SECURITIES_RAIL), asset_key.commit_u64(sec.0, &sec.1));
-        securities.open(&account_of(&buyer(), SECURITIES_RAIL), asset_key.commit_u64(0, &Scalar::random(&mut rng)));
-        cash.open(&account_of(&buyer(), CASH_RAIL), key.commit_u64(cash_holding.0, &cash_holding.1));
-        cash.open(&account_of(&seller(), CASH_RAIL), key.commit_u64(0, &Scalar::random(&mut rng)));
+        securities.open(
+            &account_of(&seller(), SECURITIES_RAIL),
+            asset_key.commit_u64(sec.0, &sec.1),
+        );
+        securities.open(
+            &account_of(&buyer(), SECURITIES_RAIL),
+            asset_key.commit_u64(0, &Scalar::random(&mut rng)),
+        );
+        cash.open(
+            &account_of(&buyer(), CASH_RAIL),
+            key.commit_u64(cash_holding.0, &cash_holding.1),
+        );
+        cash.open(
+            &account_of(&seller(), CASH_RAIL),
+            key.commit_u64(0, &Scalar::random(&mut rng)),
+        );
         let venue = Venue::new(key.clone(), &bounds, public.clone());
         let mut defmi = Defmi::new(key.clone(), securities, cash, venue);
 
         let t = Instant::now();
-        let (digest, openings, partial) = issuer.build(
-            qty, price, 3,
-            buyer(),   // pays cash, receives securities
-            seller(),  // delivers securities, receives cash
-            1_500, [nonce as u8; 32], 1_599_845, &mut rng).unwrap();
+        let (digest, openings, partial) = issuer
+            .build(
+                qty,
+                price,
+                3,
+                buyer(),  // pays cash, receives securities
+                seller(), // delivers securities, receives cash
+                1_500,
+                [nonce as u8; 32],
+                1_599_845,
+                &mut rng,
+            )
+            .unwrap();
         let chosen: Vec<_> = shares.keys().take(3).cloned().collect();
         let mut nonces = BTreeMap::new();
         let mut commitments = BTreeMap::new();
@@ -103,8 +141,10 @@ fn run(bits: usize, repeats: usize) -> Row {
         let package_sig = frost::SigningPackage::new(commitments, &digest);
         let mut sig_shares = BTreeMap::new();
         for id in &chosen {
-            sig_shares.insert(*id,
-                frost::round2::sign(&package_sig, &nonces[id], &shares[id]).unwrap());
+            sig_shares.insert(
+                *id,
+                frost::round2::sign(&package_sig, &nonces[id], &shares[id]).unwrap(),
+            );
         }
         let signature = frost::aggregate(&package_sig, &sig_shares, &public).unwrap();
         let instruction = partial.sealed(signature);
@@ -113,20 +153,37 @@ fn run(bits: usize, repeats: usize) -> Row {
         let (tag, gamma) = registry.blind(3, false, &mut rng).unwrap();
         let t = Instant::now();
         let (pkg, _) = build_package(
-            &key, instruction, &defmi.securities, &defmi.cash,
-            qty, price,
+            &key,
+            instruction,
+            &defmi.securities,
+            &defmi.cash,
+            qty,
+            price,
             &Holdings {
-                securities_balance: sec.0, securities_blinding: sec.1,
-                cash_balance: cash_holding.0, cash_blinding: cash_holding.1,
+                securities_balance: sec.0,
+                securities_blinding: sec.1,
+                cash_balance: cash_holding.0,
+                cash_blinding: cash_holding.1,
             },
-            &InstructionOpenings { amount: openings.amount, price: openings.price },
-            Some(&tag), &gamma, None, &Scalar::ZERO, &mut rng).unwrap();
+            &InstructionOpenings {
+                amount: openings.amount,
+                price: openings.price,
+            },
+            Some(&tag),
+            &gamma,
+            None,
+            &Scalar::ZERO,
+            &mut rng,
+        )
+        .unwrap();
         build_ms.push(t.elapsed().as_secs_f64() * 1e3);
         bytes = pkg.securities_leg.remainder_range.to_bytes().len()
             + pkg.cash_leg.remainder_range.to_bytes().len()
             + pkg.instruction.amount_range.to_bytes().len()
             + pkg.instruction.price_range.to_bytes().len()
-            + 32 * (3 + 2 + 3 + 2 + 2 + 2 + 3 + 3) + 64 + 32;
+            + 32 * (3 + 2 + 3 + 2 + 2 + 2 + 3 + 3)
+            + 64
+            + 32;
 
         let t = Instant::now();
         let receipt = defmi.settle(&pkg, 1_000, &mut rng);
@@ -196,19 +253,30 @@ fn main() {
         .unwrap_or(25);
 
     let (scalar_mult_us, range_ms) = calibration(repeats);
-    println!("calibration: scalar mult {scalar_mult_us:.2} us, 64-bit range proof {range_ms:.2} ms");
+    println!(
+        "calibration: scalar mult {scalar_mult_us:.2} us, 64-bit range proof {range_ms:.2} ms"
+    );
     println!("delivery versus payment, Rust");
 
     // 8/16/32 overlap with the Python widths so the two can be compared
     // directly; 64 is where a 40-bit Python rail lands once bulletproofs
     // rounds it up, which is the honest comparison for the deployed width.
-    let rows: Vec<Row> = [8usize, 16, 32, 64].iter().map(|b| run(*b, repeats)).collect();
+    let rows: Vec<Row> = [8usize, 16, 32, 64]
+        .iter()
+        .map(|b| run(*b, repeats))
+        .collect();
 
-    let Ok(path) = std::env::var("QOMM_BENCH_JSON") else { return };
-    let scaling: Vec<String> = rows.iter().map(|r| format!(
+    let Ok(path) = std::env::var("QOMM_BENCH_JSON") else {
+        return;
+    };
+    let scaling: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            format!(
         "    {{\"bits\": {}, \"issue_ms\": {:.4}, \"build_ms\": {:.4}, \"settle_ms\": {:.4}, \
 \"package_bytes\": {}, \"per_second\": {:.2}}}",
-        r.bits, r.issue_ms, r.build_ms, r.settle_ms, r.package_bytes, 1000.0 / r.settle_ms))
+        r.bits, r.issue_ms, r.build_ms, r.settle_ms, r.package_bytes, 1000.0 / r.settle_ms)
+        })
         .collect();
     let json = format!(
         "{{\n  \"host\": \"{}\",\n  \"rustc\": \"{}\",\n  \"group\": \"ristretto255\",\n  \
@@ -217,8 +285,13 @@ fn main() {
 \"scaling\": [\n{}\n  ]\n}}\n",
         std::env::var("QOMM_HOST_LABEL").unwrap_or_else(|_| shell("hostname", &[])),
         shell("rustc", &["--version"]),
-        QTY, PRICE, repeats, scalar_mult_us, range_ms,
-        scaling.join(",\n"));
+        QTY,
+        PRICE,
+        repeats,
+        scalar_mult_us,
+        range_ms,
+        scaling.join(",\n")
+    );
     std::fs::write(&path, json).expect("could not write the benchmark JSON");
     println!("wrote {path}");
 }

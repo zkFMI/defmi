@@ -70,8 +70,12 @@ impl Attestation {
     pub fn body(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(RECONCILE_DOMAIN);
-        for part in [self.register.as_bytes(), self.account.as_bytes(),
-                     self.asset.as_bytes(), self.as_of.as_bytes()] {
+        for part in [
+            self.register.as_bytes(),
+            self.account.as_bytes(),
+            self.asset.as_bytes(),
+            self.as_of.as_bytes(),
+        ] {
             hasher.update((part.len() as u32).to_be_bytes());
             hasher.update(part);
         }
@@ -100,12 +104,12 @@ pub struct Reconciliation {
 /// scalar multiplication --- which is what the Python version was doing, at
 /// four times the cost, until it was measured.
 pub fn aggregate(commitments: &[RistrettoPoint]) -> RistrettoPoint {
-    commitments.iter().fold(RistrettoPoint::identity(), |acc, c| acc + c)
+    commitments
+        .iter()
+        .fold(RistrettoPoint::identity(), |acc, c| acc + c)
 }
 
-fn residual(key: &Pedersen, commitments: &[RistrettoPoint], total: u64)
-    -> RistrettoPoint
-{
+fn residual(key: &Pedersen, commitments: &[RistrettoPoint], total: u64) -> RistrettoPoint {
     aggregate(commitments) - key.g * Scalar::from(total)
 }
 
@@ -115,8 +119,11 @@ fn residual(key: &Pedersen, commitments: &[RistrettoPoint], total: u64)
 /// base-generator key would take the total off under the wrong generator and
 /// the proof simply would not verify, which is the right failure.
 pub fn prove<R: RngCore + CryptoRng>(
-    key: &Pedersen, commitments: &[RistrettoPoint], blindings: &[Scalar],
-    attestation: &Attestation, rng: &mut R,
+    key: &Pedersen,
+    commitments: &[RistrettoPoint],
+    blindings: &[Scalar],
+    attestation: &Attestation,
+    rng: &mut R,
 ) -> Result<Reconciliation, &'static str> {
     if commitments.len() != blindings.len() {
         return Err("a blinding per commitment, or the sum is not the sum");
@@ -124,35 +131,49 @@ pub fn prove<R: RngCore + CryptoRng>(
     let combined: Scalar = blindings.iter().sum();
     let point = residual(key, commitments, attestation.total);
     let mut transcript = attestation.transcript();
-    let proof = prove_opening(key, &mut transcript, &point, &Scalar::ZERO,
-                              &combined, rng);
-    Ok(Reconciliation { attestation: attestation.clone(),
-                        positions: commitments.len(), proof })
+    let proof = prove_opening(key, &mut transcript, &point, &Scalar::ZERO, &combined, rng);
+    Ok(Reconciliation {
+        attestation: attestation.clone(),
+        positions: commitments.len(),
+        proof,
+    })
 }
 
 /// Whether this ledger agrees with the register, and why not when it does not.
-pub fn check(key: &Pedersen, commitments: &[RistrettoPoint],
-             reconciliation: &Reconciliation, registrar: Option<&VerifyingKey>)
-    -> Result<(), String>
-{
+pub fn check(
+    key: &Pedersen,
+    commitments: &[RistrettoPoint],
+    reconciliation: &Reconciliation,
+    registrar: Option<&VerifyingKey>,
+) -> Result<(), String> {
     if commitments.len() != reconciliation.positions {
-        return Err(format!("reconciliation covers {} positions and {} were offered",
-                           reconciliation.positions, commitments.len()));
+        return Err(format!(
+            "reconciliation covers {} positions and {} were offered",
+            reconciliation.positions,
+            commitments.len()
+        ));
     }
     let attestation = &reconciliation.attestation;
     match (registrar, &attestation.signature) {
-        (Some(key), Some(signature)) => key.verify(&attestation.body(), signature)
+        (Some(key), Some(signature)) => key
+            .verify(&attestation.body(), signature)
             .map_err(|_| "the attestation is not signed by that registrar")?,
         (Some(_), None) => return Err("that registrar signed nothing here".into()),
-        (None, Some(_)) => return Err("an attestation carries a signature and no \
-                                       registrar key was given to check it".into()),
+        (None, Some(_)) => {
+            return Err("an attestation carries a signature and no \
+                                       registrar key was given to check it"
+                .into())
+        }
         (None, None) => {}
     }
     let point = residual(key, commitments, attestation.total);
     let mut transcript = attestation.transcript();
     if !verify_opening(key, &mut transcript, &point, &reconciliation.proof) {
-        return Err(format!("the committed balances do not sum to {}: a break, \
-                            and this says nothing about where", attestation.total));
+        return Err(format!(
+            "the committed balances do not sum to {}: a break, \
+                            and this says nothing about where",
+            attestation.total
+        ));
     }
     Ok(())
 }
@@ -165,8 +186,11 @@ pub fn check(key: &Pedersen, commitments: &[RistrettoPoint],
 /// exactly the party that has them. Nothing is disclosed to anybody else by
 /// running it --- it is arithmetic on numbers the runner already holds.
 pub fn check_positions<R: RngCore + CryptoRng>(
-    key: &Pedersen, commitments: &[RistrettoPoint], blindings: &[Scalar],
-    expected: &[u64], rng: &mut R,
+    key: &Pedersen,
+    commitments: &[RistrettoPoint],
+    blindings: &[Scalar],
+    expected: &[u64],
+    rng: &mut R,
 ) -> Vec<usize> {
     if positions_agree(key, commitments, blindings, expected, rng) {
         return Vec::new();
@@ -174,7 +198,11 @@ pub fn check_positions<R: RngCore + CryptoRng>(
     // Only now is it worth paying a commitment a position, and only to say
     // which ones. Naming them is the slow half and it runs on the day
     // something is wrong, not on every close.
-    commitments.iter().zip(blindings).zip(expected).enumerate()
+    commitments
+        .iter()
+        .zip(blindings)
+        .zip(expected)
+        .enumerate()
         .filter(|(_, ((c, r), v))| key.commit_u64(**v, r) != **c)
         .map(|(i, _)| i)
         .collect()
@@ -191,18 +219,24 @@ pub fn check_positions<R: RngCore + CryptoRng>(
 /// It says *whether*, never *which* --- which is the right split, because the
 /// common case at a close is that nothing is wrong and nobody needs a list.
 pub fn positions_agree<R: RngCore + CryptoRng>(
-    key: &Pedersen, commitments: &[RistrettoPoint], blindings: &[Scalar],
-    expected: &[u64], rng: &mut R,
+    key: &Pedersen,
+    commitments: &[RistrettoPoint],
+    blindings: &[Scalar],
+    expected: &[u64],
+    rng: &mut R,
 ) -> bool {
     if commitments.len() != blindings.len() || commitments.len() != expected.len() {
         return false;
     }
     let weights: Vec<Scalar> = (0..commitments.len())
-        .map(|_| Scalar::random(rng)).collect();
-    let value_sum: Scalar = weights.iter().zip(expected)
-        .map(|(w, v)| w * Scalar::from(*v)).sum();
-    let blinding_sum: Scalar = weights.iter().zip(blindings)
-        .map(|(w, r)| w * r).sum();
+        .map(|_| Scalar::random(rng))
+        .collect();
+    let value_sum: Scalar = weights
+        .iter()
+        .zip(expected)
+        .map(|(w, v)| w * Scalar::from(*v))
+        .sum();
+    let blinding_sum: Scalar = weights.iter().zip(blindings).map(|(w, r)| w * r).sum();
     let combined = RistrettoPoint::vartime_multiscalar_mul(&weights, commitments);
     combined == key.g * value_sum + key.h * blinding_sum
 }
@@ -218,7 +252,11 @@ pub struct BreakSearch {
 impl BreakSearch {
     /// The count is the price, so it is reported rather than absorbed.
     pub fn narrowest(&self) -> usize {
-        self.ranges_made_public.iter().map(|(l, h, _)| h - l).min().unwrap_or(0)
+        self.ranges_made_public
+            .iter()
+            .map(|(l, h, _)| h - l)
+            .min()
+            .unwrap_or(0)
     }
 }
 
@@ -233,14 +271,21 @@ impl BreakSearch {
 /// What it costs is the point. Each step publishes a sub-total, and a sub-total
 /// over one position is a balance.
 pub fn locate_break<R: RngCore + CryptoRng, F>(
-    key: &Pedersen, commitments: &[RistrettoPoint], blindings: &[Scalar],
-    claimed: F, expected: u64, rng: &mut R,
+    key: &Pedersen,
+    commitments: &[RistrettoPoint],
+    blindings: &[Scalar],
+    claimed: F,
+    expected: u64,
+    rng: &mut R,
 ) -> Result<BreakSearch, String>
 where
     F: Fn(usize, usize) -> Option<u64>,
 {
-    let mut search = BreakSearch { found: Vec::new(), proofs: 0,
-                                   ranges_made_public: Vec::new() };
+    let mut search = BreakSearch {
+        found: Vec::new(),
+        proofs: 0,
+        ranges_made_public: Vec::new(),
+    };
     if commitments.is_empty() {
         return Ok(search);
     }
@@ -248,12 +293,15 @@ where
     while let Some((low, high, total)) = stack.pop() {
         search.ranges_made_public.push((low, high, total));
         let attestation = Attestation {
-            register: "sub-range".into(), account: format!("[{low},{high})"),
-            asset: String::new(), total, as_of: String::new(), signature: None,
+            register: "sub-range".into(),
+            account: format!("[{low},{high})"),
+            asset: String::new(),
+            total,
+            as_of: String::new(),
+            signature: None,
         };
         let slice = &commitments[low..high];
-        let reconciliation = prove(key, slice, &blindings[low..high],
-                                   &attestation, rng)
+        let reconciliation = prove(key, slice, &blindings[low..high], &attestation, rng)
             .map_err(|e| e.to_string())?;
         search.proofs += 1;
         if check(key, slice, &reconciliation, None).is_ok() {
@@ -264,11 +312,36 @@ where
             continue;
         }
         let middle = (low + high) / 2;
-        for (a, b) in [(middle, high), (low, middle)] {
-            let sub = claimed(a, b).ok_or_else(|| format!(
-                "this register cannot say what [{a},{b}) should total, so the \
-                 break stays pass-or-fail"))?;
-            stack.push((a, b, sub));
+        let mut halves = Vec::with_capacity(2);
+        for (a, b) in [(low, middle), (middle, high)] {
+            let sub = claimed(a, b).ok_or_else(|| {
+                format!(
+                    "this register cannot say what [{a},{b}) should total, so the \
+                 break stays pass-or-fail"
+                )
+            })?;
+            halves.push((a, b, sub));
+        }
+        // The halves have to come to the whole they were split from.
+        //
+        // Without this a register can answer each half with what the ledger
+        // actually holds rather than what it attested: both halves check out
+        // against their own commitments, the parent still disagrees with the
+        // attested total, and the search ends having found nothing. That is
+        // worse than the pass-or-fail it replaced --- pass-or-fail at least
+        // says there is a break, and this said the break was nowhere.
+        let summed = halves[0].2.checked_add(halves[1].2);
+        if summed != Some(total) {
+            let (l0, h0, s0) = halves[0];
+            let (l1, h1, s1) = halves[1];
+            return Err(format!(
+                "this register says [{l0},{h0}) is {s0} and [{l1},{h1}) is {s1}, \
+                 which do not add up to the {total} it says [{low},{high}) is; \
+                 the break is in its own figures"
+            ));
+        }
+        for half in halves.into_iter().rev() {
+            stack.push(half);
         }
     }
     search.found.sort_unstable();
@@ -279,8 +352,6 @@ where
 ///
 /// Kept separate from [`aggregate`] so the all-ones case --- which is what
 /// reconciliation is --- does not pay for generality it never uses.
-pub fn weighted(commitments: &[RistrettoPoint], coefficients: &[Scalar])
-    -> RistrettoPoint
-{
+pub fn weighted(commitments: &[RistrettoPoint], coefficients: &[Scalar]) -> RistrettoPoint {
     RistrettoPoint::vartime_multiscalar_mul(coefficients, commitments)
 }

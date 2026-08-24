@@ -18,8 +18,8 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use merlin::Transcript;
 use qomm_zk::pedersen::Pedersen;
 use qomm_zk::sigma::{
-    prove_product, prove_same_value, verify_product, verify_same_value,
-    CrossGeneratorProof, ProductProof,
+    prove_product, prove_same_value, verify_product, verify_same_value, CrossGeneratorProof,
+    ProductProof,
 };
 use qomm_zkpi::{Instruction, Venue};
 use rand_core::{CryptoRng, RngCore};
@@ -64,24 +64,44 @@ pub struct NoteReceipt {
 }
 
 impl NoteReceipt {
-    fn digest(nullifier: &[u8; 32], settled: bool, reason: &str,
-              sb: &[u8; 32], sa: &[u8; 32], cb: &[u8; 32], ca: &[u8; 32],
-              at: u64) -> [u8; 32] {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "receipt digest fields stay explicit so no settlement state can be omitted"
+    )]
+    fn digest(
+        nullifier: &[u8; 32],
+        settled: bool,
+        reason: &str,
+        sb: &[u8; 32],
+        sa: &[u8; 32],
+        cb: &[u8; 32],
+        ca: &[u8; 32],
+        at: u64,
+    ) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update(DOMAIN);
         h.update(nullifier);
         h.update([u8::from(settled)]);
         h.update((reason.len() as u32).to_be_bytes());
         h.update(reason.as_bytes());
-        for part in [sb, sa, cb, ca] { h.update(part); }
+        for part in [sb, sa, cb, ca] {
+            h.update(part);
+        }
         h.update(at.to_be_bytes());
         h.finalize().into()
     }
 
     pub fn verify(&self, key: &VerifyingKey) -> bool {
-        let digest = Self::digest(&self.nullifier, self.settled, self.reason,
-                                  &self.securities_before, &self.securities_after,
-                                  &self.cash_before, &self.cash_after, self.settled_at);
+        let digest = Self::digest(
+            &self.nullifier,
+            self.settled,
+            self.reason,
+            &self.securities_before,
+            &self.securities_after,
+            &self.cash_before,
+            &self.cash_after,
+            self.settled_at,
+        );
         key.verify(&digest, &self.signature).is_ok()
     }
 }
@@ -107,56 +127,111 @@ fn transcript(context: &[u8], part: &str) -> Transcript {
 /// Assembled by the counterparties, who hold the note openings.
 #[allow(clippy::too_many_arguments)]
 pub fn build_note_package<R: RngCore + CryptoRng>(
-    key: &Pedersen, instruction: Instruction,
-    securities_ledger: &NoteLedger, cash_ledger: &NoteLedger,
-    securities: &LegInput, cash: &LegInput,
-    quantity: u64, price: u64,
-    instruction_amount_blinding: &Scalar, instruction_price_blinding: &Scalar,
-    context: &[u8], rng: &mut R,
+    key: &Pedersen,
+    instruction: Instruction,
+    securities_ledger: &NoteLedger,
+    cash_ledger: &NoteLedger,
+    securities: &LegInput,
+    cash: &LegInput,
+    quantity: u64,
+    price: u64,
+    instruction_amount_blinding: &Scalar,
+    instruction_price_blinding: &Scalar,
+    context: &[u8],
+    rng: &mut R,
 ) -> Result<NoteDvpPackage, &'static str> {
-    let value = quantity.checked_mul(price).ok_or("quantity times price overflows")?;
+    let value = quantity
+        .checked_mul(price)
+        .ok_or("quantity times price overflows")?;
 
     let sec = securities_ledger.build_spend(
-        securities.ring, securities.index, securities.opening,
-        &securities.tag, &securities.gamma,
-        &[(securities.payee, quantity),
-          (securities.change_to, securities.opening.value - quantity)],
-        &[context, b":sec"].concat(), rng)?;
+        securities.ring,
+        securities.index,
+        securities.opening,
+        &securities.tag,
+        &securities.gamma,
+        &[
+            (securities.payee, quantity),
+            (securities.change_to, securities.opening.value - quantity),
+        ],
+        &[context, b":sec"].concat(),
+        rng,
+    )?;
     let cash_spend = cash_ledger.build_spend(
-        cash.ring, cash.index, cash.opening, &cash.tag, &cash.gamma,
-        &[(cash.payee, value), (cash.change_to, cash.opening.value - value)],
-        &[context, b":cash"].concat(), rng)?;
+        cash.ring,
+        cash.index,
+        cash.opening,
+        &cash.tag,
+        &cash.gamma,
+        &[
+            (cash.payee, value),
+            (cash.change_to, cash.opening.value - value),
+        ],
+        &[context, b":cash"].concat(),
+        rng,
+    )?;
 
     // The payee's securities note has to carry the instructed quantity. Its
     // commitment lives under the tag, the instruction's under the base point,
     // so the two are joined across generators rather than by subtraction.
     let quantity_link = prove_same_value(
-        key, &mut transcript(context, "qty-link"),
-        &securities.tag, &key.g,
-        &sec.proof.outputs[0], &instruction.amount_commitment,
-        &Scalar::from(quantity), &sec.tagged_blindings[0],
-        instruction_amount_blinding, rng);
+        key,
+        &mut transcript(context, "qty-link"),
+        &securities.tag,
+        &key.g,
+        &sec.proof.outputs[0],
+        &instruction.amount_commitment,
+        &Scalar::from(quantity),
+        &sec.tagged_blindings[0],
+        instruction_amount_blinding,
+        rng,
+    );
 
     // The cash the seller receives, restated under the base point so the
     // product relation can be checked against the instruction alone.
     let cash_blinding = Scalar::random(rng);
     let cash_value_commitment = key.commit(&Scalar::from(value), &cash_blinding);
     let cash_link = prove_same_value(
-        key, &mut transcript(context, "cash-link"),
-        &cash.tag, &key.g,
-        &cash_spend.proof.outputs[0], &cash_value_commitment,
-        &Scalar::from(value), &cash_spend.tagged_blindings[0], &cash_blinding, rng);
+        key,
+        &mut transcript(context, "cash-link"),
+        &cash.tag,
+        &key.g,
+        &cash_spend.proof.outputs[0],
+        &cash_value_commitment,
+        &Scalar::from(value),
+        &cash_spend.tagged_blindings[0],
+        &cash_blinding,
+        rng,
+    );
 
     let value_proof = prove_product(
-        key, &mut transcript(context, "value"), &instruction.price_commitment,
-        &Scalar::from(price), instruction_price_blinding,
-        &Scalar::from(quantity), instruction_amount_blinding, &cash_blinding, rng);
+        key,
+        &mut transcript(context, "value"),
+        &instruction.price_commitment,
+        &Scalar::from(price),
+        instruction_price_blinding,
+        &Scalar::from(quantity),
+        instruction_amount_blinding,
+        &cash_blinding,
+        rng,
+    );
 
     Ok(NoteDvpPackage {
         instruction,
-        securities: NoteLeg { ring: securities.ring.to_vec(), spend: sec.proof, notes: sec.notes },
-        cash: NoteLeg { ring: cash.ring.to_vec(), spend: cash_spend.proof, notes: cash_spend.notes },
-        quantity_link, cash_value_commitment, cash_link, value_proof,
+        securities: NoteLeg {
+            ring: securities.ring.to_vec(),
+            spend: sec.proof,
+            notes: sec.notes,
+        },
+        cash: NoteLeg {
+            ring: cash.ring.to_vec(),
+            spend: cash_spend.proof,
+            notes: cash_spend.notes,
+        },
+        quantity_link,
+        cash_value_commitment,
+        cash_link,
+        value_proof,
     })
 }
 
@@ -170,22 +245,47 @@ pub struct NoteDefmi {
 }
 
 impl NoteDefmi {
-    pub fn new(key: Pedersen, securities: NoteLedger, cash: NoteLedger,
-               venue: Venue, signing: SigningKey) -> Self {
-        NoteDefmi { key, securities, cash, venue, signing }
+    pub fn new(
+        key: Pedersen,
+        securities: NoteLedger,
+        cash: NoteLedger,
+        venue: Venue,
+        signing: SigningKey,
+    ) -> Self {
+        NoteDefmi {
+            key,
+            securities,
+            cash,
+            venue,
+            signing,
+        }
     }
 
-    pub fn public_key(&self) -> VerifyingKey { self.signing.verifying_key() }
+    pub fn public_key(&self) -> VerifyingKey {
+        self.signing.verifying_key()
+    }
 
     fn check<R: RngCore + CryptoRng>(
-        &self, package: &NoteDvpPackage, now: u64, context: &[u8], rng: &mut R,
+        &self,
+        package: &NoteDvpPackage,
+        now: u64,
+        context: &[u8],
+        rng: &mut R,
     ) -> Result<(), &'static str> {
         self.venue.verify(&package.instruction, now)?;
 
-        self.securities.check_spend(&package.securities.ring, &package.securities.spend,
-                                    &[context, b":sec"].concat(), rng)?;
-        self.cash.check_spend(&package.cash.ring, &package.cash.spend,
-                              &[context, b":cash"].concat(), rng)?;
+        self.securities.check_spend(
+            &package.securities.ring,
+            &package.securities.spend,
+            &[context, b":sec"].concat(),
+            rng,
+        )?;
+        self.cash.check_spend(
+            &package.cash.ring,
+            &package.cash.spend,
+            &[context, b":cash"].concat(),
+            rng,
+        )?;
 
         for leg in [&package.securities, &package.cash] {
             if leg.notes.len() != leg.spend.outputs.len() {
@@ -202,30 +302,46 @@ impl NoteDefmi {
         }
 
         if !verify_same_value(
-            &self.key, &mut transcript(context, "qty-link"),
-            &package.securities.spend.tag, &self.key.g,
-            &package.securities.spend.outputs[0], &package.instruction.amount_commitment,
-            &package.quantity_link) {
+            &self.key,
+            &mut transcript(context, "qty-link"),
+            &package.securities.spend.tag,
+            &self.key.g,
+            &package.securities.spend.outputs[0],
+            &package.instruction.amount_commitment,
+            &package.quantity_link,
+        ) {
             return Err("securities leg does not deliver the instructed quantity");
         }
         if !verify_same_value(
-            &self.key, &mut transcript(context, "cash-link"),
-            &package.cash.spend.tag, &self.key.g,
-            &package.cash.spend.outputs[0], &package.cash_value_commitment,
-            &package.cash_link) {
+            &self.key,
+            &mut transcript(context, "cash-link"),
+            &package.cash.spend.tag,
+            &self.key.g,
+            &package.cash.spend.outputs[0],
+            &package.cash_value_commitment,
+            &package.cash_link,
+        ) {
             return Err("the cash leg does not match the value it claims");
         }
         if !verify_product(
-            &self.key, &mut transcript(context, "value"),
-            &package.instruction.price_commitment, &package.instruction.amount_commitment,
-            &package.cash_value_commitment, &package.value_proof) {
+            &self.key,
+            &mut transcript(context, "value"),
+            &package.instruction.price_commitment,
+            &package.instruction.amount_commitment,
+            &package.cash_value_commitment,
+            &package.value_proof,
+        ) {
             return Err("cash leg is not quantity times price");
         }
         Ok(())
     }
 
     pub fn settle<R: RngCore + CryptoRng>(
-        &mut self, package: NoteDvpPackage, now: u64, context: &[u8], rng: &mut R,
+        &mut self,
+        package: NoteDvpPackage,
+        now: u64,
+        context: &[u8],
+        rng: &mut R,
     ) -> NoteReceipt {
         let securities_before = self.securities.snapshot();
         let cash_before = self.cash.snapshot();
@@ -233,23 +349,45 @@ impl NoteDefmi {
 
         if status.is_ok() {
             // both legs are checked before either is applied
-            self.securities.apply_spend(&package.securities.spend, package.securities.notes)
+            self.securities
+                .apply_spend(&package.securities.spend, package.securities.notes)
                 .expect("checked");
-            self.cash.apply_spend(&package.cash.spend, package.cash.notes).expect("checked");
-            self.venue.settle(&package.instruction, now).expect("venue refused after checks");
+            self.cash
+                .apply_spend(&package.cash.spend, package.cash.notes)
+                .expect("checked");
+            self.venue
+                .settle(&package.instruction, now)
+                .expect("venue refused after checks");
         }
 
         let nullifier = package.instruction.nullifier();
         let settled = status.is_ok();
-        let reason = match status { Ok(()) => "settled", Err(why) => why };
+        let reason = match status {
+            Ok(()) => "settled",
+            Err(why) => why,
+        };
         let securities_after = self.securities.snapshot();
         let cash_after = self.cash.snapshot();
-        let digest = NoteReceipt::digest(&nullifier, settled, reason, &securities_before,
-                                         &securities_after, &cash_before, &cash_after, now);
+        let digest = NoteReceipt::digest(
+            &nullifier,
+            settled,
+            reason,
+            &securities_before,
+            &securities_after,
+            &cash_before,
+            &cash_after,
+            now,
+        );
         NoteReceipt {
-            nullifier, settled, reason,
-            securities_before, securities_after, cash_before, cash_after,
-            settled_at: now, signature: self.signing.sign(&digest),
+            nullifier,
+            settled,
+            reason,
+            securities_before,
+            securities_after,
+            cash_before,
+            cash_after,
+            settled_at: now,
+            signature: self.signing.sign(&digest),
         }
     }
 }

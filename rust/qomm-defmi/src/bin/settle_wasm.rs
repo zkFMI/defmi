@@ -26,12 +26,15 @@ use rand_core::OsRng;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-
 /// The two firms, named as the design says: one seed each, a handle for this
 /// venue, and account names derived from that handle.
 const VENUE: &[u8] = b"defmi:bench";
-fn seller() -> RistrettoPoint { Identity::from_seed([11u8; 32]).handle(VENUE).point }
-fn buyer() -> RistrettoPoint { Identity::from_seed([22u8; 32]).handle(VENUE).point }
+fn seller() -> RistrettoPoint {
+    Identity::from_seed([11u8; 32]).handle(VENUE).point
+}
+fn buyer() -> RistrettoPoint {
+    Identity::from_seed([22u8; 32]).handle(VENUE).point
+}
 
 fn median(mut xs: Vec<f64>) -> f64 {
     xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -43,13 +46,22 @@ fn run(bits: usize, repeats: usize) -> (f64, f64, f64, usize, usize) {
     let key = Pedersen::new(b"qomm:defmi:v1");
     let registry = AssetRegistry::new(key.clone(), 16);
     let (secret, public) = deal_quorum(7, 3, &mut rng).unwrap();
-    let shares: BTreeMap<_, _> = secret.into_iter()
+    let shares: BTreeMap<_, _> = secret
+        .into_iter()
         .map(|(id, s)| (id, frost::keys::KeyPackage::try_from(s).unwrap()))
         .collect();
-    let bounds = Bounds { amount_bits: bits, price_bits: bits, ..Bounds::default() };
+    let bounds = Bounds {
+        amount_bits: bits,
+        price_bits: bits,
+        ..Bounds::default()
+    };
     let issuer = Issuer::new(key.clone(), bounds.clone());
 
-    let ceiling = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
+    let ceiling = if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
     let quantity = 100u64.min((ceiling / 2).max(1));
     let price = 99_990u64.min(((ceiling / 2) / quantity).max(1));
 
@@ -60,8 +72,10 @@ fn run(bits: usize, repeats: usize) -> (f64, f64, f64, usize, usize) {
     // writes. Kept across repeats so the nullifier set grows the way it would
     let mut chain = ChainState::new();
     let accounts = [
-        account_of(&seller(), SECURITIES_RAIL), account_of(&buyer(), SECURITIES_RAIL),
-        account_of(&buyer(), CASH_RAIL), account_of(&seller(), CASH_RAIL),
+        account_of(&seller(), SECURITIES_RAIL),
+        account_of(&buyer(), SECURITIES_RAIL),
+        account_of(&buyer(), CASH_RAIL),
+        account_of(&seller(), CASH_RAIL),
     ];
     for account in &accounts {
         chain.open(account, RistrettoPoint::mul_base(&Scalar::from(1u64)));
@@ -69,23 +83,48 @@ fn run(bits: usize, repeats: usize) -> (f64, f64, f64, usize, usize) {
     let mut written = 0usize;
     for nonce in 0..repeats {
         let asset_key = key.with_value_generator(registry.tags[3]);
-        let sec = (5_000u64.max(quantity).min(ceiling), Scalar::random(&mut rng));
-        let cash_holding = (50_000_000u64.max(quantity * price).min(ceiling),
-                            Scalar::random(&mut rng));
+        let sec = (
+            5_000u64.max(quantity).min(ceiling),
+            Scalar::random(&mut rng),
+        );
+        let cash_holding = (
+            50_000_000u64.max(quantity * price).min(ceiling),
+            Scalar::random(&mut rng),
+        );
         let mut securities = Ledger::new(key.clone(), bits);
         let mut cash = Ledger::new(key.clone(), bits);
-        securities.open(&account_of(&seller(), SECURITIES_RAIL), asset_key.commit_u64(sec.0, &sec.1));
-        securities.open(&account_of(&buyer(), SECURITIES_RAIL), asset_key.commit_u64(0, &Scalar::random(&mut rng)));
-        cash.open(&account_of(&buyer(), CASH_RAIL), key.commit_u64(cash_holding.0, &cash_holding.1));
-        cash.open(&account_of(&seller(), CASH_RAIL), key.commit_u64(0, &Scalar::random(&mut rng)));
+        securities.open(
+            &account_of(&seller(), SECURITIES_RAIL),
+            asset_key.commit_u64(sec.0, &sec.1),
+        );
+        securities.open(
+            &account_of(&buyer(), SECURITIES_RAIL),
+            asset_key.commit_u64(0, &Scalar::random(&mut rng)),
+        );
+        cash.open(
+            &account_of(&buyer(), CASH_RAIL),
+            key.commit_u64(cash_holding.0, &cash_holding.1),
+        );
+        cash.open(
+            &account_of(&seller(), CASH_RAIL),
+            key.commit_u64(0, &Scalar::random(&mut rng)),
+        );
         let venue = Venue::new(key.clone(), &bounds, public.clone());
         let mut defmi = Defmi::new(key.clone(), securities, cash, venue);
 
-        let (digest, openings, partial) = issuer.build(
-            quantity, price, 3,
-            buyer(),   // pays cash, receives securities
-            seller(),  // delivers securities, receives cash
-            1_500, [nonce as u8; 32], 1_599_845, &mut rng).unwrap();
+        let (digest, openings, partial) = issuer
+            .build(
+                quantity,
+                price,
+                3,
+                buyer(),  // pays cash, receives securities
+                seller(), // delivers securities, receives cash
+                1_500,
+                [nonce as u8; 32],
+                1_599_845,
+                &mut rng,
+            )
+            .unwrap();
         let chosen: Vec<_> = shares.keys().take(3).cloned().collect();
         let mut nonces = BTreeMap::new();
         let mut commitments = BTreeMap::new();
@@ -97,8 +136,10 @@ fn run(bits: usize, repeats: usize) -> (f64, f64, f64, usize, usize) {
         let package_sig = frost::SigningPackage::new(commitments, &digest);
         let mut sig_shares = BTreeMap::new();
         for id in &chosen {
-            sig_shares.insert(*id,
-                frost::round2::sign(&package_sig, &nonces[id], &shares[id]).unwrap());
+            sig_shares.insert(
+                *id,
+                frost::round2::sign(&package_sig, &nonces[id], &shares[id]).unwrap(),
+            );
         }
         let signature = frost::aggregate(&package_sig, &sig_shares, &public).unwrap();
         let instruction = partial.sealed(signature);
@@ -106,14 +147,29 @@ fn run(bits: usize, repeats: usize) -> (f64, f64, f64, usize, usize) {
         let (tag, gamma) = registry.blind(3, false, &mut rng).unwrap();
         let t = Instant::now();
         let (pkg, _) = build_package(
-            &key, instruction, &defmi.securities, &defmi.cash,
-            quantity, price,
+            &key,
+            instruction,
+            &defmi.securities,
+            &defmi.cash,
+            quantity,
+            price,
             &Holdings {
-                securities_balance: sec.0, securities_blinding: sec.1,
-                cash_balance: cash_holding.0, cash_blinding: cash_holding.1,
+                securities_balance: sec.0,
+                securities_blinding: sec.1,
+                cash_balance: cash_holding.0,
+                cash_blinding: cash_holding.1,
             },
-            &InstructionOpenings { amount: openings.amount, price: openings.price },
-            Some(&tag), &gamma, None, &Scalar::ZERO, &mut rng).unwrap();
+            &InstructionOpenings {
+                amount: openings.amount,
+                price: openings.price,
+            },
+            Some(&tag),
+            &gamma,
+            None,
+            &Scalar::ZERO,
+            &mut rng,
+        )
+        .unwrap();
         build_ms.push(t.elapsed().as_secs_f64() * 1e3);
 
         let t = Instant::now();
@@ -124,9 +180,15 @@ fn run(bits: usize, repeats: usize) -> (f64, f64, f64, usize, usize) {
         // and the part a contract does once verification has passed
         let mut nullifier = [0u8; 32];
         nullifier[..8].copy_from_slice(&(nonce as u64).to_be_bytes());
-        let moves: Vec<(&[u8], RistrettoPoint)> = accounts.iter().enumerate()
-            .map(|(i, a)| (a.as_slice(),
-                RistrettoPoint::mul_base(&Scalar::from(nonce as u64 + 2 + i as u64))))
+        let moves: Vec<(&[u8], RistrettoPoint)> = accounts
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                (
+                    a.as_slice(),
+                    RistrettoPoint::mul_base(&Scalar::from(nonce as u64 + 2 + i as u64)),
+                )
+            })
             .collect();
         let t = Instant::now();
         let delta = chain.settle(nullifier, 1_000_000, 1, &moves).unwrap();
@@ -134,8 +196,13 @@ fn run(bits: usize, repeats: usize) -> (f64, f64, f64, usize, usize) {
         state_ms.push(t.elapsed().as_secs_f64() * 1e3);
         written = delta.bytes_written;
     }
-    (median(build_ms), median(settle_ms), median(state_ms), written,
-     chain.stored_bytes())
+    (
+        median(build_ms),
+        median(settle_ms),
+        median(state_ms),
+        written,
+        chain.stored_bytes(),
+    )
 }
 
 fn main() {
@@ -151,18 +218,27 @@ fn main() {
     std::hint::black_box(acc);
     let calib = t.elapsed().as_secs_f64() / 5_000.0 * 1e6;
 
-    let target = if cfg!(target_arch = "wasm32") { "wasm32" } else { "native" };
+    let target = if cfg!(target_arch = "wasm32") {
+        "wasm32"
+    } else {
+        "native"
+    };
     println!("target {target}, calibration scalar mult {calib:.2} us");
     let repeats: usize = if cfg!(target_arch = "wasm32") { 5 } else { 15 };
     let mut rows = Vec::new();
     for bits in [32usize, 64] {
         let (build, settle, state, written, held) = run(bits, repeats);
-        println!("  {bits:2} bits  build {build:8.3}  settle {settle:8.3}  state {state:7.4} ms  \
-{written} B written  -> {:8.1} settlements/s", 1000.0 / (settle + state));
+        println!(
+            "  {bits:2} bits  build {build:8.3}  settle {settle:8.3}  state {state:7.4} ms  \
+{written} B written  -> {:8.1} settlements/s",
+            1000.0 / (settle + state)
+        );
         rows.push(format!(
             "    {{\"bits\": {bits}, \"build_ms\": {build:.4}, \"settle_ms\": {settle:.4}, \
 \"state_ms\": {state:.4}, \"bytes_written\": {written}, \"state_bytes_held\": {held}, \
-\"per_second\": {:.2}}}", 1000.0 / (settle + state)));
+\"per_second\": {:.2}}}",
+            1000.0 / (settle + state)
+        ));
     }
     // stdout carries the table for a person; this carries it for the document
     // generator, and writing it from inside the sandbox is the only way the
@@ -172,19 +248,19 @@ fn main() {
         // host name to read, and a pair of readings whose only difference is
         // supposed to be the target is worthless if it cannot say they were
         // taken on one machine.
-        let host = std::env::var("QOMM_HOST_LABEL")
-            .unwrap_or_else(|_| "unlabelled".to_string());
+        let host = std::env::var("QOMM_HOST_LABEL").unwrap_or_else(|_| "unlabelled".to_string());
         // Which interpreter, for the same reason. The two readings differ by a
         // factor that an earlier pair did not show, and the first thing anyone
         // will ask is whether the runtime moved under it.
-        let runtime = std::env::var("QOMM_WASM_RUNTIME")
-            .unwrap_or_else(|_| "unrecorded".to_string());
+        let runtime =
+            std::env::var("QOMM_WASM_RUNTIME").unwrap_or_else(|_| "unrecorded".to_string());
         let json = format!(
             "{{\n  \"host\": \"{host}\",\n  \"target\": \"{target}\",\n  \
 \"runtime\": \"{runtime}\",\n  \
 \"repeats\": {repeats},\n  \
 \"calibration\": {{\"scalar_mult_us\": {calib:.4}}},\n  \"scaling\": [\n{}\n  ]\n}}\n",
-            rows.join(",\n"));
+            rows.join(",\n")
+        );
         std::fs::write(&path, json).expect("could not write the measurement");
         println!("wrote {path}");
     }

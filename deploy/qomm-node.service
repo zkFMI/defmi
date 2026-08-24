@@ -1,0 +1,24 @@
+[Unit]
+Description=QOMM resident MPC node %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qomm
+Group=qomm
+WorkingDirectory=/opt/qomm/current
+ExecStart=/opt/qomm/venv/bin/python /opt/qomm/current/scripts/serve_node.py --config /etc/qomm/node-%i.json
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/qomm
+ReadOnlyPaths=/etc/qomm /opt/qomm
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

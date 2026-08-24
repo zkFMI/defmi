@@ -4,6 +4,11 @@
 
 Delivery versus payment for committed holdings: two legs that move together or not at all.
 
+## Deployment target
+
+The deployment target is a dedicated **non-EVM Avalanche L1**. `avalanche/defmivm/` contains the custom VM and a one-command five-AvalancheGo-process acceptance run covering asset registration, account creation, atomic multi-leg settlement, replay rejection, restart recovery and state-root agreement. The `evm/` directory is retained only as a historical comparison benchmark; it is not the product execution path.
+
+
 ## What it does
 
 ```mermaid
@@ -71,10 +76,10 @@ flowchart LR
     NET --> CRED --> WF
 ```
 
-Exported from a single research tree by `scripts/export_repos.py`, which is why
-the layout is regular across the three repositories and why nothing here is
-hand-maintained. Corrections are welcome; they belong upstream, and the export
-is re-run.
+Generated from one shared research tree, which is why the layout is regular
+across the three repositories. This repository is nevertheless self-contained:
+its tests, locks, measurements and source do not require the private working
+tree.
 
 ## What is here
 
@@ -86,6 +91,7 @@ Python:
 
 - `defmi/`
 - `evm/`
+- `zk/`
 
 `artifacts/` holds the measurements the numbers in the paper are taken from, as
 the runners wrote them. Each carries the host it ran on as a label (`host-a`,
@@ -99,23 +105,20 @@ this copy does.
 - [`DEFMI.md`](DEFMI.md) --- the settlement layer: what it proves and what it refuses
 - [`REGULATION.md`](REGULATION.md) --- which accounts and which statutes a live deployment touches, in Japan and in four other jurisdictions
 - [`POSITION.md`](POSITION.md) --- what is new here and what is not, stated line by line against the nearest prior work
+- [`REVIEW.md`](REVIEW.md) --- what two rounds of review found, including what was checked and found sound
 
 ## Depends on
 
 - [zkpi](https://github.com/shukob/zkpi)
 
-Cargo picks these up as git dependencies and needs nothing from you. Python does not, so install them first:
-
-```
-pip install "zkpi @ git+https://github.com/shukob/zkpi"
-```
+Cargo and Python both resolve these repositories from the checked-in lock files.
 
 ## Running it
 
 ```
-cargo test --release          # in rust/
-pip install "zkpi @ git+https://github.com/shukob/zkpi"
-python3 -m pytest tests/      # from the repository root
+cargo test --workspace --all-targets --all-features --release  # in rust/
+uv sync --frozen
+uv run --frozen pytest tests/                               # repository root
 ```
 
 ## Measurements

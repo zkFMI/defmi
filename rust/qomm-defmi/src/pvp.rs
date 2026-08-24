@@ -100,28 +100,54 @@ impl Swap {
     /// The side that draws the secret and therefore moves first.
     pub fn proposer<R: RngCore + CryptoRng>(rng: &mut R) -> (Swap, Adaptor) {
         let adaptor = Adaptor::random(rng);
-        (Swap { adaptor_point: adaptor.point, secret: Some(adaptor.secret) }, adaptor)
+        (
+            Swap {
+                adaptor_point: adaptor.point,
+                secret: Some(adaptor.secret),
+            },
+            adaptor,
+        )
     }
 
     /// The side that is told the adaptor point and has to wait for the secret.
     pub fn responder(adaptor_point: RistrettoPoint) -> Swap {
-        Swap { adaptor_point, secret: None }
+        Swap {
+            adaptor_point,
+            secret: None,
+        }
     }
 
     /// Put a payer's money into escrow and produce the authority to release it.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare<R: RngCore + CryptoRng>(
-        &self, ledger: &mut Ledger, id: &[u8], payer: &[u8], payee: &[u8],
-        signing_key: &Scalar, transfer: &Transfer, context: &[u8],
-        amount_bounded: bool, deadline: u64, rng: &mut R,
+        &self,
+        ledger: &mut Ledger,
+        id: &[u8],
+        payer: &[u8],
+        payee: &[u8],
+        signing_key: &Scalar,
+        transfer: &Transfer,
+        context: &[u8],
+        amount_bounded: bool,
+        deadline: u64,
+        rng: &mut R,
     ) -> Result<Leg, &'static str> {
-        ledger.prepare_transfer(id, payer, payee, transfer, context,
-                                amount_bounded, deadline)?;
+        let release_key = adaptor::public_key(signing_key);
+        ledger.prepare_transfer(
+            id,
+            payer,
+            payee,
+            transfer,
+            context,
+            amount_bounded,
+            deadline,
+            &release_key,
+        )?;
         Ok(Leg {
             id: id.to_vec(),
             payer: payer.to_vec(),
             payee: payee.to_vec(),
-            payer_key: adaptor::public_key(signing_key),
+            payer_key: release_key,
             deadline,
             release: adaptor::pre_sign(signing_key, &self.adaptor_point, id, rng),
         })
@@ -132,18 +158,32 @@ impl Swap {
     /// Only the holder of the secret can do this, which is why the party who
     /// drew it goes first. The signature it publishes is what the other side
     /// reads to learn the secret.
-    pub fn claim(&self, ledger: &mut Ledger, leg: &Leg, now: u64)
-        -> Result<Signature, &'static str> {
-        let secret = self.secret.ok_or("this side does not hold the secret yet")?;
+    pub fn claim(
+        &self,
+        ledger: &mut Ledger,
+        leg: &Leg,
+        now: u64,
+    ) -> Result<Signature, &'static str> {
+        let secret = self
+            .secret
+            .ok_or("this side does not hold the secret yet")?;
         self.claim_with(ledger, leg, &secret, now)
     }
 
     /// Take the money using a secret learned from the other ledger.
-    pub fn claim_with(&self, ledger: &mut Ledger, leg: &Leg, secret: &Scalar, now: u64)
-        -> Result<Signature, &'static str> {
-        let adaptor = Adaptor { secret: *secret, point: self.adaptor_point };
+    pub fn claim_with(
+        &self,
+        ledger: &mut Ledger,
+        leg: &Leg,
+        secret: &Scalar,
+        now: u64,
+    ) -> Result<Signature, &'static str> {
+        let adaptor = Adaptor {
+            secret: *secret,
+            point: self.adaptor_point,
+        };
         let release = adaptor::adapt(&leg.release, &adaptor);
-        ledger.commit_pending(&leg.id, &leg.payer_key, &release, now)?;
+        ledger.commit_pending(&leg.id, &release, now)?;
         Ok(release)
     }
 
@@ -161,8 +201,7 @@ impl Swap {
     }
 
     /// Take an expired escrow back. Needs no secret and no counterparty.
-    pub fn unwind(&self, ledger: &mut Ledger, leg: &Leg, now: u64)
-        -> Result<(), &'static str> {
+    pub fn unwind(&self, ledger: &mut Ledger, leg: &Leg, now: u64) -> Result<(), &'static str> {
         ledger.unwind_pending(&leg.id, now)
     }
 
