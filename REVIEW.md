@@ -2007,9 +2007,9 @@ runners one by one is exactly what the Python did.
 
 | repository | files before | after | tests, run from inside the exported tree |
 |---|---:|---:|---:|
-| zkpi | 84 | 85 | 249 |
-| defmi | 177 | 209 | 484 |
-| qomm | 368 | 330 | 478 |
+| zkpi | 84 | 85 | 250 |
+| defmi | 177 | 209 | 485 |
+| qomm | 368 | 330 | 479 |
 
 Verified independently of the exporter's own report: the three trees were
 exported, entered, and `cargo test --workspace` run inside each. No `.py` in any
