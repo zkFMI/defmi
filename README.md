@@ -83,22 +83,31 @@ tree.
 
 ## What is here
 
-Rust:
+Rust crates:
 
 - `rust/qomm-defmi`
+- `rust/qomm-proofs`
+- `rust/qomm-zk`
+- `rust/qomm-zkpi`
+- `rust/qomm-measure`
+- `rust/qomm-sim`
+- `rust/qomm-harness`
 
-Python:
+Measurement binaries carried by `qomm-harness`:
 
-- `defmi/`
-- `evm/`
-- `zk/`
+- `build_defmi_doc`
+- `ed_reference`
+- `run_avalanche_l1_acceptance`
+- `run_deccp`
+- `run_defmi`
+- `run_evm`
+- `run_reconcile`
+- `run_viewing`
 
 `artifacts/` holds the measurements the numbers in the paper are taken from, as
-the runners wrote them. Each carries the host it ran on as a label (`host-a`,
-`host-b`, `host-c`) rather than a machine name, and the mapping back is not
-published --- it names people's machines. `scripts/hosts.py` reads it from a
-local file when there is one and labels nothing when there is not, which is what
-this copy does.
+the binaries wrote them. Each carries the host it ran on as a label (`host-a`,
+`host-b`, `host-c`) rather than a machine name; the private mapping back
+to real machines is not published.
 
 ## Documents
 
@@ -109,23 +118,22 @@ this copy does.
 
 ## Depends on
 
-- [zkpi](https://github.com/shukob/zkpi)
+- [qomm](https://github.com/shukob/qomm)
 
-Cargo and Python both resolve these repositories from the checked-in lock files.
+Cargo resolves these repositories from the checked-in lock file.
 
 ## Running it
 
-```
-cargo test --workspace --all-targets --all-features --release  # in rust/
-uv sync --frozen
-uv run --frozen pytest tests/                               # repository root
+```sh
+cd rust
+cargo test -j 4 --locked --workspace
 ```
 
 ## Measurements
 
-Every reported number has an artifact and a command that produces it. Where a
+Every reported number has an artifact and a Rust binary that produces it. Where a
 measurement needs something not shipped here --- MP-SPDZ, a second host, a market
-data feed --- the command says so and fails rather than substituting a default.
+data feed --- the binary says so and fails rather than substituting a default.
 
 ## License
 

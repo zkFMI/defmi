@@ -1,130 +1,130 @@
 {
-  "host": "host-c",
   "group": "ed25519",
+  "host": "host-a",
   "participants": 8,
   "rows": [
     {
+      "book_flat_without_a_proof": true,
+      "check_us_per_trade": 82.7,
+      "deccp_added_to_attested": {
+        "max": 1.408525,
+        "mean": 1.4008326666666668,
+        "median": 1.407802,
+        "min": 1.386171,
+        "n": 3,
+        "rsd": 0.009067835929897081,
+        "sd": 0.012702520786573543
+      },
+      "deccp_total": 18.758323,
+      "edges": {
+        "after": 32,
+        "before": 16
+      },
+      "net_net": {
+        "max": 82.898968,
+        "mean": 71.491392,
+        "median": 65.911479,
+        "min": 65.663729,
+        "n": 3,
+        "rsd": 0.13819883671590896,
+        "sd": 9.88002720960104
+      },
+      "net_net_attested": {
+        "max": 17.370282,
+        "mean": 17.355207,
+        "median": 17.350521,
+        "min": 17.344818,
+        "n": 3,
+        "rsd": 0.000769977121252674,
+        "sd": 0.013363112324604255
+      },
+      "novate_us_per_trade": 0.63,
+      "speedup_attested_vs_plain": 3.8,
+      "speedup_deccp_vs_plain": 3.51,
       "trades": 16,
-      "net_net": {
-        "n": 3,
-        "mean": 369.2706953443121,
-        "sd": 4.535017077886865,
-        "median": 366.83695795363747,
-        "min": 366.4720850356389,
-        "max": 374.50304304366,
-        "rsd": 0.012281009934076584
-      },
-      "net_net_attested": {
-        "n": 3,
-        "mean": 174.05576165765524,
-        "sd": 2.543325200983549,
-        "median": 175.0140810618177,
-        "min": 171.17249692091718,
-        "max": 175.98070699023083,
-        "rsd": 0.014612128761275567
-      },
-      "deccp_added_to_attested": {
-        "n": 3,
-        "mean": 0.6301673323226472,
-        "sd": 0.0771267823316562,
-        "median": 0.590666983043775,
-        "min": 0.5807920242659748,
-        "max": 0.7190429896581918,
-        "rsd": 0.12239095614078435
-      },
-      "deccp_total": 175.60474804486148,
-      "speedup_attested_vs_plain": 2.1,
-      "speedup_deccp_vs_plain": 2.09,
-      "novate_us_per_trade": 14.96,
-      "check_us_per_trade": 18.86,
-      "verify_per_order_ms_plain": 196.94,
-      "book_flat_without_a_proof": true,
-      "edges": {
-        "before": 16,
-        "after": 32
-      }
+      "verify_per_order_ms_plain": 3.39
     },
     {
+      "book_flat_without_a_proof": true,
+      "check_us_per_trade": 79.17,
+      "deccp_added_to_attested": {
+        "max": 5.373759,
+        "mean": 5.353230666666666,
+        "median": 5.343598,
+        "min": 5.342335,
+        "n": 3,
+        "rsd": 0.003323090595407945,
+        "sd": 0.0177892704834494
+      },
+      "deccp_total": 22.773158,
+      "edges": {
+        "after": 128,
+        "before": 64
+      },
+      "net_net": {
+        "max": 211.00089899999998,
+        "mean": 210.93031466666665,
+        "median": 210.92641700000001,
+        "min": 210.86362799999995,
+        "n": 3,
+        "rsd": 0.0003257874649789966,
+        "sd": 0.0687184525024754
+      },
+      "net_net_attested": {
+        "max": 17.440496,
+        "mean": 17.431544,
+        "median": 17.42956,
+        "min": 17.424576,
+        "n": 3,
+        "rsd": 0.0004671604573056612,
+        "sd": 0.008143328066583754
+      },
+      "novate_us_per_trade": 0.48,
+      "speedup_attested_vs_plain": 12.1,
+      "speedup_deccp_vs_plain": 9.26,
       "trades": 64,
-      "net_net": {
-        "n": 3,
-        "mean": 946.7736793449149,
-        "sd": 8.246779268851038,
-        "median": 944.4515000504907,
-        "min": 939.9369579914492,
-        "max": 955.9325799928047,
-        "rsd": 0.00871040191416928
-      },
-      "net_net_attested": {
-        "n": 3,
-        "mean": 173.17452671704814,
-        "sd": 2.4642444622605515,
-        "median": 171.7811209964566,
-        "min": 171.72266816487536,
-        "max": 176.01979098981246,
-        "rsd": 0.014229832233275909
-      },
-      "deccp_added_to_attested": {
-        "n": 3,
-        "mean": 2.16008298836338,
-        "sd": 0.024249270857457074,
-        "median": 2.173916989704594,
-        "min": 2.1320829982869327,
-        "max": 2.174248977098614,
-        "rsd": 0.011226082973705517
-      },
-      "deccp_total": 173.9550379861612,
-      "speedup_attested_vs_plain": 5.5,
-      "speedup_deccp_vs_plain": 5.43,
-      "novate_us_per_trade": 16.15,
-      "check_us_per_trade": 17.0,
-      "verify_per_order_ms_plain": 777.58,
-      "book_flat_without_a_proof": true,
-      "edges": {
-        "before": 64,
-        "after": 128
-      }
+      "verify_per_order_ms_plain": 3.03
     },
     {
-      "trades": 256,
-      "net_net": {
+      "book_flat_without_a_proof": true,
+      "check_us_per_trade": 76.25,
+      "deccp_added_to_attested": {
+        "max": 20.5967,
+        "mean": 20.564333333333334,
+        "median": 20.583799,
+        "min": 20.512501,
         "n": 3,
-        "mean": 3258.0020426636715,
-        "sd": 12.063100316264125,
-        "median": 3256.309996242635,
-        "min": 3246.8742977362126,
-        "max": 3270.8218340121675,
-        "rsd": 0.003702606738208671
+        "rsd": 0.0022052367246261145,
+        "sd": 0.04534922308411963
+      },
+      "deccp_total": 38.302265000000006,
+      "edges": {
+        "after": 512,
+        "before": 256
+      },
+      "net_net": {
+        "max": 796.3474560000002,
+        "mean": 794.5668546666669,
+        "median": 793.77575,
+        "min": 793.5773580000007,
+        "n": 3,
+        "rsd": 0.0019447491451796823,
+        "sd": 1.5452332114011094
       },
       "net_net_attested": {
+        "max": 17.740503999999998,
+        "mean": 17.725781333333334,
+        "median": 17.718466000000003,
+        "min": 17.718374,
         "n": 3,
-        "mean": 178.44095573915789,
-        "sd": 0.266025300052785,
-        "median": 178.45495539950207,
-        "min": 178.16820702864788,
-        "max": 178.69970478932373,
-        "rsd": 0.0014908309527419058
+        "rsd": 0.0007193074360904596,
+        "sd": 0.01275028632358013
       },
-      "deccp_added_to_attested": {
-        "n": 3,
-        "mean": 8.278137994542098,
-        "sd": 0.012616118402723368,
-        "median": 8.276165986899287,
-        "min": 8.266624005045742,
-        "max": 8.291623991681263,
-        "rsd": 0.00152402852079071
-      },
-      "deccp_total": 186.73112138640136,
-      "speedup_attested_vs_plain": 18.25,
-      "speedup_deccp_vs_plain": 17.44,
-      "novate_us_per_trade": 15.98,
-      "check_us_per_trade": 16.05,
-      "verify_per_order_ms_plain": 3088.46,
-      "book_flat_without_a_proof": true,
-      "edges": {
-        "before": 256,
-        "after": 512
-      }
+      "novate_us_per_trade": 0.53,
+      "speedup_attested_vs_plain": 44.8,
+      "speedup_deccp_vs_plain": 20.72,
+      "trades": 256,
+      "verify_per_order_ms_plain": 3.04
     }
   ]
 }

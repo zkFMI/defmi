@@ -9,7 +9,7 @@ root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 qomm_root="$(CDPATH= cd -- "$root/../.." && pwd)"
 runner="${AVALANCHE_NETWORK_RUNNER:-$(command -v avalanche-network-runner || true)}"
 avalanchego="${AVALANCHEGO_PATH:-$(command -v avalanchego || true)}"
-python_cmd="${QOMM_PYTHON:-uv run --frozen python}"
+acceptance_bin="${QOMM_AVALANCHE_ACCEPTANCE_BIN:-$qomm_root/rust/target/release/run_avalanche_l1_acceptance}"
 runner_port="${QOMM_ANR_PORT:-18080}"
 gateway_port="${QOMM_ANR_GATEWAY_PORT:-18081}"
 endpoint="localhost:${runner_port}"
@@ -21,6 +21,10 @@ if [[ -z "$runner" || ! -x "$runner" ]]; then
 fi
 if [[ -z "$avalanchego" || ! -x "$avalanchego" ]]; then
   echo "AVALANCHEGO_PATH must name an executable AvalancheGo binary" >&2
+  exit 2
+fi
+if [[ ! -x "$acceptance_bin" ]]; then
+  echo "QOMM_AVALANCHE_ACCEPTANCE_BIN must name the built Rust acceptance binary" >&2
   exit 2
 fi
 
@@ -94,8 +98,7 @@ for uri in $uri_line; do
 done
 
 cd "$qomm_root"
-# shellcheck disable=SC2086
-$python_cmd scripts/run_avalanche_l1_acceptance.py \
+"$acceptance_bin" \
   --chain-id "$chain_id" "${node_args[@]}" \
   --projection "$projection" --out "$out" \
   --runner "$runner" --avalanchego "$avalanchego" \

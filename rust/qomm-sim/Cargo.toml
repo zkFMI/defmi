@@ -1,0 +1,9 @@
+[package]
+name = "qomm-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The market, the order flow, the disclosure regimes and the attacks the study measures."
+
+[dependencies]
+qomm-measure.workspace = true

@@ -1,15 +1,15 @@
 {
-  "host": "host-c",
+  "host": "host-a",
   "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
   "group": "ristretto255",
   "quantity": 100,
   "price": 99990,
   "repeats": 25,
-  "calibration": {"scalar_mult_us": 35.8356, "range_proof_64bit_ms": 8.9108},
+  "calibration": {"scalar_mult_us": 25.7854, "range_proof_64bit_ms": 7.0683},
   "scaling": [
-    {"bits": 8, "issue_ms": 3.8772, "build_ms": 3.5315, "settle_ms": 2.1565, "package_bytes": 2240, "per_second": 463.71},
-    {"bits": 16, "issue_ms": 6.0089, "build_ms": 5.7639, "settle_ms": 3.0354, "package_bytes": 2432, "per_second": 329.45},
-    {"bits": 32, "issue_ms": 10.4310, "build_ms": 10.3271, "settle_ms": 4.8488, "package_bytes": 2624, "per_second": 206.24},
-    {"bits": 64, "issue_ms": 19.0243, "build_ms": 18.8186, "settle_ms": 7.7850, "package_bytes": 2816, "per_second": 128.45}
+    {"bits": 8, "issue_ms": 3.2415, "build_ms": 3.1556, "settle_ms": 2.0925, "package_bytes": 2656, "per_second": 477.89},
+    {"bits": 16, "issue_ms": 4.9934, "build_ms": 4.9854, "settle_ms": 2.7755, "package_bytes": 2912, "per_second": 360.30},
+    {"bits": 32, "issue_ms": 8.3338, "build_ms": 8.4819, "settle_ms": 4.2584, "package_bytes": 3168, "per_second": 234.83},
+    {"bits": 64, "issue_ms": 14.8622, "build_ms": 15.3056, "settle_ms": 7.0159, "package_bytes": 3424, "per_second": 142.53}
   ]
 }

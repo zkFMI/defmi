@@ -390,7 +390,7 @@ The scoping is not in the key. It is in the **address**. A scope --- an instrume
 
 The scan is one scalar multiplication a note, the same as a wallet scanning for itself, at 0.0585 ms. With 4 scopes in the pool plus a stranger's notes the holder reaches about a fifth of it, which is the fifth it was granted --- and **no serial numbers at all**, because a serial needs the spend key and the grant does not carry one.
 
-A grant is 0.04 ± 0.00 (n=15) to issue and 0.05 ± 0.00 (n=15) to check. It names the grantee and is signed by the wallet, so a key found somewhere it should not be traces to the grant that produced it --- attribution rather than prevention, the same trade `roles.py` makes about a dealt share.
+A grant is 0.04 ± 0.00 (n=15) to issue and 0.05 ± 0.00 (n=15) to check. It names the grantee and is signed by the wallet, so a key found somewhere it should not be traces to the grant that produced it --- attribution rather than prevention, the same trade `rust/qomm-transport/src/roles.rs` makes about a dealt share.
 
 ### 6.6.1 Three limits that do not go away
 

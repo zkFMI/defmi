@@ -1,0 +1,55 @@
+[package]
+name = "qomm-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+autobins = false
+
+[dependencies]
+qomm-defmi = { path = "../qomm-defmi" }
+qomm-measure = { path = "../qomm-measure" }
+qomm-proofs = { path = "../qomm-proofs" }
+qomm-sim = { path = "../qomm-sim" }
+qomm-zk = { path = "../qomm-zk" }
+qomm-zkpi = { path = "../qomm-zkpi" }
+curve25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+merlin.workspace = true
+rand.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+sha2.workspace = true
+num-bigint = "0.4"
+num-traits = "0.2"
+
+[[bin]]
+name = "build_defmi_doc"
+path = "src/bin/build_defmi_doc.rs"
+
+[[bin]]
+name = "ed_reference"
+path = "src/bin/ed_reference.rs"
+
+[[bin]]
+name = "run_avalanche_l1_acceptance"
+path = "src/bin/run_avalanche_l1_acceptance.rs"
+
+[[bin]]
+name = "run_deccp"
+path = "src/bin/run_deccp.rs"
+
+[[bin]]
+name = "run_defmi"
+path = "src/bin/run_defmi.rs"
+
+[[bin]]
+name = "run_evm"
+path = "src/bin/run_evm.rs"
+
+[[bin]]
+name = "run_reconcile"
+path = "src/bin/run_reconcile.rs"
+
+[[bin]]
+name = "run_viewing"
+path = "src/bin/run_viewing.rs"

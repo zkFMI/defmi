@@ -1,6 +1,0 @@
-# forge install puts the standard library here; it is a dependency, not source.
-lib/
-# build output and the compiler's cache
-out/
-cache/
-broadcast/

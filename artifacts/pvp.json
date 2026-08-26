@@ -5,14 +5,14 @@
   "rail_bits": 32,
   "amount": 1000,
   "repeats": 25,
-  "calibration": {"scalar_mult_us": {"n": 200, "mean": 25.591180, "sd": 1.491418, "median": 25.234500, "min": 25.146000, "max": 34.996000}},
+  "calibration": {"scalar_mult_us": {"n": 200, "mean": 25.943210, "sd": 2.254423, "median": 25.474000, "min": 25.363000, "max": 49.417000}},
   "milliseconds": {
-    "prepare": {"n": 25, "mean": 1.284853, "sd": 0.011233, "median": 1.281480, "min": 1.270962, "max": 1.330492},
-    "claim": {"n": 25, "mean": 0.046687, "sd": 0.001504, "median": 0.046021, "min": 0.045763, "max": 0.051829},
-    "react": {"n": 25, "mean": 0.057415, "sd": 0.001755, "median": 0.057148, "min": 0.054846, "max": 0.062492}
+    "prepare": {"n": 25, "mean": 1.291011, "sd": 0.015057, "median": 1.286644, "min": 1.273230, "max": 1.338142},
+    "claim": {"n": 25, "mean": 0.050732, "sd": 0.002608, "median": 0.049381, "min": 0.049075, "max": 0.057312},
+    "react": {"n": 25, "mean": 0.060605, "sd": 0.001594, "median": 0.060052, "min": 0.059553, "max": 0.065310}
   },
   "microseconds": {
-    "unwind": {"n": 25, "mean": 0.630080, "sd": 0.035455, "median": 0.625000, "min": 0.584000, "max": 0.719000}
+    "unwind": {"n": 25, "mean": 0.552760, "sd": 0.034506, "median": 0.539000, "min": 0.522000, "max": 0.637000}
   },
   "note": "react is the floor on the deadline gap: it excludes the time for one ledger to publish and the other to accept"
 }

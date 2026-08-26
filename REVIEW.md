@@ -176,10 +176,10 @@ Recorded because a review that lists only failures says nothing about coverage.
   the request is real, a size no maker can fill, and the makers' policies, and
   every node reads the same number of values in all of them. The generator runs
   in the clear, so this is a test and not a reading
-  (`tests/test_circuit_is_oblivious.py`).
+  (`rust/qomm-mpc/tests/circuit_is_oblivious.rs`).
 - **A slot on the wire is the same whether or not anyone asked.** Same length,
   every share field-uniform, padding random on both arms
-  (`tests/test_wire_is_uniform.py`).
+  (`rust/qomm-transport/tests/wire.rs`).
 - **The registry refuses a substituted rule and accepts a substituted
   parameter**, checked against circuits the generator emits rather than a
   stand-in: the tournament arity, the field width, the number of markets, adding
@@ -209,7 +209,7 @@ the reference against the simulator's `MarketMaker.quote`; the body never called
 it, and the two could not have been compared anyway, being different
 abstractions on purpose. The second opinion is now written from the language's
 statement of the rule rather than from the generator, and they agree
-(`tests/test_reference_has_a_second_opinion.py`).
+(`rust/qomm-mpc/tests/program_parity.rs`).
 
 ---
 
@@ -539,13 +539,13 @@ saying because it was a fair thing to suspect. Sweeping it: 2 pairs 1.01, 4 pair
 Three scripts multiplied the standard error by 1.96 at every `n`. At the eight
 seeds the disclosure-harm arms ran, the multiplier the sample earns is 2.365; at
 the five seeds a per-symbol cell runs, 2.776. The quantile is now derived from
-the incomplete beta already in `audit.py`, checked against the published table
+the incomplete beta now in `rust/qomm-measure/src/beta.rs`, checked against the published table
 at eight degrees of freedom (12.706, 4.303, 2.776, 2.365, 2.179, 2.086, 2.064,
 1.980 --- all agreeing to four places).
 
 ### The pre-registration said five repetitions and three were run
 
-`THEORY.md` fixed five repetitions or more in advance. `run_three_times.py`
+`THEORY.md` fixed five repetitions or more in advance. `rust/qomm-harness/src/bin/run_three_times.rs`
 defaulted to
 `--slots 3` and nobody passed the flag, so three is what the artifact holds. The
 deviation came from a default that disagreed with the plan rather than from a
@@ -559,10 +559,12 @@ tests importing `zk`, which neither export carried, so four tests in one and two
 in the other failed at import --- and the check printed "exports agree on the
 shared modules and carry what they declare" the whole time.
 
-The check now runs `pytest --collect-only` in each export. `zk` is exported to
-all three repositories, and because a package in more than one export is two
-copies that can drift, `verify` compares them the way it already compared the
-shared files. All three suites run: zkpi 256, defmi 128, qomm 357.
+The exporter now creates a minimal `qomm-harness` for each repository, generates
+that repository's actual Cargo workspace, and runs `cargo test --locked --workspace`
+from an isolated copy of each exported
+tree. This catches missing Rust source, missing crate or bin dependencies,
+non-compiling generated manifests, and failing unit or integration tests; the
+former collection-only check could see none of those Rust failures.
 
 This one was not found by reading the code. It was found by running the thing
 the check claimed was fine, which is the only way this class of defect surfaces.
@@ -675,7 +677,7 @@ first pins `(b, r)` opening `C`, so `b = B` by binding; the second forces
 
 ### What was built
 
-`zk/threshold_range.py`, with `deal_bits` modelling what an MPC decomposition
+`rust/qomm-proofs/src/threshold_range.rs`, with `deal_bits` modelling what an MPC decomposition
 hands over --- shares of each bit, its blinding, and the cross term
 `s = r(1-b)`, which is one multiplication. Nothing in the assembly path ever
 sees a bit.
@@ -1051,7 +1053,7 @@ in section 12 said was needed; now it is code.
 
 The 1.06x per-node figure was arithmetic --- total work divided by the quorum ---
 from one process that held every share and could have reconstructed every
-witness. `run_distributed_assembly.py` runs one OS process per node, each handed
+witness. `rust/qomm-harness/src/bin/run_distributed_assembly.rs` runs one OS process per node, each handed
 **one share of each value and nothing of anyone else's**, asserted rather than
 described. On host-a: 8.7 ms wall, 3.4 ms of it a node actually waiting, 288
 bytes between them, and the proof verifies.
@@ -1065,7 +1067,7 @@ it was measured, and the measurement went somewhere else.
 
 ### The instrument first
 
-`market.py` states the channel the whole disclosure design rests on:
+`rust/qomm-sim/src/market.rs` states the channel the whole disclosure design rests on:
 
 > The premium is proportional to the maker's *estimate* of the informed
 > fraction. A better estimate is worth money, which is the channel through which
@@ -1166,7 +1168,7 @@ elaborate the mechanism: a quote *is* `m + skew ± half`, the midpoint is
 `m + skew` whatever the half spread, so the answer carries the maker's
 inventory.
 
-`attackers.py:322` computes **two** correlations, not one:
+`rust/qomm-sim/src/attackers.rs` computes **two** correlations, not one:
 
 | estimator | input | target | populated in |
 |---|---|---|---|
@@ -1186,7 +1188,7 @@ The aggregate figure is identical across all six arms to four decimal places, so
 cancellation argument describes the **per-maker** attack, where the half spread
 does cancel and the correlation is 0.96--0.99 --- and that attack has no input
 at all against this design, because `best_ask` and `best_bid` come from
-different makers and per-maker quotes are never published (`engine.py:90`, "only
+different makers and per-maker quotes are never published (`rust/qomm-sim/src/engine.rs`, "only
 leaked by plain protocols").
 
 Two consequences. The mechanism as written **cannot produce the measured
@@ -1196,7 +1198,7 @@ inventory recovery entirely --- **is in the artifacts and in no sentence of the
 paper**. Writing it correctly makes the result better, not worse.
 
 `probe_budget.json` inherits the confusion: its `attack` field says "own
-two-sided quotes" while `run_probe_budget.py:76` runs QOMM and reads the
+two-sided quotes" while `rust/qomm-harness/src/bin/run_probe_budget.rs` runs QOMM and reads the
 aggregate estimator. The 24 and 96 probe figures, and the shipped cap of 60,
 are calibrated on the **generated** market, where the aggregate attack is 3x
 stronger than on Bybit and 8x stronger than on UniswapX. The cap is therefore
@@ -1239,7 +1241,7 @@ are a projection from off-chain timing, not a measurement of a transaction. The
 paper says elsewhere that the verifier is not deployable on chain
 (`main.tex:1956`) and that the measured settlement is in-process.
 
-The premise is not baseless --- `engine.py:17` states the simulator's leakage
+The premise is not baseless --- `rust/qomm-sim/src/engine.rs` states the simulator's leakage
 model as "in every arm a settled trade is visible on chain (wallet, size,
 time)", and the stated adversary sees what the settlement layer publishes --- but
 it is a **design assumption**, not a result, and it was cited as a measurement.
@@ -1249,7 +1251,7 @@ would test it. That is circular and is now recorded as such.
 
 ### 4. The settlement leakage model and the zkPI design disagree (found here)
 
-Not on either list; it follows from 3 and 5 together. `engine.py:17` grants the
+Not on either list; it follows from 3 and 5 together. `rust/qomm-sim/src/engine.rs` grants the
 observer wallet, size and time on every settled trade. The zkPI of section 12
 hides asset, quantity and price behind Pedersen commitments and gives the venue
 only the second field group (`main.tex:1510`, `main.tex:1537`). **The half of
@@ -1264,8 +1266,8 @@ the paper does not say which.
 `main.tex:1216`: "Detecting from settlements whether a trade was informed is
 unchanged (AUC 0.83) in every regime."
 
-`attackers.py:490` scores `stl.direction` in the clear. Direction is **not** in
-`engine.py:17`'s list of what a settled trade reveals, and it is committed
+`rust/qomm-sim/src/attackers.rs` scores `stl.direction` in the clear. Direction is **not** in
+`rust/qomm-sim/src/engine.rs`'s list of what a settled trade reveals, and it is committed
 rather than opened under the zkPI. So the attack is run against a settlement
 model that neither the simulator's own contract nor the design describes.
 
@@ -1322,7 +1324,7 @@ quoted pair either: −0.0344 against −0.0053 is 6.5x.
 `main.tex:2265` says the residual "clears the noise" by 4.7x at six hundred
 blocks and is "what the epsilon buys".
 
-`run_block_range_query.py:203` fits an ordinary least squares line of distinct
+`rust/qomm-harness/src/bin/run_block_range_query.rs` fits an ordinary least squares line of distinct
 entities on fill count **over the same 400 sampled ranges it then scores**, and
 compares the population standard deviation of those in-sample residuals against
 the *theoretical* one-answer noise standard deviation. The real-identity arm
@@ -1340,7 +1342,7 @@ answers and measures recovery has to be built.
 `main.tex:67`: RFQ, RFM and RFS "leak the existence, direction, size and timing
 of a request to every market maker".
 
-`engine.py:10`:
+`rust/qomm-sim/src/engine.rs`:
 
 ```
 plain_rfq  asset, size, direction, wallet, time
@@ -1362,3 +1364,810 @@ quorum can prove the opened quote is the registered-policy minimum, which
 section 12 fixed and pinned. Six of the nine are reporting defects with the
 conclusion intact; 2 is a causal story that has to go; 7 and 8 change what may
 be claimed from a measurement that stands.
+
+---
+
+## 16. The Rust port collapsed entities where the Python did not
+
+`lab::build` maps `tape_entities = None` to one entity per observed address and
+`Some(n)` to a round-robin collapse into `n`. Python's `lab.build` defaulted the
+argument to `None`. The Rust port defaulted it to `Some(24)`.
+
+That is not a cosmetic divergence. It means every Rust tape run collapsed the
+addresses a tape shows into twenty-four synthetic firms while the Python it was
+ported from kept them apart, so the two languages were not measuring the same
+population. The port's own test asserted the collapsed count and recorded, in
+its comment, that whether the default should change "moves every tape
+measurement, so it is recorded rather than taken here". It was taken here.
+
+### What the tape actually carries
+
+The two tape kinds are not alike, and the earlier code treated them as if they
+were.
+
+- **UniswapX** rows carry a real swapper address. An entity *is* an address, so
+  per-address is the truth rather than a setting. The Makefile already ran that
+  arm without `--tape-entities`, so it was already correct.
+- **Bybit** rows carry no identity at all: the loader synthesises `taker:{i}`,
+  one per fill. Neither setting is measured there. Per-address asserts that no
+  firm ever trades twice; `RoundRobin(24)` asserts a firm count and an even
+  split. Both are invented, and the Makefile passed `--tape-entities 24` to
+  `rho-sweep`, `dp-effect` and `sim-real`.
+
+### Whether the invented count was carrying the result
+
+Prediction, written before the run: per-address makes each entity appear in
+exactly one window, so entity-window incidence becomes sparse and informative
+and the attacker should do *better*, not worse; and the per-entity contribution
+cap stops binding, so the disclosure should get *more* accurate. Both arms move,
+and the thing to check is whether the ordering moves with them.
+
+`LTCUSDT2021-06-15`, one seed, 411 requests, passive observer:
+
+| rho | `plain_*` AUC at 24 | `plain_*` AUC per address | `qomm_rfq` at 24 | `qomm_rfq` per address |
+|---:|---:|---:|---:|---:|
+| 0.00 | 0.5000 | 0.5000 | 0.5000 | 0.5000 |
+| 0.25 | 0.6172 | 0.6382 | 0.5000 | 0.5000 |
+| 0.50 | 0.7344 | 0.7886 | 0.5000 | 0.5000 |
+| 1.00 | 1.0000 | 1.0000 | 0.5000 | 0.5000 |
+
+The predicted direction holds and is small. The prediction that the collapse
+would saturate the positive class and flatten the baseline to 0.5 was wrong ---
+it tracks rho at twenty-four as well, just less steeply. `dp_effect`'s paired
+intervals include zero in both settings at six seeds.
+
+So the ordering is identical: every baseline rises with the adversary's prior
+knowledge and the query-oblivious arm holds at exactly 0.5000 throughout. The
+invented firm count was not carrying the conclusion, and the gap is in fact
+wider under the setting that assumes less.
+
+### What was changed
+
+`tape_entities` now defaults to per-address in the Rust library, in
+`run_rho_sweep` and `run_dp_effect` in both languages, and `--tape-entities 24`
+is gone from the `sim-real` target. The Rust `run_rho_sweep` and `run_dp_effect`
+could not express per-address at all --- they held a `usize` --- so both now
+hold an `Option<usize>`.
+
+The test that asserted the collapse now asserts the opposite, and it is
+load-bearing: restoring `Some(24)` makes it fail at `tapes.rs:155`. Against the
+Python with identical arguments, `rho_sweep` agrees on 280 of 280 non-timing
+values and `dp_effect` on 122 of 122, both reporting 411 entities and
+`one entity per observed address`.
+
+### The same divergence again, in a script whose acceptance had passed
+
+`run_block_range_query.rs:107` did not read the default at all --- it passed
+`Entities::RoundRobin(24)` as a literal, where the Python calls
+`lab.build(tape=...)` and takes whatever the library default is. That agreed
+with the Python only for as long as the Python's default was also twenty-four,
+and this script had been through a Python-against-Rust acceptance comparison
+that reported no differences. The comparison was run while both were
+twenty-four, so it could not have found this.
+
+The gap is not small. On `LTCUSDT2021-06-15` at three seeds the two disagreed on
+277 values: the Bybit arm saw 4,331 entities per address against 24 collapsed,
+and the width at which the distinct count reaches 95% of the entities seen moved
+from 2 windows to 39. With the literal replaced by `Entities::PerAddress` the
+two agree on 1,220 of 1,220 non-timing values.
+
+A hardcoded constant that happens to equal a default is not a port of that
+default, and an acceptance run cannot distinguish them while the two coincide.
+
+---
+
+## 17. Python stopped adding floats the obvious way, and the port had not noticed
+
+Comparing `run_sim_matrix` across the two languages left 23 values disagreeing.
+All of them were correlations, and all of them disagreed in the sixteenth
+significant digit --- `0.2538502992501242` against `0.2538502992501243`. That is
+the shape of a summation difference, not of a wrong computation, which is
+exactly why it had survived: every printed form of these numbers is identical.
+
+There are two causes, and they are different from each other.
+
+**`statistics.fmean` is not a naive mean.** It is `math.fsum` and one division,
+and `fsum` is exactly rounded --- Shewchuk's algorithm, every partial kept. The
+port computed `a.iter().sum::<f64>() / n`.
+
+**The builtin `sum` is not a naive sum either, and has not been since CPython
+3.12.** It carries a Neumaier compensation term, so `sum([0.1] * 10)` is exactly
+`1.0` where a left-to-right fold gives `0.9999999999999999`. Every `sum(...)`
+over floats in the Python being ported therefore has compensated semantics.
+
+The two are not interchangeable. Routing everything through `fsum` because it is
+the more accurate of the two would be a different function from the one being
+ported, and would leave the same class of silent disagreement pointing the other
+way. `qomm_sim::fsum` now carries both, `fsum` and `nsum`, pinned by a test
+against values typed in from a real interpreter rather than derived in Rust.
+
+`pearson` needed both at once: its two means are `fmean`, and its three
+sums-of-products are the builtin. With each routed to the one the Python
+actually uses, the same comparison gives 379 non-timing values identical and 0
+different.
+
+### Where else it reached
+
+The same substitution was applied at every site whose Python counterpart sums
+floats: `engine.rs` markout means, `report.rs`'s least-squares fit and its
+$R^2$, `derive_snr.rs`'s weighted mean size and its drawn medians,
+`run_deccp.rs`'s per-order verification mean, and `run_disclosure_ceiling.rs`'s
+other-maker P&L. `run_block_range_query.rs` sums integer errors, which is exact
+either way, and was left alone.
+
+This is the third divergence today whose common shape is a Rust expression that
+*looks* like the Python next to it. A hardcoded `24` that equalled a default, a
+`RoundRobin` that should have read one, and a `.sum()` that is spelled the same
+as `sum()` and is not the same function.
+
+---
+
+## 18. The approval gate could not load its own output
+
+`serve_qomm` is the resident quoting service, and `--approved` is what decides
+which circuits it will run at all: a shape not in the file is refused rather than
+compiled. `--approve-into` writes that file. The two did not fit together.
+
+A shape is a sequence of `(name, value)` pairs. `--approve-into` writes it as
+`list(key)`, so JSON renders each pair as an array. `--approved` reads it back
+with
+
+```text
+registry._approved[tuple(entry["shape"])] = _entry_from(entry)   # retired service predecessor
+```
+
+`tuple(...)` converts only the outer level. The elements stay lists, a list is
+unhashable, and using the result as a dict key raises
+`TypeError: unhashable type: 'list'`. Reproduced in three lines against the exact
+key the retired service predecessor built:
+
+```
+written: [{"name": "shape0", "program_digest": "deadbeef",
+           "shape": [["n_mm", 1], ["n_parties", 3], ...
+ROUND TRIP FAILS: TypeError unhashable type: 'list'
+```
+
+So the service could never be started from an approval file it had produced, and
+the only two ways to run it were with no gate at all or with a hand-written file
+in a format nothing generated. Nothing exercised the path, which is why it
+survived: the crash is at start-up, before the port is bound, so it does not look
+like a service fault.
+
+**What the Rust does instead.** It writes the same bytes --- the array of pairs
+is the format that was already on disk --- and keeps the shape as a JSON value
+compared by equality rather than used as a hash key. So an approved file from
+either side loads. That is a deliberate difference from the Python and not a
+port of it, which is the reason to say so here.
+
+`an_approved_file_loads_back_the_shape_it_was_written_from` pins both halves: the
+round trip, and that the on-disk form is still an array of pairs rather than an
+object. Changing `Request::shape()` to return the object it builds internally
+makes it fail on the second assertion, which is the drift it exists to catch.
+
+---
+
+## 19. What the sandbox had been hiding
+
+Ten of the ported measurement scripts had never been compared against the Python
+they replace. Every one of them drives MP-SPDZ, the agent doing the porting ran
+sandboxed, and a sandboxed process cannot `bind(2)` the port block a party needs.
+So the report said "could not run end to end", which was true, and the ports were
+carried on the strength of the code reading correctly.
+
+They were run on a machine with the engine built and no sandbox. Eight of the ten
+could be run there; `run_placement` needs a second host and `run_evm` needs an
+Ethereum archive node.
+
+| script | non-timing identical | different |
+|---|---:|---:|
+| `run_multiplication_cost` | 27 | 0 |
+| `run_robust_atlas` | 65 | 0 |
+| `run_multi_asset` | 165 | 0 |
+| `run_rounds` | 240 | 0 |
+| `opt_sweep` | 38 | 0 |
+| `run_identity` | — | — |
+| **`sweep`** | 37 | **3** |
+| **`run_three_times`** | 14 | **1** |
+
+Six agree exactly. Two do not, and both disagreements reproduce: two independent
+runs gave the identical wrong value.
+
+### `sweep` reveals a different quote from the same circuit
+
+```
+/returncode:     0 vs 1
+/verified:       True vs False
+/verify_detail:  got=(1152921504606846976, 0) want=(1152921504606846976, 0)
+              vs got=(10357048172212131266, 1) want=(1152921504606846976, 0)
+```
+
+Everything describing the circuit is identical across the two: 829 integer bits,
+9 integer opens, 793 integer triples, 31 VM rounds, 45 measured rounds, 0.398184
+MB for party 0 and 1.43587 MB globally, on the same protocol, party count,
+threshold, bit length and field width. The same program ran at the same cost, and
+MPC cost is data-independent, so the difference is in what was fed in.
+`1152921504606846976` is $2^{60}$, the value both sides say they expect; the
+Python reveals it and the Rust reveals a larger number with the companion flag
+set. On the Rust's inputs some maker is eligible where on the Python's none is.
+
+`run_three_times` disagrees on `audited_rfs_met`, which is also a predicate over
+maker eligibility. Whether that is the same cause is being established rather
+than assumed.
+
+### The part that is about method rather than about these two bugs
+
+An acceptance comparison that cannot be run is not a weaker form of evidence, it
+is the absence of evidence, and the summary table that carried these ten ports
+recorded exactly that. What it could not do was say how much was riding on it.
+Two of eight is a rate worth knowing before deciding that an unrunnable check is
+acceptable for the remaining two.
+
+The reason the check could not run is also worth naming: the sandbox that blocked
+`bind(2)` was chosen by the caller, not required by the task. The engine had been
+built successfully in the same session.
+
+### What the two disagreements turned out to be
+
+**`sweep` was a decoding bug, not an input one.** The reasoning that the inputs
+must differ --- same circuit, same cost, different revealed value --- was sound
+but incomplete: the third possibility is that the same revealed value is read
+differently, and that is what happened. The RFQ verification subtracts a
+one-time mask from the opened key before unpacking it. The mask for this
+configuration is `18408253335210568581`, which is larger than `i64::MAX`, and the
+reference parser reached for `as_i64` only. It got nothing, treated the mask as
+zero, and unpacked the still-masked key:
+
+```
+correct:   20714096344424262533 - 18408253335210568581
+         = 2305843009213693952,  unpack(padded=2) -> (1152921504606846976, 0)
+as built:  unpack(20714096344424262533, 2)         -> (10357048172212131266, 1)
+```
+
+Both are `i128` arithmetic; the loss was entirely in reading a `u64` out of JSON
+through a signed accessor. `rfq_verification_subtracts_a_mask_above_i64_max`
+pins it with the real mask value, and removing the `as_u64` fallback makes it
+fail.
+
+Byte comparison of the generated `prog.mpc` and every `Input-P*-0` for both
+failing configurations found no difference, which is what closed off the input
+hypothesis rather than leaving it merely unlikely.
+
+**`run_three_times` was the build profile, and then the threshold.**
+`audited_rfs_met` is not an eligibility predicate at all; it is
+`total.mean <= 1000 ms`. The comparison was running the Rust out of
+`target/debug` while the Python calls optimised native libraries, so the same
+work took 9,319 ms against 977 ms and the flag turned over on that alone.
+
+The first fix offered was `[profile.dev] opt-level = 3` in the workspace
+manifest. That is the wrong place: the Makefile builds every measurement
+`--release`, so nothing in the repository was affected --- the mistake was in a
+throwaway comparison script reaching into `target/debug`. It has been reverted,
+the script now prefers the release binary, and `timing_summary` says once on
+stderr when it is summarising durations from a debug build, so the next person to
+make that mistake is told rather than left to infer it from a number.
+
+The predicate itself is excluded from the comparison, for a reason worth stating
+precisely: it is a threshold on a duration and inherits the duration's
+nondeterminism. On a loaded machine the *Python alone* was observed at 976.9 ms
+and 1007.0 ms, on opposite sides of its own threshold. A boolean like that cannot
+be compared between two runs whatever the language, and skipping it as a
+derived duration is honest where skipping it as "a difference we could not
+explain" would not be.
+
+### The eight, re-run against release binaries
+
+| script | non-timing identical | different |
+|---|---:|---:|
+| `run_multiplication_cost` | 27 | 0 |
+| `run_identity` | 17 | 0 |
+| `run_robust_atlas` | 65 | 0 |
+| `run_multi_asset` | 165 | 0 |
+| `run_rounds` | 240 | 0 |
+| `sweep` | 40 | 0 |
+| `opt_sweep` | 38 | 0 |
+| `run_three_times` | 14 | 0 |
+
+`run_identity` needed one more exclusion, and it is worth the paragraph because
+the reason had to be established rather than named. Its `honest/openings` are
+blinded, so they are fresh on every run: two consecutive runs of the *Python*
+give different numbers for them while agreeing on the challenge that produced
+them. A value that a single implementation disagrees with itself about cannot be
+evidence about a port, in either direction. Running the Python twice is what
+turned that from a guess into a fact, and it is cheaper than arguing about it.
+
+The three exclusions the comparison now makes are therefore of three different
+kinds, and collapsing them into "timing" would have been wrong: a duration, a
+threshold on a duration, and a value that is freshly randomised per run.
+
+---
+
+## 20. Sixteen makers into eight slots
+
+Closing the aggregate proving API turned up something the API was not the point
+of. The Rust refuses to prove a quote when `n_slots` is smaller than the number
+of makers; the Python never checked; and
+the predecessor of `rust/qomm-harness/src/bin/run_threshold_assembly.rs` set `n_slots=8` whatever `--makers`
+says, while the Makefile asks for `--makers 2 4 8 16`.
+
+So the checked-in `threshold_assembly.json` has a sixteen-maker row measured in
+eight slots, and the paper cites it: `check_numbers.py:187` pins
+`quote[16]["verify_over_local"] == 1.18` and `main.tex:975` writes it out as
+"to 16 makers --- and 1.18x to verify".
+
+### Why eight slots cannot hold sixteen makers
+
+A maker is ranked by `key = (gated + sentinel) * n_slots + index`, and the
+verifier rebuilds it in the exponent from that maker's own gated commitment and
+its own index:
+
+```rust
+let derived_key = (c.gated + key.commit(&scalar(public.sentinel), &Scalar::ZERO))
+    * scalar(public.n_slots)
+    + key.commit(&Scalar::from(index as u64), &Scalar::ZERO);
+```
+
+That is a bijection on `(cost, index)` only while `index < n_slots`. Past it the
+packing wraps: at `n_slots = 8`, maker 8 at gated cost `c` and maker 0 at gated
+cost `c + 1` pack to the same integer, `5*8 + 8 = 6*8 + 0`, and because the
+generator is the same one, they derive the *same group element*. Two different
+makers at two different costs rank as one key, so a proof that the opened key is
+the minimum no longer says whose it is.
+
+Nothing catches this at run time, on either side. The prover and the verifier
+compute the same wrapped packing, so the proof verifies and the Python's
+`assert ok, why` passes. It is self-consistent and it does not mean what it says.
+
+`slot_collision.rs` pins both halves: the two derived key commitments are equal
+at eight slots and distinct at sixteen.
+
+### What was changed
+
+The measurement now takes one slot per maker, floored at the eight the earlier
+rows used, and uses the same count for every row so the rows stay comparable.
+The maker-count ceiling in the binary is gone with it --- it was a symptom
+written as a limit.
+
+Both pinned numbers move, because the span the range proof covers moves with
+the slot count. They are re-measured rather than adjusted.
+
+---
+
+## 21. The per-node cost was measured before the construction checked itself
+
+Re-running `run_threshold_assembly` to re-pin the numbers the slot change moves
+turned up something larger. The paper says a node assembling a threshold proof
+pays about what a local prover pays:
+
+> `check_numbers.py:184` pins `per_node_over_local` at **1.06** across every
+> maker count, and `:175` at **1.09** for the width-26 range proof.
+
+Neither implementation produces those numbers now. On one host, at one load,
+with the same widths, the same maker counts and the same slot count:
+
+| | checked-in artifact | Python today | Rust today |
+|---|---:|---:|---:|
+| width 26, `per_node_over_local` | 1.0942 | **14.79** | **14.87** |
+| width 26, assembled bytes | 5,088 | 5,088 | 5,088 |
+| 8 makers, `per_node_over_local` | 1.0569 | **14.34** | **14.19** |
+
+The two languages agree with each other to about 1%. It is not the port.
+
+### What changed
+
+`artifacts/threshold_assembly.json` was last written at `09647a4`, "The whole
+quote proof, assembled by a quorum that holds no witness". `rust/qomm-proofs/src/threshold_gadgets.rs`
+has been committed to three times since, and is dirty again in the working tree.
+What those changes added is the checking:
+
+```
++    def check_opening(self, dealer: int, ...
++                           share_commitments: Mapping[int, Any],
++    the published coefficient ladders, so a verifier runs this without holding a
++    for party in entry["quorum"]:
++                          group.point_pow(share_commitments[party], challenge))
+```
+
+A group exponentiation per quorum member per bit, plus the Pedersen VSS ladder
+check a recipient runs against the published coefficient commitments. Those are
+the fixes that made the assembly sound --- the constant-opening API is gone, a
+recipient verifies its own share, a bad contribution names its node --- and they
+cost about fourteen times what the construction cost without them.
+
+So the claim as pinned is not that threshold assembly is cheap. It is that
+threshold assembly *was* cheap before it verified anything.
+
+### What is actually true, and it is not nothing
+
+At width 26 the Rust assembles in 203.7 ms of total CPU across a quorum of
+three, so **a node spends about 68 ms**, against 4.6 ms to prove the same
+statement locally and alone. The assembled proof is still *smaller* than the
+local one --- 5,088 bytes against 5,920, 0.859x --- and that is unchanged. The
+honest sentence is that a node pays tens of milliseconds and roughly fifteen
+times a solo prover for a proof no single node could have made, not that it pays
+about the same.
+
+`verify_over_local` moves too, and for a different reason: the Python gives 1.18
+and the Rust 2.53 on the same input. Both are ratios *within* one language, and
+the two languages have different relative constants --- the Rust is faster at
+both sides and less lopsidedly so on the assembled one. With Rust as the record
+the number is 2.53, and it is a language fact rather than a defect.
+
+Every pin these touch has to be re-measured with the load off the host, not
+adjusted.
+
+### What was written down instead
+
+The measurement was retaken on an idle host at fifteen repeats, and the artifact
+now records `n_slots` --- because that is a soundness parameter and not a tuning
+one, and an artifact whose maker count exceeds it has measured a run in which two
+makers share one ranking key.
+
+The pins changed shape as well as value. A ratio of two medians is not a
+two-decimal quantity: two clean runs of the same binary on the same idle host
+gave 14.27 and 14.99 for the width-26 per-node cost. So the ratios are bounded
+and the *sizes*, which are exact and did not move, carry the precision:
+
+```
+threshold range: per-node cost is about fifteen local provers   14 <= x <= 16
+threshold range: the assembled proof is smaller                 5088 bytes
+threshold range: the local proof it replaces                    5920 bytes
+threshold quote: and flat means within a tenth across sixteen makers
+threshold quote: every maker has its own ranking slot           max(makers) <= n_slots
+threshold quote: CPU across the quorum at sixteen makers        10993 ms
+threshold quote: what one node pays                             3664 ms
+threshold quote: what proving it alone costs                    247 ms
+```
+
+The three absolute figures are pinned because the prose now carries them, and a
+sentence with no pin behind it is worse than a failing check --- the old
+paragraph's `1.06` and `1.18` were exactly that for as long as it took to notice.
+`make check` is at 131/131.
+
+---
+
+## 22. "Identical to the Python" was always identical to *a build* of it
+
+`run_dp_audit` compared clean on the laptop and did not on the measurement host.
+On host-a the two implementations disagreed on 81 values out of 3,231.
+
+Every one of them was `empirical_epsilon` or the maximum of a group of them. No
+boolean, no integer and no threshold differed --- so the best threshold chosen,
+the number of violations and `within_claim` were the same on both sides --- and
+the worst relative difference was $2.04\times10^{-13}$, against a claim tested
+with $10^{-9}$ of slack.
+
+### Where it comes from
+
+`empirical_epsilon` is `log(num/den)` over Clopper--Pearson bounds, which come
+from an inverse regularised incomplete beta by bisection. Both `log` and the
+bisection agree bit for bit. The same eight `beta_ppf` inputs give:
+
+| | agreeing | differing |
+|---|---:|---:|
+| laptop, macOS arm64, CPython 3.13.5 | 8 | 0 |
+| host-a, Linux x86_64, CPython 3.12.3 | 5 | **3** |
+
+CPython's own `lgamma` is *not* the variable: it returns identical bits on both
+machines for the same inputs. What changes is the Rust. `qomm-sim/src/audit.rs`
+computes the Lanczos tail with `mul_add`, and its comment says why:
+
+```
+// CPython's C build contracts this multiply-add; spelling it explicitly
+// preserves the installed interpreter's last bit in release and debug.
+```
+
+That is true of the interpreter it was written against and not of the one on the
+measurement host. `mul_add` rounds once where a separate multiply and add round
+twice, so the Rust is if anything the more accurate of the two --- the residue is
+CPython's second rounding, not an error here.
+
+### The part that generalises
+
+Every "byte-identical" and "0 different" in this document was measured on some
+machine against some interpreter, and this is the first time that qualifier has
+had to be written down. A port verified against one build is verified against
+one build. Nothing was wrong with the checks; what was missing was the sentence
+saying what they were relative to.
+
+It also has an expiry date. Matching CPython is a requirement only while there is
+a CPython to match: once it is deleted the constraint is accuracy and
+determinism, and `mul_add` is then simply the better implementation with no
+counter-argument left.
+
+---
+
+## 23. The language guard was a list of file extensions
+
+`export_repos` is what keeps the public repositories English, and the comment
+above the check says so plainly: "This is checked rather than remembered: the
+working tree is written in two languages and the boundary between them is
+exactly the export, so the export is where it is enforced."
+
+It was remembered after all. The predecessor applied the scan to an allowlist
+of fourteen suffixes. The Rust exporter now attempts UTF-8 decoding for every
+exported file and scans every file that decodes, independent of suffix.
+
+Sixty-one of the six hundred and twenty-one exported files have a suffix that is
+not on it, and they are not marginal ones:
+
+| never scanned | files |
+|---|---:|
+| `.go` --- the whole Avalanche VM | 23 |
+| `.data` --- binary test fixtures | 14 |
+| `.lock` | 6 |
+| `.sol` --- the Solidity contracts | 4 |
+| `.law`, `.rule` --- the DSL sources | 6 |
+| `.html`, `.css`, `.js`, `.cpp`, `.service`, `.mod`, `.sum` | 8 |
+
+Scanning the exported trees directly rather than trusting the check found one
+file with Japanese in it, and it is not an accident: `qomm_demo/static/demo.js`
+is `S = {ja: {...}, en: {...}}` with a language toggle, so the demo is bilingual
+on purpose and its ninety Japanese lines are a feature. Nothing else carried
+any --- which is luck, not enforcement. A Japanese comment in the VM would have
+shipped and nothing would have said so.
+
+### What was changed
+
+Both implementations now scan **everything that decodes as UTF-8**, and the
+extension list is gone. Binary files fail to decode and are skipped, which is
+what the fourteen `.data` fixtures are. The demo is a named exception,
+`JAPANESE_BY_DESIGN`, so that it is a decision somebody took rather than a hole
+in a list.
+
+Watched failing before being believed: a Japanese comment appended to
+`avalanche/defmivm/factory.go` --- a file the old guard never opened --- gives
+
+```
+PROBLEM defmi/avalanche/defmivm/factory.go: Japanese on line 17
+```
+
+from both implementations, both exiting 1. The probe was then removed and the
+tree checked clean.
+
+### The general shape, for the fourth time today
+
+A hardcoded `24` that equalled a default, a `.sum()` that is spelled like
+`sum()`, a `mul_add` that matched one interpreter build, and now an allowlist of
+extensions standing in for "text". Each was a rule expressed as a list of the
+cases somebody had thought of, sitting next to a comment claiming the rule
+itself.
+
+---
+
+## 24. A test suite does not survive a change of runner
+
+Porting `tests/` to Rust took the count from 570 `#[test]` to 751, and the
+workspace then failed on the measurement host and passed on the laptop:
+
+```
+tests::every_relay_hop_costs_a_connection ... FAILED
+  left: Number(67)   right: Number(72)
+```
+
+Five of seventy-two frames had not been delivered.
+
+### What it was not
+
+Not the parameters, though those were wrong too and were fixed: the Rust ran
+four slots with a 5 ms link delay where the test now embedded in
+`rust/qomm-harness/src/bin/run_transport.rs` runs eight slots
+and none, and three hops at 5 ms against a 10 ms slot is a race the delay
+always wins. Correcting that made it flake instead of fail.
+
+Not the build profile: `cargo test --release` failed three runs out of five.
+
+Not the transport: the release *binary*, given exactly the same options,
+delivered 144 of 144 frames on eight consecutive runs, and the Python passed
+five out of five on the same host.
+
+### What it was
+
+`cargo test` runs a module's tests in parallel threads. The retired test runner
+ran them one after another. Three tests in that file each drive a wall-clock slot schedule
+over real loopback sockets, and two of them at once contend for the CPU until
+frames miss their 10 ms slot.
+
+| | passes |
+|---|---|
+| `cargo test --release` | 2 of 5 |
+| `cargo test --release -- --test-threads=1` | **6 of 6** |
+| after taking a process-wide lock, parallel again | **6 of 6** |
+
+The three now take a `static Mutex` before they start their clock.
+
+### Why this one is worth the section
+
+Every other divergence found today was a value: a constant, a summation, a
+rounding mode, a field width. This one is a property of the *harness*, and no
+comparison of two implementations could have surfaced it, because both
+implementations were right. A suite that measures time was moved from a
+sequential runner to a parallel one, and nothing in "640 assertions became 751"
+says so.
+
+It also only appeared on the machine the measurements actually run on. The
+laptop is fast enough to hide it, which is the worst place for it to be hidden.
+
+---
+
+## 26. The Python is gone
+
+`find . -name '*.py'` under this directory returns nothing --- the boundary is
+this directory, and the one Python outside it that is ours is named below. What
+replaced it was checked before it replaced anything: every one of the 62
+measurement scripts, the three under `zk/` and `evm/`, and the 640 test
+assertions were compared against the Python value by value while both existed.
+The workspace is 759 `#[test]`, passing on this laptop and on the measurement
+host.
+
+The three published repositories were rebuilt rather than trimmed. Each now
+ships `qomm-harness` carrying only the binaries that repository names, with a
+generated manifest, because the alternative --- shipping the whole harness
+everywhere --- would put the DeFMI measurements in `zkpi`, and listing the
+runners one by one is exactly what the Python did.
+
+| repository | files before | after | tests, run from inside the exported tree |
+|---|---:|---:|---:|
+| zkpi | 84 | 85 | 249 |
+| defmi | 177 | 209 | 484 |
+| qomm | 368 | 330 | 478 |
+
+Verified independently of the exporter's own report: the three trees were
+exported, entered, and `cargo test --workspace` run inside each. No `.py` in any
+of them, none of the eight real machine names, and Japanese in exactly one file
+--- `qomm_demo/static/demo.js`, the demo's declared bilingual locale.
+
+### Oracles that could not survive their subject
+
+Five tests took their expected values by running the Python. With the Python
+deleted those are not weaker tests; they are not tests, because an oracle that
+has been deleted cannot disagree with anything. Each was recovered from the last
+commit that carried it and pinned:
+
+| where | what was pinned |
+|---|---|
+| `qomm-harness/src/measure.rs` | the whole public contract of `scripts/measure.py` |
+| `qomm-measure/src/hosts.rs` | the retired reader's contract |
+| `qomm-mpc/tests/program_parity.rs` | six generated programs, by length and SHA-256 |
+| `qomm-mpc/tests/all_files_parity.rs` | 27 cases: outputs, status, stdout, stderr, file bytes |
+| `qomm-harness/src/bin/zk_bench.rs` | the `platform.machine()` shell-out |
+
+The first was pinned by hand and checked load-bearing --- one digit changed in
+the recorded JSON makes it fail. The rest were found by asking for others of the
+same shape, which is the only way to find them: they do not fail, they stop
+meaning anything.
+
+### What still runs Python
+
+`MP_SPDZ_ROOT/compile.py`. MP-SPDZ's compiler is Python and belongs to MP-SPDZ.
+Any claim that this repository is Rust is about this repository's code; the
+pinned dependency still brings its own toolchain, and a measurement that compiles
+a circuit still invokes it.
+
+The two notebooks are held. `evcxr` is a Rust kernel for Jupyter, so they can
+stop being Python without stopping being notebooks, which deleting them would
+not achieve.
+
+The paper's build chain is Python and stays Python: `check_numbers.py`,
+`make_appendix.py` and `make_revtex.py` under `papers/qomm/`, 1,909 lines that
+generate a LaTeX appendix from the artifacts, rewrite the body into a
+two-column layout, and check 140 numbers in the documents against the artifacts
+they cite. None of the three produces a measured value; they read the artifacts
+this repository writes and emit or verify a document. The claim worth making is
+that the numbers are Rust-measured, and that claim does not weaken because the
+checker that reads them is not.
+
+---
+
+## 27. One harness asked the machine its name itself
+
+The re-measurement wrote the measurement host's own node name --- not its
+label --- into four `clob_baseline_clean_d*.json` and into the manifest. The rule against that is
+old and it is written down: `hosts::this_host()` exists to apply it, and sixteen
+harnesses call it. The seventeenth, `run_clob_baseline`, carried its own four
+lines:
+
+```rust
+fn hostname() -> io::Result<String> {
+    let output = Command::new("hostname").output()?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+```
+
+which is `hosts::node_name()` with the labelling step left out. It had exactly
+one caller, and that call sat in a literal beside `n_parties` and `threshold`,
+where nothing about it looked like a decision.
+
+The existing guard, `no_real_machine_name_appears_in_a_file_that_ships`, did
+catch it --- but only after the leak existed. It reads the private table and
+scans the shipped tree, so it can say nothing until a run on a *named* machine
+has already written the name into an artifact. Written on a laptop, or on any
+machine absent from the table, the offending four lines pass every test in the
+workspace. The artifacts here were written at 02:58 and the guard first failed
+at 09:40, which is not the guard being slow; it is the guard being unable to
+speak earlier.
+
+So it was joined by one that states the rule rather than waiting for a
+violation of it: `only_this_reader_asks_the_machine_its_name` fails if any
+shipped `.rs` outside `hosts.rs` constructs a `hostname` command. Checked
+load-bearing --- putting the four lines back makes it fail, taking them out
+makes it pass.
+
+### The general shape, for the fifth time
+
+A hardcoded `24` that equalled a default, a `.sum()` spelled like `sum()`, a
+`mul_add` that matched one interpreter build, an allowlist of extensions
+standing in for "text", and now a private `hostname()` standing in for the
+labelled one. The four earlier ones were a rule expressed as a list of the cases
+somebody had thought of. This one is worse in one way and better in another: the
+rule was not a list, it was a function, and the function was correct --- what
+failed is that nothing prevented writing a second one. A rule enforced by a
+helper is only enforced where somebody chose to call it.
+
+
+### The writeup leaked what the fix had stopped leaking
+
+The first draft of this section named the machine. `REVIEW.md` is exported to
+all three repositories, so that draft shipped the string the four artifacts had
+just stopped shipping --- and the guard said nothing, because the set it scanned
+was a list of thirteen top-level directories. Seven of those were the Python
+packages and no longer exist. None of them was the repository root, where every
+`.md` the exporter publishes lives.
+
+The list is gone. `shipped_files` now walks the repository and excludes what is
+built or pulled, so it is a statement about the repository rather than about
+what somebody remembered was in it. It caught the probe: putting the name back
+into `REVIEW.md` fails the guard, taking it out passes. It also got faster,
+because the old list swept 189 MB of tapes looking for a hostname.
+
+That is the fifth and sixth instance of the shape in one review, and the sixth
+was written by the hand that was fixing the fifth.
+
+### Why the artifacts were relabelled and not re-measured
+
+`host` is provenance, not a measurement. `label()` of that node name is a
+lookup in `scripts/host_map.txt`, and `host-a` is exactly the string the fixed
+code writes on that machine --- so the edit restores the value that should have
+been recorded rather than substituting a plausible one. The remaining 130
+artifacts already said `host-a`, which is what made the four visible. The
+manifest was regenerated and `manifest --check` reports 134 artifacts matching;
+`check_numbers.py` stays at 140/140, `host` being nothing any pin reads.
+
+---
+
+## 28. One failure, once, and it is still not explained
+
+The full workspace run on the laptop failed one test:
+
+```
+executor::tests::verified_handle_survives_path_replacement_before_spawn
+  assertion failed: output.status.success()
+```
+
+It is the test for the defence that makes a verified program unswappable: the
+executable is hashed through an open handle and then run as `/bin/sh
+/dev/fd/N`, so renaming the path between the hash and the spawn cannot change
+what executes. The same test passed in the same run on the measurement host,
+and has passed in every run since --- alone, then six times with its crate,
+then one more full workspace run on the laptop.
+
+What was ruled out: the descriptor limit, which was the obvious candidate for a
+failure that appears only when 174 test binaries run at once. It is 1,048,576
+on this laptop, so nothing here was near it. What remains suspect is macOS's
+`/dev/fd`, which is not Linux's. On Linux `/dev/fd/N` re-opens the file and the
+reader starts at zero; on macOS it duplicates the descriptor and shares the
+offset with the handle the parent still holds --- which `open_verified` already
+seeks back to zero for, deliberately. A shared offset makes a *second* spawn
+from one verified handle read from EOF and run an empty program silently, on
+macOS only. That is not what this test does, and it is not a hypothesis this
+failure confirms; it is the one difference in the mechanism that is real, and
+it is written down here so the next occurrence is read against it rather than
+from scratch.
+
+The assertion was `assert!(output.status.success())`, which says nothing when
+it fires --- not the exit status, not what the shell printed. It now carries
+all three. That change is worth keeping whether or not the failure returns: a
+test that cannot describe its own failure costs a full re-run to learn what one
+line could have said.
+
+Recorded rather than closed. Two runs that pass do not explain one that did
+not.

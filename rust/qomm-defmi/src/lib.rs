@@ -1,8 +1,12 @@
 //! DeFMI: settlement that cannot read what it settles.
 pub mod assets;
+#[cfg(feature = "avalanche")]
+pub mod avalanche;
 pub mod ccp;
 pub mod chain;
 pub mod credit;
+#[cfg(feature = "avalanche")]
+pub mod facility;
 pub mod ledger;
 pub mod netting;
 pub mod note_settlement;

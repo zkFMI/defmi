@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["qomm-defmi"]
+members = ["qomm-defmi", "qomm-proofs", "qomm-zk", "qomm-zkpi", "qomm-measure", "qomm-sim", "qomm-harness"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,6 +24,18 @@ frost-ristretto255 = "3.0"
 frost-core = "3.0"
 # Ed25519 signatures for the KYB issuer. Same dalek assessment as the group.
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
-qomm-zk = { git = "https://github.com/shukob/zkpi" }
-qomm-zkpi = { git = "https://github.com/shukob/zkpi" }
-qomm-measure = { git = "https://github.com/shukob/zkpi" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+base64 = "0.22"
+hex = "0.4"
+thiserror = "1"
+rand = "0.8"
+openssl = "0.10"
+libc = "0.2"
+qomm-zk = { path = "qomm-zk" }
+qomm-zkpi = { path = "qomm-zkpi" }
+qomm-proofs = { path = "qomm-proofs" }
+qomm-defmi = { path = "qomm-defmi" }
+qomm-dsl = { git = "https://github.com/shukob/qomm" }
+qomm-sim = { path = "qomm-sim" }
+qomm-measure = { path = "qomm-measure" }

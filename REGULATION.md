@@ -582,7 +582,7 @@ Not one country --- a sequence, because the three needs peak in different places
 | Pricing rule audit | Evidence for the MM's internal control | The control functioning |
 | Inventory state chain | Detection of a second set of books, or retroactive edits | Whether the inventory exists off-ledger |
 | Settlement state root and conservation | Completion of delivery, prevention of double settlement | **That only an authorised issuer issued** --- true only once an issuer signature is in the statement |
-| Selective disclosure (`defmi/viewing.py`, `zk/binding.py`) | Opening an individual trade, or one scope of one wallet, to an auditor or a supervisor | Blanket monitoring, which the design cannot provide --- and taking a grant back, which it also cannot |
+| Selective disclosure (`rust/qomm-defmi/src/viewing.rs`, `rust/qomm-transport/src/binding.rs`) | Opening an individual trade, or one scope of one wallet, to an auditor or a supervisor | Blanket monitoring, which the design cannot provide --- and taking a grant back, which it also cannot |
 
 ---
 

@@ -15,24 +15,42 @@ license.workspace = true
 # cannot pick it up through Cargo's feature unification without asking.
 wasm-measurement = ["clear_on_drop"]
 
+# The settlement verifier is built for WebAssembly and `avalanche` is a TLS RPC
+# client that cannot be: `openssl-sys` has no wasm32 target, so asking for it
+# fails the cross build with a message about a missing OpenSSL directory. The
+# verifier's own first lines say it touches nothing outside the sandbox, so it
+# has no business compiling a network client to get there. `facility` goes with
+# it: it is the durable store the client talks to, it binds SQLite through FFI
+# and reads Unix paths, and `std::os::unix` does not exist on wasm32 either. On
+# by default, because every host build wants both.
+default = ["avalanche"]
+avalanche = ["dep:openssl"]
+
 [dependencies]
 clear_on_drop = { version = "0.2.5", features = ["no_cc"], optional = true }
-qomm-zk = { git = "https://github.com/shukob/zkpi" }
-qomm-zkpi = { git = "https://github.com/shukob/zkpi" }
+qomm-zk.workspace = true
+qomm-zkpi.workspace = true
 curve25519-dalek.workspace = true
 bulletproofs.workspace = true
 merlin.workspace = true
 ed25519-dalek.workspace = true
 sha2.workspace = true
 rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+libc.workspace = true
+openssl = { workspace = true, optional = true }
 
 [dev-dependencies]
-qomm-zkpi = { git = "https://github.com/shukob/zkpi" }
+qomm-zkpi.workspace = true
 rand = "0.8"
-qomm-measure = { git = "https://github.com/shukob/zkpi" }
+qomm-measure.workspace = true
 merlin.workspace = true
 ed25519-dalek.workspace = true
 bulletproofs.workspace = true
+tempfile = "3"
 
 [[bench]]
 name = "settle"

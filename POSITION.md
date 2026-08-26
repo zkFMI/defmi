@@ -89,7 +89,7 @@ bulletin board an auditor replays the same linear operations on the
 *commitments*. Privacy needs one honest party; **correctness survives all
 parties being corrupt.**
 
-**That is the construction `quote_proof.py` instantiates** --- not a variant, not
+**That is the construction `rust/qomm-proofs/src/quote_proof.rs` instantiates** --- not a variant, not
 a rediscovery.
 
 Six differences. Only two are cryptographic.
@@ -104,7 +104,7 @@ survive three.**
 **2.2 The input parties are not the computing parties.** A maker deals its
 policy to seven nodes and is not one of them. In 2014 --- and, explicitly, in
 2026/337 --- the input providers *are* the computing parties. That separation is
-what creates the gap this repository is about: `roles.py` proves a node received
+what creates the gap this repository is about: `rust/qomm-transport/src/roles.rs` proves a node received
 a committed share and cannot prove the node fed that share to MP-SPDZ.
 **Sections 3 and 4 are the two works that do separate them**, and it is a
 difference from 2014 rather than from the field.
@@ -126,7 +126,7 @@ Cheaper cross-region than in a datacentre, because rounds do not move and round
 trips dominate there.
 
 **2.4 The audited statement is a market statement.** Their auditor checks the
-output is the correct evaluation of the circuit. `quote_proof.py` proves:
+output is the correct evaluation of the circuit. `rust/qomm-proofs/src/quote_proof.rs` proves:
 
 > for each maker `i`, `key_i` is the committed policy applied to the committed
 > request, and the opened winner is the smallest of those keys
@@ -300,7 +300,7 @@ time. It is recorded in `BINDING.md` section 6 rather than left in a paper.
 **What they have that this does not: accountability and robustness.** Their
 judge names the cheating party and the protocol does not restart. The quote
 proof shows the winner was correct; it does not say who broke it if it was not,
-and `roles.py` attributes only what was dealt. That is a real gap and their 11x
+and `rust/qomm-transport/src/roles.rs` attributes only what was dealt. That is a real gap and their 11x
 to 20x is what closing it costs in their regime.
 
 ---
@@ -359,7 +359,7 @@ left is a division of labour:
 | security proof | UC, 68 pages | none |
 | input vs computing parties | **not separated** (stated in the paper) | separated |
 | binary circuits | open problem (their appendix A) | not needed |
-| implementation | **none** | `zk/voleith.py` |
+| implementation | **none** | `rust/qomm-harness/src/voleith.rs` |
 | efficiency | asymptotic estimate, `O(n·λ²·|C|)` online | measured |
 
 **They report no benchmarks.** Appendix C is an estimate --- "we estimate the
@@ -403,7 +403,7 @@ and then settled in the clear has leaked everything the computation protected**:
 the asset, the size, the counterparties and, by difference, the policy. The
 audit trail is intact and the privacy is gone.
 
-**zkPI** (`zk/zkpi.py`) makes the payment instruction itself a commitment plus a
+**zkPI** (`rust/qomm-zkpi/`) makes the payment instruction itself a commitment plus a
 proof. A settlement venue checks an instruction is well-formed, authorised and
 unspent, and learns none of the asset, the amount, the price, or which entity
 holds it --- only that *some* enrolled entity holds an instruction whose asset
@@ -479,7 +479,7 @@ bank's existing pipeline.
 - **The staleness measurement has selection bias.** UniswapX fills are the trades
   that happened; the ones that did not are the interesting ones.
 - **The VOLE-in-the-Head arm is one linear statement**, not the MPC protocol of
-  2026/337, and the linear-code instantiation is arithmetic in `run_voleith.py`
+  2026/337, and the linear-code instantiation is arithmetic in `rust/qomm-harness/src/bin/run_voleith.rs`
   rather than code. It also shrinks the proof 2.4x and not fourfold: a general
   code is homomorphic only across blocks, so an inner product with a distinct
   coefficient per value needs the paper's degree-2 protocol and its 2x

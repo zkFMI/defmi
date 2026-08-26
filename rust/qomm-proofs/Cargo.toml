@@ -1,0 +1,19 @@
+[package]
+name = "qomm-proofs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The venue-side proofs: the quote is correct, the policy is well formed, the book moved as stated, and the presenter is a registered entity."
+
+[dependencies]
+qomm-zk.workspace = true
+qomm-dsl = { git = "https://github.com/shukob/qomm" }
+curve25519-dalek.workspace = true
+bulletproofs.workspace = true
+merlin.workspace = true
+sha2.workspace = true
+rand_core.workspace = true
+ed25519-dalek.workspace = true
+
+[dev-dependencies]
+rand_core = { version = "0.6", features = ["getrandom"] }
