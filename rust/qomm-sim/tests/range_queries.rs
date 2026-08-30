@@ -1,5 +1,5 @@
+use qomm_sim::deterministic_random::DeterministicRng;
 use qomm_sim::disclosure::EntityAccountant;
-use qomm_sim::pyrandom::PyRandom;
 use qomm_sim::queries::{
     answer_range_query, answer_range_query_with_eligibility, noise_scale, questions_affordable,
     Pricing, RangeQuery, SENSITIVITY,
@@ -16,25 +16,25 @@ fn asker(total: f64) -> EntityAccountant {
 #[test]
 fn one_firm_moves_the_count_by_one() {
     let query = RangeQuery::new(99_960, 100_040).unwrap();
-    let mut rng = PyRandom::new(11);
+    let mut rng = DeterministicRng::new(11);
     let inside = answer_range_query(&QUOTES, &query, 64.0, &mut asker(1_000.0), &mut rng)
         .unwrap()
         .count
         .unwrap();
-    for drop in 0..QUOTES.len() {
+    for (drop, dropped_quote) in QUOTES.iter().copied().enumerate() {
         let without_quotes: Vec<i64> = QUOTES
             .iter()
             .enumerate()
             .filter(|(index, _)| *index != drop)
             .map(|(_, quote)| *quote)
             .collect();
-        let mut rng = PyRandom::new(11);
+        let mut rng = DeterministicRng::new(11);
         let without =
             answer_range_query(&without_quotes, &query, 64.0, &mut asker(1_000.0), &mut rng)
                 .unwrap()
                 .count
                 .unwrap();
-        let expected = i64::from(query.low <= QUOTES[drop] && QUOTES[drop] <= query.high);
+        let expected = i64::from(query.low <= dropped_quote && dropped_quote <= query.high);
         assert_eq!(
             inside - without,
             expected,
@@ -52,7 +52,7 @@ fn the_noise_is_small_enough_to_read() {
         .iter()
         .filter(|quote| query.low <= **quote && **quote <= query.high)
         .count() as i64;
-    let mut rng = PyRandom::new(7);
+    let mut rng = DeterministicRng::new(7);
     let mut got: Vec<i64> = (0..200)
         .map(|_| {
             answer_range_query(&QUOTES, &query, 1.0, &mut asker(100.0), &mut rng)
@@ -69,7 +69,7 @@ fn the_noise_is_small_enough_to_read() {
 /// about other accounts. This test pins the production behavior it can reach.
 #[test]
 fn the_asker_pays_for_each_answer() {
-    let mut rng = PyRandom::new(1);
+    let mut rng = DeterministicRng::new(1);
     let mut new_entrant = asker(5.0);
     let query = RangeQuery::new(0, 1_000_000_000).unwrap();
     for _ in 0..3 {
@@ -83,7 +83,7 @@ fn the_asker_pays_for_each_answer() {
 
 #[test]
 fn running_out_says_so_and_says_nothing_about_the_market() {
-    let mut rng = PyRandom::new(2);
+    let mut rng = DeterministicRng::new(2);
     let mut spent = asker(1.0);
     spent.spend(1.0);
     let query = RangeQuery::new(0, 1_000_000_000).unwrap();
@@ -108,7 +108,7 @@ fn an_empty_or_backwards_range_is_refused() {
 
 #[test]
 fn only_eligible_makers_are_counted() {
-    let mut rng = PyRandom::new(3);
+    let mut rng = DeterministicRng::new(3);
     let query = RangeQuery::new(0, 1_000_000_000).unwrap();
     let eligible = [false; QUOTES.len()];
     let answer = answer_range_query_with_eligibility(
@@ -161,7 +161,7 @@ fn the_ceiling_is_not_for_sale() {
     };
     assert!(pricing.affordable(9.0, 1e12, 0.5));
     let mut account = asker(pricing.epsilon_max);
-    let mut rng = PyRandom::new(13);
+    let mut rng = DeterministicRng::new(13);
     let query = RangeQuery::new(0, 1_000_000_000).unwrap();
     for _ in 0..9 {
         assert!(

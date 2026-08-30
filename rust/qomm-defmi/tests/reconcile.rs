@@ -93,7 +93,6 @@ fn a_different_set_of_positions_is_refused_rather_than_reinterpreted() {
 
 #[test]
 fn the_wrong_asset_generator_does_not_verify() {
-    // A tagged balance reconciled under the base generator. The Python version
     // had this wrong: it took the total off with the base generator whatever the
     // key carried, which is the same point only when the key carries no tag.
     let mut rng = OsRng;

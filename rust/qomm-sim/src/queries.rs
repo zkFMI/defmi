@@ -17,8 +17,8 @@
 
 use std::collections::BTreeSet;
 
+use crate::deterministic_random::DeterministicRng;
 use crate::disclosure::{discrete_laplace, EntityAccountant, WindowObservation};
-use crate::pyrandom::PyRandom;
 
 /// One entity is either inside a range or it is not.
 pub const SENSITIVITY: i64 = 1;
@@ -73,7 +73,7 @@ pub fn answer_range_query(
     query: &RangeQuery,
     epsilon: f64,
     asker: &mut EntityAccountant,
-    rng: &mut PyRandom,
+    rng: &mut DeterministicRng,
 ) -> Result<Answer, String> {
     answer_range_query_with_eligibility(quotes, query, epsilon, asker, rng, None)
 }
@@ -83,7 +83,7 @@ pub fn answer_range_query_with_eligibility(
     query: &RangeQuery,
     epsilon: f64,
     asker: &mut EntityAccountant,
-    rng: &mut PyRandom,
+    rng: &mut DeterministicRng,
     eligible: Option<&[bool]>,
 ) -> Result<Answer, String> {
     if !asker.can_spend(epsilon) {
@@ -214,7 +214,7 @@ pub fn answer_block_range_query(
     query: &BlockRangeQuery,
     epsilon: f64,
     asker: &mut EntityAccountant,
-    rng: &mut PyRandom,
+    rng: &mut DeterministicRng,
 ) -> Answer {
     // This compatibility entry point evaluates a finalized historical range.
     // Deployments that enforce chain recency call `answer_block_range_query_at`
@@ -235,7 +235,7 @@ pub fn answer_block_range_query_at(
     query: &BlockRangeQuery,
     epsilon: f64,
     asker: &mut EntityAccountant,
-    rng: &mut PyRandom,
+    rng: &mut DeterministicRng,
     now: Option<usize>,
     lag: usize,
 ) -> Answer {

@@ -1,7 +1,6 @@
 //! Delivery versus payment with no accounts on either side, in Rust.
 //!
 //! `DEFMI.md` section 9 said the Rust side had no note-rail DvP and that the
-//! measurement existed only in Python. The first half stopped being true when
 //! `note_settlement.rs` was ported; this is the second half, so the sentence
 //! can go rather than be softened.
 //!

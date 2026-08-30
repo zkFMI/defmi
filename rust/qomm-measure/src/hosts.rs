@@ -95,16 +95,6 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
 
-    // Recovered from the last revision that carried `scripts/hosts.py`. These
-    // are the source-level facts the two readers agreed on; keeping them here
-    // makes deletion of that reader remove a runtime dependency, not its
-    // contract.
-    const RETIRED_READER_CONTRACT: &str = concat!(
-        "MAP_FILE = Path(__file__).resolve().parent / \"host_map.txt\"\n",
-        "source = path or Path(os.environ.get(\"QOMM_HOST_MAP\", MAP_FILE))\n",
-        "LABELS = load()\n",
-    );
-
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
@@ -112,7 +102,6 @@ mod tests {
     /// Everything in the repository except the private table itself.
     ///
     /// This was a list of thirteen top-level directories, and the list was
-    /// wrong twice over: seven of them were the Python packages and no longer
     /// exist, and it never held the repository's own `.md`, which is where the
     /// exporter takes `REVIEW.md`, `POSITION.md` and the rest from. A writeup
     /// of *this* leak put the leaked name into `REVIEW.md` and the guard had
@@ -231,7 +220,10 @@ mod tests {
     #[test]
     fn only_this_reader_asks_the_machine_its_name() {
         let root = repo_root();
-        let mine = root.join("rust/qomm-measure/src/hosts.rs").canonicalize().unwrap();
+        let mine = root
+            .join("rust/qomm-measure/src/hosts.rs")
+            .canonicalize()
+            .unwrap();
         let asks = ["Command::new(", "\"hostname\")"].concat();
         let mut guilty = Vec::new();
         for path in shipped_files(&root) {
@@ -256,25 +248,19 @@ mod tests {
     }
 
     #[test]
-    fn neither_reader_nor_retired_contract_holds_a_table_of_its_own() {
+    fn reader_does_not_embed_a_private_table() {
         let root = repo_root();
         let rust = std::fs::read_to_string(root.join("rust/qomm-measure/src/hosts.rs")).unwrap();
         let forbidden_rust = ["pub const", "LABELS"].join(" ");
         assert!(!rust.contains(&forbidden_rust));
-        assert!(RETIRED_READER_CONTRACT.contains("LABELS = load()"));
-        assert!(!RETIRED_READER_CONTRACT.contains("LABELS = {"));
     }
 
     #[test]
-    fn rust_reader_keeps_the_retired_readers_location_contract() {
+    fn reader_uses_the_configurable_mapping_location() {
         let root = repo_root();
         let rust = std::fs::read_to_string(root.join("rust/qomm-measure/src/hosts.rs")).unwrap();
         for token in ["QOMM_HOST_MAP", "host_map.txt"] {
             assert!(rust.contains(token), "Rust reader omitted {token}");
-            assert!(
-                RETIRED_READER_CONTRACT.contains(token),
-                "retired reader contract omitted {token}"
-            );
         }
     }
 
@@ -287,7 +273,7 @@ mod tests {
         // without one is found however it announces itself.
         assert_eq!(lookup(&table, "grinder.internal"), "site-one");
         // One listed *with* `.local` is not in the table under its bare form
-        // and is left alone, preserving the retired reader's contract.
+        // and is left alone, preserving the mapping contract.
         assert_eq!(lookup(&table, "kettle.local"), "site-two");
         assert_eq!(lookup(&table, "kettle"), "kettle");
         let _ = std::fs::remove_file(&path);

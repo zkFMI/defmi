@@ -1,0 +1,33 @@
+[package]
+name = "qomm-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "qomm_transport"
+
+[dependencies]
+qomm-proofs.workspace = true
+qomm-dsl.workspace = true
+qomm-mpc.workspace = true
+qomm-zk.workspace = true
+qomm-zkpi.workspace = true
+qomm-audit.workspace = true
+curve25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+rand.workspace = true
+openssl.workspace = true
+libc.workspace = true
+merlin.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+merlin.workspace = true

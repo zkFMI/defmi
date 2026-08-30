@@ -2,7 +2,6 @@
 //! rounds up to, in one language on one machine.
 //!
 //! `DEPLOYMENT.md` reports 6.3x on verification and 10.5x on package size, but
-//! that pair is Python bit decomposition against Rust Bulletproofs, so the
 //! language is confounded with the scheme. Both are in Rust now.
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;

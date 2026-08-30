@@ -1,9 +1,7 @@
 //! Commitment keys over ristretto255.
 //!
-//! Two differences from the Python this replaces, both of which remove a class
 //! of bug rather than make anything faster.
 //!
-//! The group is ristretto255 rather than raw ed25519. The Python backend had to
 //! clear the cofactor by hand after hashing to a point, and an earlier version
 //! did not: libsodium's point validation is not a subgroup check, and 39% of
 //! accepted encodings were not of prime order. Ristretto has no cofactor to get

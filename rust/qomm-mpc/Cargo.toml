@@ -1,0 +1,30 @@
+[package]
+name = "qomm-mpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MP-SPDZ as a library: run the quote circuit and read the round and byte counts from the machine rather than from its stdout."
+build = "build.rs"
+
+[dependencies]
+qomm-dsl.workspace = true
+qomm-measure.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+sha2.workspace = true
+tempfile = "3"
+
+[[bin]]
+name = "qomm-party"
+path = "src/bin/party.rs"
+
+[[bin]]
+name = "qomm-rounds"
+path = "src/bin/rounds.rs"
+
+[[bin]]
+name = "qomm-gen"
+path = "src/bin/gen.rs"

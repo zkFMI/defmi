@@ -1,9 +1,0 @@
-{
-  "curve": "ed25519",
-  "operation": "base-point scalar multiplication",
-  "implementation": "extended coordinates, double-and-add, no windowing",
-  "solc": "0.8.28",
-  "optimizer_runs": 200,
-  "scalar_bits_set": 123,
-  "gas": 302401
-}

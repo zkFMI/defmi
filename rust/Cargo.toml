@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["qomm-defmi", "qomm-proofs", "qomm-zk", "qomm-zkpi", "qomm-measure", "qomm-sim", "qomm-harness"]
+members = ["qomm-defmi", "qomm-proofs", "qomm-zk", "qomm-zkpi", "qomm-measure", "qomm-sim", "qomm-dsl", "qomm-mpc", "qomm-transport", "qomm-audit", "qomm-avalanche-vm", "qomm-harness"]
 
 [workspace.package]
 version = "0.1.0"
@@ -30,12 +30,16 @@ base64 = "0.22"
 hex = "0.4"
 thiserror = "1"
 rand = "0.8"
+regex = "1.13.1"
 openssl = "0.10"
 libc = "0.2"
 qomm-zk = { path = "qomm-zk" }
 qomm-zkpi = { path = "qomm-zkpi" }
 qomm-proofs = { path = "qomm-proofs" }
 qomm-defmi = { path = "qomm-defmi" }
-qomm-dsl = { git = "https://github.com/shukob/qomm" }
+qomm-dsl = { path = "qomm-dsl" }
 qomm-sim = { path = "qomm-sim" }
 qomm-measure = { path = "qomm-measure" }
+qomm-mpc = { path = "qomm-mpc" }
+qomm-transport = { path = "qomm-transport" }
+qomm-audit = { path = "qomm-audit" }

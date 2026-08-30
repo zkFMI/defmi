@@ -1,15 +1,44 @@
 {
   "programs": [
     {
-      "shape_digest": "REPLACE_WITH_64_HEX_CHARACTERS",
-      "argv": [
-        "/opt/qomm/current/rust/target/release/qomm-mpc-party",
-        "--party", "{node}",
-        "--slot", "{slot}"
-      ],
-      "cwd": "/var/lib/qomm/runtime",
-      "executable_sha256": "REPLACE_WITH_BINARY_SHA256",
+      "shape_digest": "REPLACE_WITH_CIRCUIT_SHAPE_DIGEST",
+      "argv": ["/opt/qomm/runtime/source-bound-resident-mpc","{node}","{slot}","{batch_digest}","{lane}"],
+      "cwd": "/var/lib/qomm/node-0/runtime",
+      "executable_sha256": "REPLACE_WITH_SOURCE_BOUND_LAUNCHER_SHA256",
+      "runtime": {
+        "executable": "/opt/qomm/current/rust/target/release/qomm_node_party",
+        "executable_sha256": "REPLACE_WITH_RUNNER_SHA256",
+        "config": "/etc/qomm/node-0/resident-mpc.json",
+        "config_sha256": "REPLACE_WITH_RUNTIME_CONFIG_SHA256"
+      },
       "timeout_seconds": 60
     }
-  ]
+  ],
+  "approval": {
+    "name": "qomm_quote_policy",
+    "rule_source_file": "approved-policy.dsl",
+    "program_source_file": "approved-program.mpc",
+    "shape": [4,7,31],
+    "program_config": {
+      "n_mm": 4,
+      "n_parties": 7,
+      "n_requests": 1,
+      "n_assets": 1,
+      "ref_table": [100000],
+      "maker_assets": [0,0,0,0],
+      "public_maker_assets": true,
+      "bit_length": 31,
+      "binding_limit": true,
+      "persist_wires": true,
+      "persist_zkpi_wires": true,
+      "persist_quote_proof_wires": true,
+      "persist_dvp_wires": true,
+      "zkpi_amount_bits": 16,
+      "zkpi_price_bits": 32,
+      "dvp_remainder_bits": 32,
+      "quote_eligibility_bits": 34,
+      "quote_span_bits": 32,
+      "reference": "anchored"
+    }
+  }
 }

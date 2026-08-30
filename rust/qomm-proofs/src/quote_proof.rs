@@ -29,7 +29,6 @@
 //! and `key_i - v >= 0` for every `i`. Minimality plus membership is exactly
 //! "v is the minimum", so an incorrect winner cannot be proved.
 //!
-//! One difference from the Python this replaces. Range proofs there were bit
 //! decompositions at an arbitrary width; here they are Bulletproofs, which take
 //! powers of two, so a declared width rounds up. Each maker's two eligibility
 //! ranges share one aggregated proof, and so do the minimality ranges, which is
@@ -74,6 +73,11 @@ pub struct MakerWitness {
 impl MakerWitness {
     pub fn registered(&self, key: &Pedersen) -> RegisteredPolicy {
         RegisteredPolicy {
+            // The original single-market API has no asset or reference input.
+            // It is therefore the asset-zero, unanchored special case of the
+            // production statement.  MPC callers construct the same public
+            // record from their registered policy evaluations.
+            maker_asset: 0,
             ask_level: key.commit(&scalar(self.ask_level), &self.blindings.ask_level),
             spread: key.commit(&scalar(self.spread), &self.blindings.spread),
             slope: key.commit(&scalar(self.slope), &self.blindings.slope),
@@ -85,6 +89,7 @@ impl MakerWitness {
                 &Scalar::from(u64::from(self.active)),
                 &self.blindings.active,
             ),
+            use_ref: RistrettoPoint::identity(),
         }
     }
 }
@@ -135,6 +140,10 @@ impl Registered {
 /// The commitments a maker put on the record before any request arrived.
 #[derive(Clone, Copy, Debug)]
 pub struct RegisteredPolicy {
+    /// Public market identifier served by this policy.  The request asset is
+    /// private to the requester/proof recipient, but fixing this field in the
+    /// register prevents a policy for another asset from entering the minimum.
+    pub maker_asset: u32,
     pub ask_level: RistrettoPoint,
     pub spread: RistrettoPoint,
     pub slope: RistrettoPoint,
@@ -143,10 +152,13 @@ pub struct RegisteredPolicy {
     pub maxqty: RistrettoPoint,
     pub expiry: RistrettoPoint,
     pub active: RistrettoPoint,
+    /// Committed bit selecting `ask_level + reference_price` rather than the
+    /// maker's absolute `ask_level`.
+    pub use_ref: RistrettoPoint,
 }
 
 impl RegisteredPolicy {
-    fn parts(&self) -> [RistrettoPoint; 8] {
+    fn parts(&self) -> [RistrettoPoint; 9] {
         [
             self.ask_level,
             self.spread,
@@ -156,8 +168,23 @@ impl RegisteredPolicy {
             self.maxqty,
             self.expiry,
             self.active,
+            self.use_ref,
         ]
     }
+}
+
+/// Stable identity of one Maker slot in an approved registry. Maker mandates
+/// sign this value, and the proof committee compares it with the policy at the
+/// MPC-selected winner index before authorizing settlement.
+pub fn registered_policy_digest(index: usize, policy: &RegisteredPolicy) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"QOMM:QUOTE:REGISTERED-POLICY:v1");
+    hasher.update((index as u64).to_be_bytes());
+    hasher.update(policy.maker_asset.to_be_bytes());
+    for part in policy.parts() {
+        hasher.update(part.compress().as_bytes());
+    }
+    hasher.finalize().into()
 }
 
 /// One digest over the whole eligible set, in order.
@@ -167,12 +194,180 @@ impl RegisteredPolicy {
 /// digest, and the digest was agreed before the request arrived.
 pub fn registry_digest(registered: &[RegisteredPolicy]) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"QOMM:QUOTE:REGISTRY:v1");
+    hasher.update(b"QOMM:QUOTE:REGISTRY:v2");
     hasher.update((registered.len() as u64).to_be_bytes());
     for policy in registered {
+        hasher.update(policy.maker_asset.to_be_bytes());
         for part in policy.parts() {
             hasher.update(part.compress().as_bytes());
         }
+    }
+    hasher.finalize().into()
+}
+
+fn hash_point(hasher: &mut Sha256, point: &RistrettoPoint) {
+    hasher.update(point.compress().as_bytes());
+}
+
+fn hash_scalar(hasher: &mut Sha256, value: &Scalar) {
+    hasher.update(value.to_bytes());
+}
+
+fn hash_opening(hasher: &mut Sha256, proof: &OpeningProof) {
+    hash_point(hasher, &proof.t);
+    hash_scalar(hasher, &proof.z_value);
+    hash_scalar(hasher, &proof.z_blinding);
+}
+
+fn hash_product(hasher: &mut Sha256, proof: &ProductProof) {
+    hash_point(hasher, &proof.t_factor);
+    hash_point(hasher, &proof.t_product);
+    hash_scalar(hasher, &proof.z_b);
+    hash_scalar(hasher, &proof.z_rb);
+    hash_scalar(hasher, &proof.z_s);
+}
+
+fn hash_bit(hasher: &mut Sha256, proof: &BitProof) {
+    hash_point(hasher, &proof.t0);
+    hash_point(hasher, &proof.t1);
+    hash_scalar(hasher, &proof.c0);
+    hash_scalar(hasher, &proof.z0);
+    hash_scalar(hasher, &proof.z1);
+}
+
+fn hash_threshold_range(hasher: &mut Sha256, proof: &ThresholdRangeProof) {
+    hasher.update((proof.bits as u64).to_be_bytes());
+    hasher.update((proof.bit_commitments.len() as u64).to_be_bytes());
+    for (commitment, bit_proof) in proof.bit_commitments.iter().zip(&proof.bit_proofs) {
+        hash_point(hasher, commitment);
+        hash_product(hasher, bit_proof);
+    }
+    hash_opening(hasher, &proof.linkage);
+}
+
+fn hash_bit_validity(hasher: &mut Sha256, proof: &BitValidityProof) {
+    match proof {
+        BitValidityProof::Disjunction(proof) => {
+            hasher.update([0]);
+            hash_bit(hasher, proof);
+        }
+        BitValidityProof::Square(proof) => {
+            hasher.update([1]);
+            hash_product(hasher, proof);
+        }
+    }
+}
+
+fn hash_gate(hasher: &mut Sha256, gate: &Gate) {
+    hash_point(hasher, &gate.commitment);
+    hash_bit_validity(hasher, &gate.bit_proof);
+    hash_product(hasher, &gate.product);
+    hash_point(hasher, &gate.product_commitment);
+    hash_point(hasher, &gate.witness_commitment);
+}
+
+/// Canonical link between the public quote proof and a production zkPI.
+///
+/// Version 1 put the packed winner key in the payment instruction. That value
+/// contains both the price and maker index. Version 2 signs this digest instead:
+/// every public input and every proof element is covered, while neither hidden
+/// value is opened.
+pub fn quote_proof_digest(public: &Public, proof: &QuoteProof) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    // v2 ranks signed dealer costs after adding the public sentinel.  This
+    // preserves order while making an ordinary positive bid (`cost = -bid`)
+    // representable by the public u64 winner opening.
+    hasher.update(b"QOMM:QUOTE:PROOF-DIGEST:v2");
+    hash_point(&mut hasher, &public.qty_commitment);
+    hasher.update(public.now.to_be_bytes());
+    hasher.update(public.sentinel.to_be_bytes());
+    hasher.update(public.n_slots.to_be_bytes());
+    hasher.update([public.direction]);
+    hasher.update(public.asset.to_be_bytes());
+    hasher.update(public.reference_price.to_be_bytes());
+    hasher.update(public.registry_digest);
+    hasher.update(public.market_digest);
+    hasher.update(public.slot.to_be_bytes());
+    hasher.update((public.registry.len() as u64).to_be_bytes());
+    for policy in &public.registry {
+        hasher.update(policy.maker_asset.to_be_bytes());
+        for part in policy.parts() {
+            hash_point(&mut hasher, &part);
+        }
+    }
+
+    hasher.update((proof.winner_index as u64).to_be_bytes());
+    hasher.update(proof.winner_value.to_be_bytes());
+    hasher.update((proof.maker_proofs.len() as u64).to_be_bytes());
+    for maker in &proof.maker_proofs {
+        hash_product(&mut hasher, &maker.depth);
+        hash_product(&mut hasher, &maker.skew);
+        hash_product(&mut hasher, &maker.gate_cost);
+        match &maker.eligibility {
+            EligibilityProof::Bulletproof { proof, commitments } => {
+                hasher.update([0]);
+                hasher.update((commitments.len() as u64).to_be_bytes());
+                for commitment in commitments {
+                    hasher.update(commitment.as_bytes());
+                }
+                let bytes = proof.to_bytes();
+                hasher.update((bytes.len() as u64).to_be_bytes());
+                hasher.update(bytes);
+            }
+            EligibilityProof::Threshold { fits, fresh } => {
+                hasher.update([1]);
+                hash_threshold_range(&mut hasher, fits);
+                hash_threshold_range(&mut hasher, fresh);
+            }
+        }
+        hash_bit_validity(&mut hasher, &maker.active_bit);
+        hash_bit_validity(&mut hasher, &maker.reference_bit);
+        hash_gate(&mut hasher, &maker.fits_gate);
+        hash_gate(&mut hasher, &maker.fresh_gate);
+        hash_product(&mut hasher, &maker.conjunction.0);
+        hash_product(&mut hasher, &maker.conjunction.1);
+        for point in [
+            &maker.commitments.slope,
+            &maker.commitments.invcoef,
+            &maker.commitments.inv,
+            &maker.commitments.depth,
+            &maker.commitments.skew,
+            &maker.commitments.fits,
+            &maker.commitments.fresh,
+            &maker.commitments.active,
+            &maker.commitments.ok,
+            &maker.commitments.fresh_strict,
+            &maker.commitments.both,
+            &maker.commitments.cost,
+            &maker.commitments.gated,
+            &maker.commitments.shifted_cost,
+        ] {
+            hash_point(&mut hasher, point);
+        }
+    }
+    hash_opening(&mut hasher, &proof.winner_opening);
+    match &proof.minimality {
+        MinimalityProof::Bulletproof { proof, commitments } => {
+            hasher.update([0]);
+            hasher.update((commitments.len() as u64).to_be_bytes());
+            for commitment in commitments {
+                hasher.update(commitment.as_bytes());
+            }
+            let bytes = proof.to_bytes();
+            hasher.update((bytes.len() as u64).to_be_bytes());
+            hasher.update(bytes);
+        }
+        MinimalityProof::Threshold(proofs) => {
+            hasher.update([1]);
+            hasher.update((proofs.len() as u64).to_be_bytes());
+            for proof in proofs {
+                hash_threshold_range(&mut hasher, proof);
+            }
+        }
+    }
+    hasher.update((proof.key_commitments.len() as u64).to_be_bytes());
+    for commitment in &proof.key_commitments {
+        hash_point(&mut hasher, commitment);
     }
     hasher.finalize().into()
 }
@@ -240,6 +435,10 @@ pub struct MakerProof {
     /// One proof object covering both `fits` and `fresh`.
     pub eligibility: EligibilityProof,
     pub active_bit: BitValidityProof,
+    /// The registered reference-selection flag is a bit.  Without this proof a
+    /// malicious policy could multiply the public reference by an arbitrary
+    /// hidden field element.
+    pub reference_bit: BitValidityProof,
     /// The two `>= 0` tests, each a bit pinned to its difference.
     pub fits_gate: Gate,
     pub fresh_gate: Gate,
@@ -268,6 +467,11 @@ pub struct Public {
     pub n_slots: i64,
     /// 0 = the user buys and pays the ask, 1 = the user sells and receives the bid.
     pub direction: u8,
+    /// Request asset and the authenticated reference value for `market_digest`.
+    /// A proof may be delivered only to the requester; validators settle its
+    /// digest, so these values need not become globally visible.
+    pub asset: u32,
+    pub reference_price: i64,
     /// What the proof is *about*, as opposed to what it proves. Without these
     /// the statement said only "among the numbers I committed to, this is the
     /// smallest", which is true of any set the prover cares to invent.
@@ -335,6 +539,7 @@ pub enum Invalid {
     Skew(usize),
     Eligibility(usize),
     ActiveNotABit(usize),
+    ReferenceFlagNotABit(usize),
     OkNotABit(usize),
     Cost(usize),
     ShiftedCost(usize),
@@ -393,7 +598,7 @@ impl QuoteCircuit {
     /// true. Length-prefixing the caller context keeps framing unambiguous.
     pub(crate) fn statement_context(context: &[u8], public: &Public) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(b"QOMM:QUOTE:STATEMENT:v2");
+        hasher.update(b"QOMM:QUOTE:STATEMENT:v3");
         hasher.update((context.len() as u64).to_be_bytes());
         hasher.update(context);
         hasher.update(public.qty_commitment.compress().as_bytes());
@@ -401,6 +606,8 @@ impl QuoteCircuit {
         hasher.update(public.sentinel.to_be_bytes());
         hasher.update(public.n_slots.to_be_bytes());
         hasher.update([public.direction]);
+        hasher.update(public.asset.to_be_bytes());
+        hasher.update(public.reference_price.to_be_bytes());
         hasher.update(public.registry_digest);
         hasher.update(public.market_digest);
         hasher.update(public.slot.to_be_bytes());
@@ -606,6 +813,8 @@ is a policy invented now");
             sentinel,
             n_slots,
             direction,
+            asset: 0,
+            reference_price: 0,
             registry_digest: registry_digest(&registry),
             registry,
             market_digest,
@@ -734,6 +943,14 @@ is a policy invented now");
                 &r_active,
                 rng,
             ));
+            let reference_bit = BitValidityProof::Disjunction(prove_bit(
+                key,
+                &mut Self::tag(&proof_context, index, "reference"),
+                &RistrettoPoint::identity(),
+                false,
+                &Scalar::ZERO,
+                rng,
+            ));
 
             // ok = fits and fresh and active, as two products of proved bits,
             // so it is a bit by construction and has no freedom left
@@ -752,7 +969,11 @@ is a policy invented now");
                 rng,
             );
 
-            let ok = both && m.active;
+            let asset_match = public.registry[index].maker_asset == public.asset;
+            let effective_active = m.active && asset_match;
+            let effective_active_scalar = Scalar::from(u64::from(effective_active));
+            let effective_active_blinding = if asset_match { r_active } else { Scalar::ZERO };
+            let ok = both && effective_active;
             let r_ok = Scalar::random(rng);
             let c_ok = key.commit(&Scalar::from(u64::from(ok)), &r_ok);
             let conj_second = prove_product(
@@ -761,8 +982,8 @@ is a policy invented now");
                 &c_both,
                 &Scalar::from(u64::from(both)),
                 &r_both,
-                &Scalar::from(u64::from(m.active)),
-                &r_active,
+                &effective_active_scalar,
+                &effective_active_blinding,
                 &r_ok,
                 rng,
             );
@@ -798,12 +1019,20 @@ is a policy invented now");
             let effective = gated_value
                 .checked_add(sentinel)
                 .ok_or("effective cost overflow")?;
-            let packed = effective
+            // Dealer sell costs are `-bid` and are therefore negative for the
+            // normal case of a positive bid.  Add the public sentinel to every
+            // effective cost before packing.  Ordering and all key differences
+            // are unchanged; eligible keys become `cost + sentinel`, while an
+            // ineligible maker is parked at `2 * sentinel`.
+            let ranked = effective
+                .checked_add(sentinel)
+                .ok_or("ranked cost overflow")?;
+            let packed = ranked
                 .checked_mul(n_slots)
                 .and_then(|v| v.checked_add(i64::try_from(index).ok()?))
                 .ok_or("packed key overflow")?;
             if packed < 0 {
-                return Err("a packed key went negative; widen the sentinel");
+                return Err("the sentinel does not cover the signed quote cost");
             }
             let r_packed = r_gated * scalar(n_slots);
             keys.push(packed as u64);
@@ -819,6 +1048,7 @@ is a policy invented now");
                     commitments: eligibility_commitments,
                 },
                 active_bit,
+                reference_bit,
                 fits_gate,
                 fresh_gate,
                 conjunction: (conj_first, conj_second),
@@ -1035,6 +1265,14 @@ is a policy invented now");
             // request and the clock, because a prover that picks what it proves
             // eligibility about picks the answer.
             let registered = &public.registry[index];
+            let mut reference_transcript = Self::tag(&proof_context, index, "reference");
+            if !self.check_bit_proof(
+                &registered.use_ref,
+                &maker.reference_bit,
+                &mut reference_transcript,
+            ) {
+                return Err(Invalid::ReferenceFlagNotABit(index));
+            }
             let derived_fits = registered.maxqty - public.qty_commitment;
             if derived_fits.compress() != c.fits.compress() {
                 return Err(Invalid::NotOnTheRegister(index, "fits"));
@@ -1066,11 +1304,15 @@ is a policy invented now");
                 return Err(Invalid::Eligibility(index));
             }
             let mut t = Self::tag(&proof_context, index, "ok2");
-            if !verify_product(key, &mut t, &c.both, &c.active, &c.ok, second) {
+            let asset_match = registered.maker_asset == public.asset;
+            let effective_active = c.active * Scalar::from(u64::from(asset_match));
+            if !verify_product(key, &mut t, &c.both, &effective_active, &c.ok, second) {
                 return Err(Invalid::Eligibility(index));
             }
-            let ask = registered.ask_level + c.depth + c.skew;
-            let bid = registered.ask_level - registered.spread - c.depth + c.skew;
+            let anchored =
+                registered.ask_level + registered.use_ref * scalar(public.reference_price);
+            let ask = anchored + c.depth + c.skew;
+            let bid = anchored - registered.spread - c.depth + c.skew;
             let derived_cost = if public.direction == 1 { -bid } else { ask };
             if derived_cost.compress() != c.cost.compress() {
                 return Err(Invalid::Cost(index));
@@ -1089,8 +1331,17 @@ is a policy invented now");
             ) {
                 return Err(Invalid::CostNotGated(index));
             }
-            let derived_key = (c.gated + key.commit(&scalar(public.sentinel), &Scalar::ZERO))
-                * scalar(public.n_slots)
+            let ranked = c.gated
+                + key.commit(
+                    &scalar(
+                        public
+                            .sentinel
+                            .checked_mul(2)
+                            .ok_or(Invalid::Malformed("sentinel overflow"))?,
+                    ),
+                    &Scalar::ZERO,
+                );
+            let derived_key = ranked * scalar(public.n_slots)
                 + key.commit(&Scalar::from(index as u64), &Scalar::ZERO);
             if derived_key.compress() != proof.key_commitments[index].compress() {
                 return Err(Invalid::Key(index));

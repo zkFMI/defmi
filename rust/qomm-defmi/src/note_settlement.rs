@@ -37,6 +37,9 @@ const DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-DVP:v1";
 /// here rather than assumed.
 pub struct NoteLeg {
     pub ring: Vec<usize>,
+    /// Public predicate bits used to transform the anonymity set.  They reveal
+    /// which decoys are eligible for this lock class, never which one was spent.
+    pub eligibility: Vec<bool>,
     pub spend: SpendProof,
     pub notes: Vec<Note>,
 }
@@ -49,6 +52,69 @@ pub struct NoteDvpPackage {
     pub cash_value_commitment: RistrettoPoint,
     pub cash_link: CrossGeneratorProof,
     pub value_proof: ProductProof,
+}
+
+impl NoteDvpPackage {
+    /// Digest of every verifier-complete proof object.  The chain statement
+    /// separately binds canonical note IDs and ring roots; this digest makes
+    /// the zkPI/DvP linkage itself impossible to swap after committee review.
+    pub fn digest(&self) -> [u8; 32] {
+        fn point(hash: &mut Sha256, point: &RistrettoPoint) {
+            hash.update(point.compress().as_bytes());
+        }
+        fn scalar(hash: &mut Sha256, scalar: &Scalar) {
+            hash.update(scalar.to_bytes());
+        }
+        fn cross(hash: &mut Sha256, proof: &CrossGeneratorProof) {
+            point(hash, &proof.t_first);
+            point(hash, &proof.t_second);
+            scalar(hash, &proof.z_value);
+            scalar(hash, &proof.z_first);
+            scalar(hash, &proof.z_second);
+        }
+        fn product(hash: &mut Sha256, proof: &ProductProof) {
+            point(hash, &proof.t_factor);
+            point(hash, &proof.t_product);
+            scalar(hash, &proof.z_b);
+            scalar(hash, &proof.z_rb);
+            scalar(hash, &proof.z_s);
+        }
+        fn leg(hash: &mut Sha256, leg: &NoteLeg) {
+            hash.update((leg.ring.len() as u64).to_be_bytes());
+            for index in &leg.ring {
+                hash.update((*index as u64).to_be_bytes());
+            }
+            hash.update((leg.eligibility.len() as u64).to_be_bytes());
+            for eligible in &leg.eligibility {
+                hash.update([u8::from(*eligible)]);
+            }
+            hash.update(leg.spend.digest());
+            hash.update((leg.notes.len() as u64).to_be_bytes());
+            for note in &leg.notes {
+                for bytes in [
+                    note.one_time.compress().to_bytes(),
+                    note.value_commitment.compress().to_bytes(),
+                    note.ephemeral.compress().to_bytes(),
+                    note.masked_value.to_bytes(),
+                    note.masked_blinding.to_bytes(),
+                ] {
+                    hash.update(bytes);
+                }
+            }
+        }
+        let mut hash = Sha256::new();
+        hash.update(b"QOMM:DEFMI:NOTE-DVP-PACKAGE:v1");
+        let instruction = qomm_zkpi::wire::encode(&self.instruction);
+        hash.update((instruction.len() as u64).to_be_bytes());
+        hash.update(instruction);
+        leg(&mut hash, &self.securities);
+        leg(&mut hash, &self.cash);
+        cross(&mut hash, &self.quantity_link);
+        point(&mut hash, &self.cash_value_commitment);
+        cross(&mut hash, &self.cash_link);
+        product(&mut hash, &self.value_proof);
+        hash.finalize().into()
+    }
 }
 
 pub struct NoteReceipt {
@@ -140,11 +206,50 @@ pub fn build_note_package<R: RngCore + CryptoRng>(
     context: &[u8],
     rng: &mut R,
 ) -> Result<NoteDvpPackage, &'static str> {
+    let securities_eligibility = vec![true; securities.ring.len()];
+    let cash_eligibility = vec![true; cash.ring.len()];
+    build_note_package_constrained(
+        key,
+        instruction,
+        securities_ledger,
+        cash_ledger,
+        securities,
+        cash,
+        &securities_eligibility,
+        &cash_eligibility,
+        quantity,
+        price,
+        instruction_amount_blinding,
+        instruction_price_blinding,
+        context,
+        rng,
+    )
+}
+
+/// Build the same DvP while proving that each hidden input also belongs to a
+/// public eligibility class (for example, the reservation's lock identifier).
+#[allow(clippy::too_many_arguments)]
+pub fn build_note_package_constrained<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    instruction: Instruction,
+    securities_ledger: &NoteLedger,
+    cash_ledger: &NoteLedger,
+    securities: &LegInput,
+    cash: &LegInput,
+    securities_eligibility: &[bool],
+    cash_eligibility: &[bool],
+    quantity: u64,
+    price: u64,
+    instruction_amount_blinding: &Scalar,
+    instruction_price_blinding: &Scalar,
+    context: &[u8],
+    rng: &mut R,
+) -> Result<NoteDvpPackage, &'static str> {
     let value = quantity
         .checked_mul(price)
         .ok_or("quantity times price overflows")?;
 
-    let sec = securities_ledger.build_spend(
+    let sec = securities_ledger.build_spend_constrained(
         securities.ring,
         securities.index,
         securities.opening,
@@ -154,10 +259,11 @@ pub fn build_note_package<R: RngCore + CryptoRng>(
             (securities.payee, quantity),
             (securities.change_to, securities.opening.value - quantity),
         ],
+        securities_eligibility,
         &[context, b":sec"].concat(),
         rng,
     )?;
-    let cash_spend = cash_ledger.build_spend(
+    let cash_spend = cash_ledger.build_spend_constrained(
         cash.ring,
         cash.index,
         cash.opening,
@@ -167,6 +273,7 @@ pub fn build_note_package<R: RngCore + CryptoRng>(
             (cash.payee, value),
             (cash.change_to, cash.opening.value - value),
         ],
+        cash_eligibility,
         &[context, b":cash"].concat(),
         rng,
     )?;
@@ -220,11 +327,13 @@ pub fn build_note_package<R: RngCore + CryptoRng>(
         instruction,
         securities: NoteLeg {
             ring: securities.ring.to_vec(),
+            eligibility: securities_eligibility.to_vec(),
             spend: sec.proof,
             notes: sec.notes,
         },
         cash: NoteLeg {
             ring: cash.ring.to_vec(),
+            eligibility: cash_eligibility.to_vec(),
             spend: cash_spend.proof,
             notes: cash_spend.notes,
         },
@@ -265,7 +374,10 @@ impl NoteDefmi {
         self.signing.verifying_key()
     }
 
-    fn check<R: RngCore + CryptoRng>(
+    /// Verify the complete account-free DvP without mutating either note rail.
+    /// This is the admission boundary used before the k-of-n committee signs
+    /// the exact Avalanche projection.
+    pub fn verify<R: RngCore + CryptoRng>(
         &self,
         package: &NoteDvpPackage,
         now: u64,
@@ -274,15 +386,17 @@ impl NoteDefmi {
     ) -> Result<(), &'static str> {
         self.venue.verify(&package.instruction, now)?;
 
-        self.securities.check_spend(
+        self.securities.check_spend_constrained(
             &package.securities.ring,
             &package.securities.spend,
+            &package.securities.eligibility,
             &[context, b":sec"].concat(),
             rng,
         )?;
-        self.cash.check_spend(
+        self.cash.check_spend_constrained(
             &package.cash.ring,
             &package.cash.spend,
+            &package.cash.eligibility,
             &[context, b":cash"].concat(),
             rng,
         )?;
@@ -345,7 +459,7 @@ impl NoteDefmi {
     ) -> NoteReceipt {
         let securities_before = self.securities.snapshot();
         let cash_before = self.cash.snapshot();
-        let status = self.check(&package, now, context, rng);
+        let status = self.verify(&package, now, context, rng);
 
         if status.is_ok() {
             // both legs are checked before either is applied

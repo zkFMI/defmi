@@ -1,13 +1,12 @@
 //! Why `n_slots` has to be at least the number of makers.
 //!
-//! The key a maker is ranked by is `(gated + sentinel) * n_slots + index`, and
+//! The key a maker is ranked by is `(gated + 2*sentinel) * n_slots + index`, and
 //! the verifier rebuilds it in the exponent from the maker's own gated
 //! commitment and its own index. That is a bijection on `(cost, index)` only
 //! while `index < n_slots`. Past that it wraps, and two different makers at two
 //! different costs produce the *same* key commitment --- so a proof that the
 //! opened key is the minimum no longer says which maker it belongs to.
 //!
-//! The Python this was ported from never checked, and the measurement that
 //! produced `artifacts/threshold_assembly.json` ran sixteen makers into eight
 //! slots. The paper cites a number from that row. `QuoteCircuit::prove` now
 //! refuses the configuration; this is the arithmetic that says why.
@@ -29,7 +28,7 @@ fn derived_key(
     index: u64,
 ) -> curve25519_dalek::ristretto::RistrettoPoint {
     let inner = key.commit(&Scalar::from(gated as u64), &Scalar::ZERO)
-        + key.commit(&Scalar::from(sentinel as u64), &Scalar::ZERO);
+        + key.commit(&Scalar::from((2 * sentinel) as u64), &Scalar::ZERO);
     inner * Scalar::from(n_slots as u64) + key.commit(&Scalar::from(index), &Scalar::ZERO)
 }
 

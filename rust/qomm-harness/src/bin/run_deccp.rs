@@ -1,5 +1,3 @@
-//! Rust port of `scripts/run_deccp.py`.
-
 use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::SigningKey;
 use qomm_defmi::ccp::{
@@ -9,7 +7,7 @@ use qomm_defmi::credit::CreditCtx;
 use qomm_defmi::netting::Mode as NetMode;
 use qomm_harness::defmi_cycle::one_cycle;
 use qomm_harness::{parse_value, timing_summary, write_pretty_json, HarnessResult};
-use qomm_sim::pyrandom::PyRandom;
+use qomm_sim::deterministic_random::DeterministicRng;
 use qomm_zk::pedersen::{asset_tag, Pedersen};
 use rand::rngs::OsRng;
 use serde_json::{json, Value};
@@ -96,11 +94,11 @@ fn run_main() -> HarnessResult<()> {
             "net_net_attested": attested_total,
             "deccp_added_to_attested": added,
             "deccp_total": deccp_total,
-            "speedup_attested_vs_plain": py_round_places(plain_median / attested_median, 2),
-            "speedup_deccp_vs_plain": py_round_places(plain_median / deccp_total, 2),
+            "speedup_attested_vs_plain": round_half_even_places(plain_median / attested_median, 2),
+            "speedup_deccp_vs_plain": round_half_even_places(plain_median / deccp_total, 2),
             "novate_us_per_trade": clearing[0]["novate_us_per_trade"],
             "check_us_per_trade": clearing[0]["check_us_per_trade"],
-            "verify_per_order_ms_plain": py_round_places(verify_per_order, 2),
+            "verify_per_order_ms_plain": round_half_even_places(verify_per_order, 2),
             "book_flat_without_a_proof": clearing.iter().all(|row| row["book_flat_without_a_proof"] == true),
             "edges": {
                 "before": clearing[0]["edges_before"],
@@ -138,7 +136,7 @@ fn clearing_arm(
     if participants < 2 || trades == 0 {
         return Err("clearing measurement needs at least two participants and one trade".into());
     }
-    let mut values = PyRandom::new(seed);
+    let mut values = DeterministicRng::new(seed);
     let house = ClearingProvider::new("DeCCP-A", b"house-a", SigningKey::generate(&mut *rng));
     let members = (0..participants)
         .map(|index| format!("p{index}").into_bytes())
@@ -224,8 +222,8 @@ fn clearing_arm(
         "edges_before": novation.edges(),
         "edges_after": novation.after.len(),
         "book_flat_without_a_proof": verified,
-        "novate_us_per_trade": py_round_places(novate_ms / trades as f64 * 1_000.0, 2),
-        "check_us_per_trade": py_round_places(check_ms / trades as f64 * 1_000.0, 2),
+        "novate_us_per_trade": round_half_even_places(novate_ms / trades as f64 * 1_000.0, 2),
+        "check_us_per_trade": round_half_even_places(check_ms / trades as f64 * 1_000.0, 2),
         "participants_with_a_net": nets.len(),
     }))
 }
@@ -239,9 +237,9 @@ fn summary_field(rows: &[Value], field: &str) -> Value {
     )
 }
 
-fn py_round_places(value: f64, places: i32) -> f64 {
+fn round_half_even_places(value: f64, places: i32) -> f64 {
     let scale = 10f64.powi(places);
-    qomm_sim::market::py_round(value * scale) as f64 / scale
+    qomm_sim::market::round_half_even(value * scale) as f64 / scale
 }
 
 fn parse_args() -> HarnessResult<Options> {

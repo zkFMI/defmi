@@ -27,10 +27,11 @@ use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use qomm_zk::or_dleq::{self, Proof, Statement};
 use rand_core::{CryptoRng, RngCore};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct BusinessAttributes {
     pub jurisdiction: String,
     pub entity_type: String,
@@ -61,6 +62,27 @@ pub struct KybCredential {
 }
 
 impl KybCredential {
+    /// Issue a fresh unlinkable credential. Persistent issuer services retain
+    /// only the public point and rotate this secret on update/reinstatement.
+    pub fn issue<R: RngCore + CryptoRng>(
+        control_group_id: &str,
+        attributes: BusinessAttributes,
+        max_tier: u32,
+        rng: &mut R,
+    ) -> Result<Self, &'static str> {
+        if control_group_id.trim().is_empty() || max_tier == 0 {
+            return Err("control group and maximum tier are required");
+        }
+        let secret = Scalar::random(rng);
+        Ok(Self {
+            control_group_id: control_group_id.to_string(),
+            secret,
+            public_point: RISTRETTO_BASEPOINT_POINT * secret,
+            cohorts: attributes.cohorts(max_tier),
+            attributes,
+        })
+    }
+
     /// What the venue counts against. Equal across an entity's wallets,
     /// unrelated across scopes.
     pub fn scope_nullifier(&self, scope: &[u8]) -> RistrettoPoint {
@@ -99,6 +121,42 @@ impl SignedCohortRegistry {
         h.update(issuer.as_bytes());
         h.finalize().to_vec()
     }
+
+    /// Sign one canonical cohort registry from lifecycle-managed public
+    /// credential points. Entity secrets are neither required nor retained.
+    pub fn issue(
+        cohort: &str,
+        registry_epoch: u64,
+        expires_at: u64,
+        mut points: Vec<RistrettoPoint>,
+        signing: &SigningKey,
+    ) -> Result<Self, &'static str> {
+        if cohort.trim().is_empty() || registry_epoch == 0 || expires_at == 0 || points.is_empty() {
+            return Err("cohort registry is incomplete");
+        }
+        points.sort_by_key(|point| point.compress().to_bytes());
+        if points
+            .windows(2)
+            .any(|pair| pair[0].compress() == pair[1].compress())
+        {
+            return Err("cohort registry contains duplicate entities");
+        }
+        let issuer = signing.verifying_key();
+        let body = Self::body(cohort, registry_epoch, expires_at, &points, &issuer);
+        let registry_id: [u8; 32] = body
+            .try_into()
+            .map_err(|_| "cohort registry digest is malformed")?;
+        let signature = signing.sign(&registry_id);
+        Ok(Self {
+            cohort: cohort.to_string(),
+            registry_epoch,
+            expires_at,
+            points,
+            issuer,
+            registry_id,
+            signature,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +166,44 @@ pub struct KybPresentation {
     pub scope: Vec<u8>,
     pub context_hash: [u8; 32],
     pub proof: Proof,
+}
+
+impl KybPresentation {
+    /// Stable commitment used by a signed RFQ or Maker policy.  The verifier
+    /// still checks the full presentation against the live registry; this
+    /// digest only prevents substituting another valid legal entity after the
+    /// mandate was signed.
+    pub fn digest(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(b"QOMM:KYB:PRESENTATION:v1");
+        hash.update((self.cohort.len() as u32).to_be_bytes());
+        hash.update(self.cohort.as_bytes());
+        hash.update(self.registry_id);
+        hash.update((self.scope.len() as u32).to_be_bytes());
+        hash.update(&self.scope);
+        hash.update(self.context_hash);
+        hash.update(self.proof.nullifier.compress().as_bytes());
+        hash.update((self.proof.challenges.len() as u32).to_be_bytes());
+        for challenge in &self.proof.challenges {
+            hash.update(challenge.as_bytes());
+        }
+        hash.update((self.proof.responses.len() as u32).to_be_bytes());
+        for response in &self.proof.responses {
+            hash.update(response.as_bytes());
+        }
+        hash.finalize().into()
+    }
+
+    /// Pseudonymous facility beneficiary for one venue scope.  It is equal for
+    /// wallets controlled by the same legal entity inside that scope and does
+    /// not reveal the registry entry that entity proved.
+    pub fn entity_commitment(&self) -> [u8; 32] {
+        Sha256::new()
+            .chain_update(b"QOMM:KYB:FACILITY-ENTITY:v1")
+            .chain_update(self.proof.nullifier.compress().as_bytes())
+            .finalize()
+            .into()
+    }
 }
 
 pub struct KybIssuer {
@@ -138,6 +234,21 @@ impl KybIssuer {
         }
     }
 
+    /// Build an issuer around a governance/HSM-managed signing key. Random
+    /// construction remains convenient for tests, while deployed verifiers
+    /// can pin a key that survives process restarts instead of trusting a key
+    /// carried by the registry it signs.
+    pub fn with_signing_key(max_tier: u32, signing: SigningKey) -> Result<Self, &'static str> {
+        if max_tier == 0 {
+            return Err("maximum tier must be positive");
+        }
+        Ok(Self {
+            signing,
+            max_tier,
+            enrolled: HashMap::new(),
+        })
+    }
+
     pub fn public_key(&self) -> VerifyingKey {
         self.signing.verifying_key()
     }
@@ -151,14 +262,7 @@ impl KybIssuer {
         if self.enrolled.contains_key(control_group_id) {
             return Err("control group already enrolled");
         }
-        let secret = Scalar::random(rng);
-        let credential = KybCredential {
-            control_group_id: control_group_id.to_string(),
-            secret,
-            public_point: RISTRETTO_BASEPOINT_POINT * secret,
-            cohorts: attributes.cohorts(self.max_tier),
-            attributes,
-        };
+        let credential = KybCredential::issue(control_group_id, attributes, self.max_tier, rng)?;
         self.enrolled
             .insert(control_group_id.to_string(), credential.clone());
         Ok(credential)
@@ -170,7 +274,7 @@ impl KybIssuer {
         registry_epoch: u64,
         expires_at: u64,
     ) -> Result<SignedCohortRegistry, &'static str> {
-        let mut points: Vec<RistrettoPoint> = self
+        let points: Vec<RistrettoPoint> = self
             .enrolled
             .values()
             .filter(|c| c.cohorts.iter().any(|k| k == cohort))
@@ -179,24 +283,7 @@ impl KybIssuer {
         if points.is_empty() {
             return Err("no entity qualifies for this cohort");
         }
-        // Sorted so the registry is a function of its membership and not of the
-        // order the issuer happened to enrol them in.
-        points.sort_by_key(|p| p.compress().to_bytes());
-
-        let issuer = self.public_key();
-        let body = SignedCohortRegistry::body(cohort, registry_epoch, expires_at, &points, &issuer);
-        let mut registry_id = [0u8; 32];
-        registry_id.copy_from_slice(&body);
-        let signature = self.signing.sign(&registry_id);
-        Ok(SignedCohortRegistry {
-            cohort: cohort.to_string(),
-            registry_epoch,
-            expires_at,
-            points,
-            issuer,
-            registry_id,
-            signature,
-        })
+        SignedCohortRegistry::issue(cohort, registry_epoch, expires_at, points, &self.signing)
     }
 
     /// Attribution hook: a bad policy stays traceable to an enrolled entity.

@@ -1,4 +1,3 @@
-//! Diffing the statistics against the Python they replace.
 use qomm_sim::audit::clopper_pearson;
 
 fn main() {

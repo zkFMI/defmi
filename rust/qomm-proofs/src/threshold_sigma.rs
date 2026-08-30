@@ -14,8 +14,9 @@ use curve25519_dalek::traits::Identity;
 use merlin::Transcript;
 use qomm_zk::pedersen::Pedersen;
 use qomm_zk::shamir;
-use qomm_zk::sigma::{opening_challenge, OpeningProof};
+use qomm_zk::sigma::{opening_challenge, verify_opening, OpeningProof};
 use rand_core::{CryptoRng, RngCore};
+use sha2::{Digest, Sha256};
 
 use crate::threshold_gadgets::{joint_scalar_nodes, DealerCoefficientCommitments};
 
@@ -314,6 +315,220 @@ impl OpeningNodeContribution {
     pub fn party(&self) -> PartyId {
         self.party
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct OpeningRound1 {
+    pub party: PartyId,
+    pub context_digest: [u8; 32],
+    pub nonce_commitment: RistrettoPoint,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpeningRound1Seal {
+    pub party: PartyId,
+    pub digest: [u8; 32],
+}
+
+pub struct OpeningRound1Secret {
+    party: PartyId,
+    value_nonce: Scalar,
+    blinding_nonce: Scalar,
+    message_digest: [u8; 32],
+    context_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug)]
+pub struct OpeningChallenge {
+    pub quorum: Vec<PartyId>,
+    pub context_digest: [u8; 32],
+    pub nonce_commitment: RistrettoPoint,
+    pub challenge: Scalar,
+}
+
+#[derive(Clone, Debug)]
+pub struct OpeningRound2 {
+    pub party: PartyId,
+    pub value_answer: Scalar,
+    pub blinding_answer: Scalar,
+}
+
+fn opening_round1_digest(message: &OpeningRound1) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"QOMM:THRESHOLD-OPENING:ROUND1:v1");
+    hasher.update((message.party as u64).to_be_bytes());
+    hasher.update(message.context_digest);
+    hasher.update(message.nonce_commitment.compress().as_bytes());
+    hasher.finalize().into()
+}
+
+pub fn prepare_opening_round1<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    contribution: &OpeningNodeContribution,
+    context: &[u8],
+    rng: &mut R,
+) -> (OpeningRound1Seal, OpeningRound1Secret, OpeningRound1) {
+    let value_nonce = Scalar::random(&mut *rng);
+    let blinding_nonce = Scalar::random(&mut *rng);
+    let context_digest: [u8; 32] = Sha256::digest(context).into();
+    let message = OpeningRound1 {
+        party: contribution.party,
+        context_digest,
+        nonce_commitment: key.commit(&value_nonce, &blinding_nonce),
+    };
+    let digest = opening_round1_digest(&message);
+    (
+        OpeningRound1Seal {
+            party: contribution.party,
+            digest,
+        },
+        OpeningRound1Secret {
+            party: contribution.party,
+            value_nonce,
+            blinding_nonce,
+            message_digest: digest,
+            context_digest,
+        },
+        message,
+    )
+}
+
+fn checked_opening_round1<'a>(
+    messages: &'a [OpeningRound1],
+    seals: &[OpeningRound1Seal],
+    quorum: &[PartyId],
+    context: &[u8],
+) -> Result<BTreeMap<PartyId, &'a OpeningRound1>, String> {
+    let expected_context: [u8; 32] = Sha256::digest(context).into();
+    let by_party = messages
+        .iter()
+        .map(|message| (message.party, message))
+        .collect::<BTreeMap<_, _>>();
+    let seal_by_party = seals
+        .iter()
+        .map(|seal| (seal.party, seal))
+        .collect::<BTreeMap<_, _>>();
+    if by_party.len() != quorum.len()
+        || seal_by_party.len() != quorum.len()
+        || quorum.iter().copied().collect::<BTreeSet<_>>().len() != quorum.len()
+        || quorum
+            .iter()
+            .any(|party| !by_party.contains_key(party) || !seal_by_party.contains_key(party))
+    {
+        return Err("opening round-one messages and seals do not exactly match the quorum".into());
+    }
+    for party in quorum {
+        let message = by_party[party];
+        if message.context_digest != expected_context
+            || opening_round1_digest(message) != seal_by_party[party].digest
+        {
+            return Err(format!(
+                "party {party} supplied an invalid opening round-one reveal"
+            ));
+        }
+    }
+    Ok(by_party)
+}
+
+pub fn make_opening_challenge_with_transcript(
+    commitment: &RistrettoPoint,
+    messages: &[OpeningRound1],
+    seals: &[OpeningRound1Seal],
+    quorum: &[PartyId],
+    context: &[u8],
+    transcript: &mut Transcript,
+) -> Result<OpeningChallenge, String> {
+    let by_party = checked_opening_round1(messages, seals, quorum, context)?;
+    let nonce_commitment = combine_commitments(
+        &quorum
+            .iter()
+            .map(|party| (*party, by_party[party].nonce_commitment))
+            .collect(),
+    )?;
+    let challenge = opening_challenge(transcript, commitment, &nonce_commitment);
+    Ok(OpeningChallenge {
+        quorum: quorum.to_vec(),
+        context_digest: Sha256::digest(context).into(),
+        nonce_commitment,
+        challenge,
+    })
+}
+
+pub fn answer_opening_challenge(
+    contribution: &OpeningNodeContribution,
+    secret: OpeningRound1Secret,
+    challenge: &OpeningChallenge,
+) -> Result<OpeningRound2, String> {
+    if contribution.party != secret.party
+        || !challenge.quorum.contains(&secret.party)
+        || secret.message_digest == [0; 32]
+        || secret.context_digest != challenge.context_digest
+    {
+        return Err("opening challenge does not match this node's sealed first round".into());
+    }
+    Ok(OpeningRound2 {
+        party: secret.party,
+        value_answer: secret.value_nonce + challenge.challenge * contribution.value_share,
+        blinding_answer: secret.blinding_nonce + challenge.challenge * contribution.blinding_share,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_opening_from_rounds_with_transcript(
+    key: &Pedersen,
+    commitment: &RistrettoPoint,
+    coefficient_commitments: &[RistrettoPoint],
+    messages: &[OpeningRound1],
+    seals: &[OpeningRound1Seal],
+    responses: &[OpeningRound2],
+    quorum: &[PartyId],
+    context: &[u8],
+    transcript: &mut Transcript,
+) -> Result<OpeningProof, String> {
+    let mut verify_transcript = transcript.clone();
+    let challenge = make_opening_challenge_with_transcript(
+        commitment, messages, seals, quorum, context, transcript,
+    )?;
+    let first = messages
+        .iter()
+        .map(|message| (message.party, message))
+        .collect::<BTreeMap<_, _>>();
+    let answers = responses
+        .iter()
+        .map(|answer| (answer.party, answer))
+        .collect::<BTreeMap<_, _>>();
+    if coefficient_commitments.is_empty()
+        || coefficient_commitments[0].compress() != commitment.compress()
+        || answers.len() != quorum.len()
+        || quorum.iter().any(|party| !answers.contains_key(party))
+    {
+        return Err("opening statement or responses do not match the quorum".into());
+    }
+    for party in quorum {
+        let answer = answers[party];
+        let evaluation = share_commitment(coefficient_commitments, *party)?;
+        if key
+            .commit(&answer.value_answer, &answer.blinding_answer)
+            .compress()
+            != (first[party].nonce_commitment + evaluation * challenge.challenge).compress()
+        {
+            return Err(format!("party {party} supplied a bad opening answer"));
+        }
+    }
+    let coefficients = lagrange_at_zero(quorum)?;
+    let mut proof = OpeningProof {
+        t: challenge.nonce_commitment,
+        z_value: Scalar::ZERO,
+        z_blinding: Scalar::ZERO,
+    };
+    for party in quorum {
+        proof.z_value += coefficients[party] * answers[party].value_answer;
+        proof.z_blinding += coefficients[party] * answers[party].blinding_answer;
+    }
+    if !verify_opening(key, &mut verify_transcript, commitment, &proof) {
+        return Err("assembled threshold opening proof does not verify".into());
+    }
+    Ok(proof)
 }
 
 /// Assemble an ordinary opening proof and retain enough public data to name a

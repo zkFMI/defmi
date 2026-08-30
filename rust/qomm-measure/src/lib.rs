@@ -18,10 +18,10 @@
 
 use std::fmt;
 pub mod beta;
+pub mod deterministic_random;
 pub mod fsum;
-pub mod pyrandom;
-pub mod pyround;
 pub mod hosts;
+pub mod rounding;
 
 use std::time::Instant;
 
@@ -50,9 +50,8 @@ impl Summary {
             // Not `statistics.stdev`, which accumulates the sum of squared
             // deviations in exact rational arithmetic and takes one square root
             // at the end. This is the two-pass float estimator, and it can
-            // differ from CPython's in the last place. Everything `Summary`
+            // differ from the locked contract in the last place. Everything `Summary`
             // describes is a duration, and durations are excluded from the
-            // Python-against-Rust comparisons for the obvious reason, so the
             // difference is not observable there --- but it would be if a
             // non-timing value ever reached this.
             let var =

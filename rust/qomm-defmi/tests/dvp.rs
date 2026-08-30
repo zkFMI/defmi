@@ -307,8 +307,7 @@ fn wire_size(p: &DvpPackage) -> usize {
     // their own length
     let ranges = p.securities_leg.remainder_range.to_bytes().len()
         + p.cash_leg.remainder_range.to_bytes().len()
-        + p.instruction.amount_range.to_bytes().len()
-        + p.instruction.price_range.to_bytes().len();
+        + p.instruction.range_proof_bytes_len();
     let points = 3 /* leg commitments */ + 2 /* tag */ + 3 /* instruction */
         + 2 /* link */ + 2 /* product */ + 2 /* handles */;
     let scalars = 3 /* link */ + 3 /* product */;

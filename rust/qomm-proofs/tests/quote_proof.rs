@@ -4,7 +4,8 @@
 
 use curve25519_dalek::scalar::Scalar;
 use qomm_proofs::quote_proof::{
-    registry_digest, Invalid, MakerWitness, MinimalityProof, QuoteCircuit, Registered,
+    registered_policy_digest, registry_digest, Invalid, MakerWitness, MinimalityProof,
+    QuoteCircuit, Registered,
 };
 use rand_core::OsRng;
 
@@ -30,6 +31,22 @@ fn makers() -> Vec<MakerWitness> {
 }
 
 const CTX: &[u8] = b"test";
+
+#[test]
+fn maker_mandate_digest_binds_both_the_slot_and_every_registered_policy_field() {
+    let circuit = QuoteCircuit::default();
+    let registered = makers()
+        .into_iter()
+        .map(|maker| maker.registered(&circuit.key))
+        .collect::<Vec<_>>();
+
+    let original = registered_policy_digest(0, &registered[0]);
+    assert_ne!(original, registered_policy_digest(1, &registered[0]));
+
+    let mut substituted = registered[0];
+    substituted.maxqty = registered[1].maxqty;
+    assert_ne!(original, registered_policy_digest(0, &substituted));
+}
 
 #[test]
 fn the_true_winner_verifies_and_is_the_tightest() {
@@ -166,9 +183,16 @@ fn the_direction_changes_who_wins() {
     assert_eq!(circuit.verify(&ask, &ask_public, CTX), Ok(()));
     assert_eq!(circuit.verify(&bid, &bid_public, CTX), Ok(()));
     // qty=100 gives asks [118, 225, 342] and bids [-482, -185, -282].
-    // The published value packs cost * 4 + slot; sell cost is -bid.
-    assert_eq!((ask.winner_index, ask.winner_value), (0, 118 * 4));
-    assert_eq!((bid.winner_index, bid.winner_value), (1, 185 * 4 + 1));
+    // The published value packs `(cost + sentinel) * 4 + slot`; sell cost is
+    // -bid. The public offset permits the normal positive-bid case as well.
+    assert_eq!(
+        (ask.winner_index, ask.winner_value),
+        (0, ((1 << 20) + 118) * 4)
+    );
+    assert_eq!(
+        (bid.winner_index, bid.winner_value),
+        (1, ((1 << 20) + 185) * 4 + 1)
+    );
 }
 
 #[test]

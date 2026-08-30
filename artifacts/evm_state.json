@@ -1,8 +1,0 @@
-{
-  "contract": "Defmi",
-  "what": "the state a settlement writes once verification has passed",
-  "legs": 4,
-  "solc": "0.8.28",
-  "gas_per_settlement": 60784,
-  "atomicity": "the chain's, not the caller's: a revert on a later leg leaves the earlier ones untouched and the nullifier unspent, which the in-process state model can claim and not show"
-}

@@ -1,10 +1,9 @@
-//! Prints the same stream the CPython reference script prints, so the two can be
-//! diffed line for line.
-use qomm_sim::pyrandom::PyRandom;
+//! Print the deterministic simulation stream for contract-vector inspection.
+use qomm_sim::deterministic_random::DeterministicRng;
 
 fn main() {
     for seed in [0u64, 1, 20_260_818, 12_345_678_901_234_567_890] {
-        let mut r = PyRandom::new(seed);
+        let mut r = DeterministicRng::new(seed);
         println!("seed {seed}");
         let randoms: Vec<String> = (0..4).map(|_| format!("{:.17}", r.random())).collect();
         println!("  random    {}", trim(&randoms));
@@ -60,7 +59,6 @@ fn main() {
     }
 }
 
-/// Match Python's %.17g, which drops trailing zeros and keeps 17 significant
 /// digits rather than 17 after the point.
 fn trim(values: &[String]) -> String {
     values

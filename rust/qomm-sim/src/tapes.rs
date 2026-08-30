@@ -17,8 +17,8 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::market::{py_round, PricePath, Request, SimConfig};
-use crate::pyrandom::PyRandom;
+use crate::deterministic_random::DeterministicRng;
+use crate::market::{round_half_even, PricePath, Request, SimConfig};
 
 pub const SIZE_CEILING: i64 = 100_000;
 pub const SECONDS_PER_BLOCK: usize = 12;
@@ -88,7 +88,7 @@ impl TapeMarket {
             let end = (step + horizon).min(mid.len() - 1);
             mid[end] - mid[step]
         };
-        let mut rng = PyRandom::new(seed);
+        let mut rng = DeterministicRng::new(seed);
 
         let agreements: Vec<bool> = tape
             .rows
@@ -213,7 +213,7 @@ pub fn rescale_sizes(raw: &[f64], target_median: i64, ceiling: i64) -> Vec<i64> 
     }
     let factor = target_median as f64 / median(&positive).unwrap();
     raw.iter()
-        .map(|v| py_round(v * factor).clamp(1, ceiling))
+        .map(|v| round_half_even(v * factor).clamp(1, ceiling))
         .collect()
 }
 
@@ -263,9 +263,8 @@ pub fn requests_from_tape(
     wallets_per_entity: usize,
     seed: u64,
 ) -> TapeRequests {
-    let mut rng = PyRandom::new(seed);
+    let mut rng = DeterministicRng::new(seed);
 
-    // Insertion order, deduplicated, exactly as Python's dict.fromkeys gives.
     let mut order: Vec<&str> = Vec::new();
     let mut seen: BTreeMap<&str, ()> = BTreeMap::new();
     for row in &tape.rows {
@@ -375,7 +374,6 @@ fn json_field_start<'a>(text: &'a str, key: &str) -> Result<&'a str, String> {
 
 /// A JSON integer, saturating at `u128::MAX` and saying when it did.
 ///
-/// Python's integers are unbounded and four of the 150,000 UniswapX fills carry
 /// an `amount` that is not: the largest is 58 digits, `1.0e57`, against a
 /// `u128::MAX` of about `3.4e38`. Those are not trades --- they are a token
 /// whose decimals make the number meaningless --- and refusing the whole tape
@@ -519,7 +517,7 @@ fn price_path(
     let mut last = cfg.ref_mid0;
     for step in 0..=total_steps {
         if let Some(values) = by_step.get(&step) {
-            last = py_round(cfg.ref_mid0 as f64 * median(values).unwrap() / first);
+            last = round_half_even(cfg.ref_mid0 as f64 * median(values).unwrap() / first);
         }
         mid.push(last.clamp(1, ceiling));
     }
@@ -708,7 +706,6 @@ pub fn load_uniswapx(
             sizes.iter().filter(|size| **size > 400).count() as f64,
         ),
         // Four of the 150,000 fills carry an `amount` that does not fit in 128
-        // bits --- the largest is 58 digits. Python's integers are unbounded and
         // read them; this reads them as `u128::MAX`. It is recorded rather than
         // absorbed because the argument that it cannot matter --- the rescaling
         // takes its factor from the median and clamps to a ceiling --- is an
@@ -836,7 +833,7 @@ pub fn load_bybit_slice(
     let mut last = cfg.ref_mid0;
     for step in 0..=total_steps {
         if let Some(values) = by_step.get(&step) {
-            last = py_round(median(values).unwrap() / tick).max(1);
+            last = round_half_even(median(values).unwrap() / tick).max(1);
         }
         mid.push(last);
     }

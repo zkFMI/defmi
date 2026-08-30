@@ -19,9 +19,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::deterministic_random::DeterministicRng;
 use crate::disclosure::{Disclosure, PublicSignal, Release, WindowObservation};
 use crate::market::{size_bucket, MarketMaker, PricePath, Request, SimConfig};
-use crate::pyrandom::PyRandom;
 
 pub const PLAIN_PROTOCOLS: [&str; 3] = ["plain_rfq", "plain_rfm", "plain_rfs"];
 pub const QOMM_PROTOCOLS: [&str; 3] = ["qomm_rfq", "qomm_rfm", "qomm_rfs"];
@@ -449,7 +449,7 @@ struct Arm<'a> {
     disclosure: &'a mut Disclosure,
     options: &'a ArmOptions,
     leakage: Box<dyn LeakagePolicy>,
-    rng: PyRandom,
+    rng: DeterministicRng,
     mms: Vec<MarketMaker>,
     beliefs: Vec<BeliefState>,
     by_step: BTreeMap<usize, Vec<usize>>,
@@ -484,7 +484,7 @@ impl<'a> Arm<'a> {
         let name = disclosure.name();
         Arm {
             leakage: leakage_policy(&options.protocol),
-            rng: PyRandom::new(options.seed),
+            rng: DeterministicRng::new(options.seed),
             mms: makers.to_vec(),
             beliefs: vec![BeliefState::default(); makers.len()],
             by_step,
@@ -529,6 +529,7 @@ impl<'a> Arm<'a> {
     }
 
     /// What the venue currently believes about informed flow.
+    #[allow(dead_code)]
     fn public(&self) -> PublicSignal {
         match &self.last_release {
             Some(release) => self.disclosure.public_signal(release),

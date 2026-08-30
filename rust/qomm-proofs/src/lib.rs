@@ -6,7 +6,9 @@
 //! being shown either.
 pub mod kyb;
 pub mod liquidity;
+pub mod opening_envelope;
 pub mod policy_audit;
+pub mod price_limit;
 pub mod quote_proof;
 pub mod rule_audit;
 pub mod state_audit;

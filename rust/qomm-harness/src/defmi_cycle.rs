@@ -134,10 +134,7 @@ pub fn one_cycle(
         let handle = format!("p{index}").into_bytes();
         let holder = NetHolder {
             securities: (10_000_000, Scalar::random(&mut *rng)),
-            cash: (
-                (100_000_000_000u64 % (1u64 << 40)) as i64,
-                Scalar::random(&mut *rng),
-            ),
+            cash: (100_000_000_000i64, Scalar::random(&mut *rng)),
         };
         sec_book.open(
             &handle,

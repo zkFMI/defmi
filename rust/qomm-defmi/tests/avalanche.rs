@@ -1,11 +1,13 @@
 use ed25519_dalek::SigningKey;
 use qomm_defmi::avalanche::{
-    AcceptedTransition, AvalancheClient, AvalancheRpcClient, FacilityAvalancheBridge,
+    AcceptedTransition, AvalancheClient, AvalancheNoteBridge, AvalancheRpcClient,
+    FacilityAvalancheBridge,
 };
 use qomm_defmi::facility::{
     AccountOpening, AssetDefinition, AssetKind, DefmiFacility, QuorumApproval, QuorumAuthorizer,
     SettlementOrder, StateLeg,
 };
+use qomm_defmi::note_chain::NoteOutput;
 use rand_core::OsRng;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -156,8 +158,8 @@ impl AvalancheClient for InMemoryAvalanche {
     }
 }
 
-fn pair<'a>(
-    directory: &'a tempfile::TempDir,
+fn pair(
+    directory: &tempfile::TempDir,
     keys: &BTreeMap<String, SigningKey>,
 ) -> (QuorumAuthorizer, DefmiFacility, InMemoryAvalanche) {
     let authorizer = authorizer(keys);
@@ -390,4 +392,112 @@ fn wait_accepted_treats_unknown_as_transient_consensus_state() {
         .unwrap();
     assert_eq!(accepted.tx_id, "tx");
     assert_eq!(accepted.height, 1);
+}
+
+#[test]
+fn rpc_reads_one_root_consistent_account_free_authoring_snapshot() {
+    let root = h("canonical-root");
+    let asset = h("asset:JPY");
+    let facility = h("facility");
+    let mut note = NoteOutput {
+        note_id: [0; 32],
+        asset_id: asset,
+        one_time: h("one-time"),
+        value_commitment: h("value"),
+        ephemeral: h("ephemeral"),
+        masked_value: h("masked-value"),
+        masked_blinding: h("masked-blinding"),
+        lock_id: [0; 32],
+    };
+    note.note_id = note.derived_id().unwrap();
+    let note_for_rpc = note.clone();
+    let client = AvalancheRpcClient::with_transport(
+        "http://127.0.0.1:9650/ext/bc/id",
+        Duration::from_secs(1),
+        true,
+        move |request, _| {
+            let request: Value = serde_json::from_slice(request).unwrap();
+            let id = request["id"].as_u64().unwrap();
+            let method = request["method"].as_str().unwrap();
+            let note_json = || {
+                json!({
+                    "stateRoot": hex::encode(root),
+                    "noteID": hex::encode(note_for_rpc.note_id),
+                    "assetID": hex::encode(note_for_rpc.asset_id),
+                    "oneTime": hex::encode(note_for_rpc.one_time),
+                    "valueCommitment": hex::encode(note_for_rpc.value_commitment),
+                    "ephemeral": hex::encode(note_for_rpc.ephemeral),
+                    "maskedValue": hex::encode(note_for_rpc.masked_value),
+                    "maskedBlinding": hex::encode(note_for_rpc.masked_blinding),
+                    "lockID": hex::encode(note_for_rpc.lock_id),
+                })
+            };
+            let result = match method {
+                "defmivm.stateRoot" => json!({"stateRoot": hex::encode(root)}),
+                "defmivm.creditFacility" => json!({
+                    "stateRoot": hex::encode(root),
+                    "facilityID": hex::encode(facility),
+                    "guarantorID": hex::encode(h("guarantor")),
+                    "beneficiaryCommitment": hex::encode(h("beneficiary")),
+                    "railAssetID": hex::encode(asset),
+                    "capCommitment": hex::encode(h("cap")),
+                    "availableCommitment": hex::encode(h("available")),
+                    "heldCommitment": hex::encode([0; 32]),
+                    "outstandingCommitment": hex::encode([0; 32]),
+                    "overlimitCommitment": hex::encode([0; 32]),
+                    "collateralCommitment": hex::encode(h("collateral")),
+                    "riskPolicyDigest": hex::encode(h("risk-policy")),
+                    "validFrom": 1,
+                    "validUntil": 999,
+                    "status": "active",
+                    "sequence": 4,
+                }),
+                "defmivm.listNotes" => json!({
+                    "stateRoot": hex::encode(root),
+                    "notes": [note_json()],
+                    "next": "",
+                }),
+                _ => panic!("unexpected RPC method {method}"),
+            };
+            Ok(serde_json::to_vec(&json!({
+                "jsonrpc": "2.0", "id": id, "result": result,
+            }))
+            .unwrap())
+        },
+    )
+    .unwrap();
+    let keys = keys();
+    let auth = authorizer(&keys);
+    let bridge = AvalancheNoteBridge::new(&auth, &client);
+    let canonical = bridge.credit_facility(facility).unwrap();
+    assert_eq!(canonical.state_root, root);
+    assert_eq!(canonical.facility.sequence, 4);
+    let (pool_root, pool) = bridge.note_pool(asset, 64).unwrap();
+    assert_eq!(pool_root, root);
+    assert_eq!(pool, vec![note]);
+}
+
+#[test]
+fn authoritative_bridge_retries_exact_accepted_transaction_after_root_moves() {
+    let directory = tempfile::tempdir().unwrap();
+    let keys = keys();
+    let (authorizer, _local, chain) = pair(&directory, &keys);
+    let bridge = AvalancheNoteBridge::new(&authorizer, &chain);
+    let asset = AssetDefinition {
+        asset_id: h("retry-note-asset"),
+        code: "NOTE".into(),
+        kind: AssetKind::Other,
+        decimals: 0,
+        terms_digest: h("retry-note-terms"),
+    };
+    let approval = approved(
+        &authorizer,
+        &keys,
+        asset.statement().unwrap(),
+        chain.state_root().unwrap(),
+    );
+    let first = bridge.register_asset(&asset, &approval).unwrap();
+    assert_ne!(chain.state_root().unwrap(), approval.before_root);
+    let retried = bridge.register_asset(&asset, &approval).unwrap();
+    assert_eq!(first, retried);
 }

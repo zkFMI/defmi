@@ -167,6 +167,60 @@ pub struct SpendProof {
     pub tag: RistrettoPoint,
 }
 
+impl SpendProof {
+    /// Stable identifier for the complete verifier input carried off chain.
+    /// The Avalanche statement binds this digest together with the ring root,
+    /// serial, lock predicate and exact output notes.  Validators trust only a
+    /// k-of-n approval whose signers verified these bytes.
+    pub fn digest(&self) -> [u8; 32] {
+        fn point(hash: &mut sha2::Sha256, value: &RistrettoPoint) {
+            hash.update(value.compress().as_bytes());
+        }
+        fn scalar(hash: &mut sha2::Sha256, value: &Scalar) {
+            hash.update(value.to_bytes());
+        }
+        fn points(hash: &mut sha2::Sha256, values: &[RistrettoPoint]) {
+            hash.update((values.len() as u64).to_be_bytes());
+            for value in values {
+                point(hash, value);
+            }
+        }
+        fn scalars(hash: &mut sha2::Sha256, values: &[Scalar]) {
+            hash.update((values.len() as u64).to_be_bytes());
+            for value in values {
+                scalar(hash, value);
+            }
+        }
+        let mut hash = sha2::Sha256::new();
+        hash.update(b"QOMM:DEFMI:NOTE-SPEND-PROOF:v1");
+        point(&mut hash, &self.serial_point);
+        point(&mut hash, &self.serial_proof.t);
+        scalar(&mut hash, &self.serial_proof.z);
+        point(&mut hash, &self.pseudo);
+        points(&mut hash, &self.ring.cl);
+        points(&mut hash, &self.ring.ca);
+        points(&mut hash, &self.ring.cb);
+        points(&mut hash, &self.ring.gk);
+        scalars(&mut hash, &self.ring.f);
+        scalars(&mut hash, &self.ring.za);
+        scalars(&mut hash, &self.ring.zb);
+        scalar(&mut hash, &self.ring.zd);
+        points(&mut hash, &self.outputs);
+        let range = self.output_range.to_bytes();
+        hash.update((range.len() as u64).to_be_bytes());
+        hash.update(range);
+        hash.update((self.output_range_commitments.len() as u64).to_be_bytes());
+        for commitment in &self.output_range_commitments {
+            hash.update(commitment.as_bytes());
+        }
+        point(&mut hash, &self.balance.t);
+        scalar(&mut hash, &self.balance.z_value);
+        scalar(&mut hash, &self.balance.z_blinding);
+        point(&mut hash, &self.tag);
+        hash.finalize().into()
+    }
+}
+
 pub struct NoteLedger {
     pub key: Pedersen,
     pub bits: usize,
@@ -399,10 +453,115 @@ impl NoteLedger {
         context: &[u8],
         rng: &mut R,
     ) -> Result<Spend, &'static str> {
+        let eligibility = vec![true; ring.len()];
+        self.build_spend_constrained(
+            ring,
+            index,
+            opening,
+            tag,
+            gamma,
+            outputs,
+            &eligibility,
+            context,
+            rng,
+        )
+    }
+
+    /// Build a spend whose hidden input must also satisfy a public predicate.
+    ///
+    /// An ineligible ring member is shifted by a deterministic non-zero multiple
+    /// of the base generator.  Its ordinary opening therefore no longer opens
+    /// the transformed member purely against `h`; manufacturing such an opening
+    /// would require the unknown discrete-log relation between `g` and `h`.
+    /// This is used by reservation settlement to prove that the hidden input is
+    /// the locked escrow note without publishing its position in a mixed ring.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_spend_constrained<R: RngCore + CryptoRng>(
+        &self,
+        ring: &[usize],
+        index: usize,
+        opening: &Opening,
+        tag: &RistrettoPoint,
+        gamma: &Scalar,
+        outputs: &[(Address, u64)],
+        eligibility: &[bool],
+        context: &[u8],
+        rng: &mut R,
+    ) -> Result<Spend, &'static str> {
+        self.build_spend_constrained_inner(
+            ring,
+            index,
+            opening,
+            tag,
+            gamma,
+            outputs,
+            &[],
+            eligibility,
+            context,
+            rng,
+        )
+    }
+
+    /// Build a spend with caller-selected output blindings. Reservation
+    /// covenants use this to make the locked note carry the exact amount
+    /// commitment already signed in the zkPI and credit-facility transition.
+    /// Ordinary wallet transfers should continue using `build_spend`, which
+    /// samples fresh blindings internally.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_spend_constrained_with_blindings<R: RngCore + CryptoRng>(
+        &self,
+        ring: &[usize],
+        index: usize,
+        opening: &Opening,
+        tag: &RistrettoPoint,
+        gamma: &Scalar,
+        outputs: &[(Address, u64)],
+        output_blindings: &[Scalar],
+        eligibility: &[bool],
+        context: &[u8],
+        rng: &mut R,
+    ) -> Result<Spend, &'static str> {
+        if output_blindings.len() != outputs.len() {
+            return Err("output blindings do not match the requested outputs");
+        }
+        self.build_spend_constrained_inner(
+            ring,
+            index,
+            opening,
+            tag,
+            gamma,
+            outputs,
+            output_blindings,
+            eligibility,
+            context,
+            rng,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_spend_constrained_inner<R: RngCore + CryptoRng>(
+        &self,
+        ring: &[usize],
+        index: usize,
+        opening: &Opening,
+        tag: &RistrettoPoint,
+        gamma: &Scalar,
+        outputs: &[(Address, u64)],
+        output_blindings: &[Scalar],
+        eligibility: &[bool],
+        context: &[u8],
+        rng: &mut R,
+    ) -> Result<Spend, &'static str> {
+        if ring.len() != eligibility.len() || ring.iter().any(|i| *i >= self.notes.len()) {
+            return Err("the constrained ring or eligibility vector is invalid");
+        }
         let position = ring
             .iter()
             .position(|i| *i == index)
             .ok_or("the ring omits the note")?;
+        if !eligibility[position] {
+            return Err("the selected note does not satisfy the spend constraint");
+        }
         let total: u64 = outputs.iter().map(|(_, v)| *v).sum();
         if total != opening.value {
             return Err("outputs do not sum to the note being spent");
@@ -424,7 +583,11 @@ impl NoteLedger {
         let offset = serial_point + pseudo;
         let members: Vec<RistrettoPoint> = ring
             .iter()
-            .map(|i| self.commitment_of(&self.notes[*i]) - offset)
+            .zip(eligibility)
+            .enumerate()
+            .map(|(position, (i, eligible))| {
+                self.constrained_member(*i, position, *eligible, &offset, &ctx)
+            })
             .collect();
         let ring_proof = oneofmany::prove(
             &self.key,
@@ -436,7 +599,11 @@ impl NoteLedger {
         )?;
 
         let values: Vec<u64> = outputs.iter().map(|(_, v)| *v).collect();
-        let blindings: Vec<Scalar> = outputs.iter().map(|_| Scalar::random(rng)).collect();
+        let blindings: Vec<Scalar> = if output_blindings.is_empty() {
+            outputs.iter().map(|_| Scalar::random(&mut *rng)).collect()
+        } else {
+            output_blindings.to_vec()
+        };
         let (output_range, output_range_commitments) = RangeProof::prove_multiple(
             &self.gens,
             &pc,
@@ -491,6 +658,29 @@ impl NoteLedger {
         })
     }
 
+    fn constrained_member(
+        &self,
+        note_index: usize,
+        position: usize,
+        eligible: bool,
+        offset: &RistrettoPoint,
+        context: &[u8],
+    ) -> RistrettoPoint {
+        let commitment = self.commitment_of(&self.notes[note_index]);
+        if eligible {
+            return commitment - offset;
+        }
+        let position = (position as u64).to_be_bytes();
+        let mut penalty = scalar_from(
+            b"ring-ineligible",
+            &[context, commitment.compress().as_bytes(), &position],
+        );
+        if penalty == Scalar::ZERO {
+            penalty = Scalar::ONE;
+        }
+        commitment - offset + G * penalty
+    }
+
     fn prove_serial<R: RngCore + CryptoRng>(
         &self,
         point: &RistrettoPoint,
@@ -525,6 +715,18 @@ impl NoteLedger {
         context: &[u8],
         rng: &mut R,
     ) -> Result<(), &'static str> {
+        let eligibility = vec![true; ring.len()];
+        self.check_spend_constrained(ring, proof, &eligibility, context, rng)
+    }
+
+    pub fn check_spend_constrained<R: RngCore + CryptoRng>(
+        &self,
+        ring: &[usize],
+        proof: &SpendProof,
+        eligibility: &[bool],
+        context: &[u8],
+        rng: &mut R,
+    ) -> Result<(), &'static str> {
         let key = proof.serial_point.compress().to_bytes();
         if self.spent.contains(&key) {
             return Err("serial already spent");
@@ -533,7 +735,7 @@ impl NoteLedger {
         if !self.check_serial(&proof.serial_point, &proof.serial_proof, &ctx) {
             return Err("the serial is not a bare power of the base point");
         }
-        if ring.iter().any(|i| *i >= self.notes.len()) {
+        if ring.len() != eligibility.len() || ring.iter().any(|i| *i >= self.notes.len()) {
             return Err("the ring names an absent note");
         }
         let unique: HashSet<_> = ring.iter().collect();
@@ -544,7 +746,11 @@ impl NoteLedger {
         let offset = proof.serial_point + proof.pseudo;
         let members: Vec<RistrettoPoint> = ring
             .iter()
-            .map(|i| self.commitment_of(&self.notes[*i]) - offset)
+            .zip(eligibility)
+            .enumerate()
+            .map(|(position, (i, eligible))| {
+                self.constrained_member(*i, position, *eligible, &offset, &ctx)
+            })
             .collect();
         if !oneofmany::verify(
             &self.key,

@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use qomm_sim::audit::{audit_window, clopper_pearson, drop_entity, AuditSettings, Field};
+use qomm_sim::deterministic_random::DeterministicRng;
 use qomm_sim::disclosure::{
     discrete_laplace, DpDisclosure, EntityAccountant, ReleaseFields, WindowObservation,
 };
-use qomm_sim::pyrandom::PyRandom;
 
 fn window(
     fills_by_entity: &[(usize, i64)],
@@ -36,7 +36,7 @@ fn disclosure(entities: usize, cap: i64) -> DpDisclosure {
 
 fn released_fields(obs: &WindowObservation, entities: usize, cap: i64) -> ReleaseFields {
     let mut mechanism = disclosure(entities, cap);
-    let release = mechanism.release(obs, &mut PyRandom::new(0));
+    let release = mechanism.release(obs, &mut DeterministicRng::new(0));
     assert!(release.published);
     release.fields
 }
@@ -108,7 +108,9 @@ fn published(obs: &WindowObservation) -> bool {
     mechanism
         .accountants
         .insert(1, EntityAccountant::new(1_000.0));
-    mechanism.release(obs, &mut PyRandom::new(0)).published
+    mechanism
+        .release(obs, &mut DeterministicRng::new(0))
+        .published
 }
 
 #[test]
@@ -122,7 +124,7 @@ fn whether_a_window_is_published_does_not_depend_on_who_was_in_it() {
 #[test]
 fn the_budget_is_charged_whether_or_not_an_entity_traded() {
     let mut mechanism = disclosure(2, 3);
-    mechanism.release(&window(&[(0, 1)], &[(0, 1)]), &mut PyRandom::new(0));
+    mechanism.release(&window(&[(0, 1)], &[(0, 1)]), &mut DeterministicRng::new(0));
     assert_eq!(mechanism.accountants[&1].releases, 1);
 }
 
@@ -133,7 +135,7 @@ fn release_refuses_when_any_enrolled_entity_is_out_of_budget() {
     let mut exhausted = EntityAccountant::new(1.0);
     exhausted.spend(1.0);
     mechanism.accountants.insert(0, exhausted);
-    let release = mechanism.release(&obs, &mut PyRandom::new(0));
+    let release = mechanism.release(&obs, &mut DeterministicRng::new(0));
     println!(
         "inactive_enrolled_entity_out_of_budget: published={} reason={}",
         release.published, release.suppressed_reason
@@ -202,7 +204,7 @@ fn the_two_world_game_catches_the_clipping_that_broke_the_fill_field() {
             .sum();
         world.fills.min(clipped_requests)
     };
-    let mut rng = PyRandom::new(1);
+    let mut rng = DeterministicRng::new(1);
     let samples_in: Vec<i64> = (0..1_500)
         .map(|_| old_clipped(&obs) + discrete_laplace(0.25, 3.0, &mut rng))
         .collect();

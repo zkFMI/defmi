@@ -30,6 +30,8 @@ avalanche = ["dep:openssl"]
 clear_on_drop = { version = "0.2.5", features = ["no_cc"], optional = true }
 qomm-zk.workspace = true
 qomm-zkpi.workspace = true
+qomm-proofs.workspace = true
+qomm-transport.workspace = true
 curve25519-dalek.workspace = true
 bulletproofs.workspace = true
 merlin.workspace = true
@@ -38,6 +40,7 @@ sha2.workspace = true
 rand_core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+base64.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 libc.workspace = true

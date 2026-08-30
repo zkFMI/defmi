@@ -53,8 +53,8 @@
 //! the real envelopes and `Roll::crowd` gives the group size, so anyone can
 //! check the claim "one of this many" rather than take it. It counts calls to
 //! `vouch`, not distinct legal entities --- nothing here deduplicates one, and
-//! the per-entity cap that would is `zk/kyb.py`'s and lives at the operator. That is the trade this
-//! design makes on purpose. Hiding the fact that a vetting happened would mean
+//! the per-entity cap lives at the operator. That is the trade this design makes
+//! on purpose. Hiding the fact that a vetting happened would mean
 //! padding the roll with entries nobody can distinguish from real ones --- and
 //! then nobody could count the real ones either, including a regulator asking
 //! how large the anonymity set actually is. The two are the same information.

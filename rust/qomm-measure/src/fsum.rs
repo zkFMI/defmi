@@ -1,15 +1,10 @@
-//! Error-compensated summation, shared by everything that has to agree with
-//! CPython's `math.fsum` to the last bit.
+//! Error-compensated summation shared by simulations and report builders.
 //!
-//! `statistics.fmean` sums with `fsum` and divides once, so a naive Rust sum in
-//! the same place lands one unit in the last place away. That showed up as a
-//! twenty-three-value disagreement between the two `run_sim_matrix`
-//! implementations, all of them correlations, all in the sixteenth significant
-//! digit. It lives here rather than in the harness because `attackers` needs it
-//! and the harness depends on this crate, not the other way round.
+//! The exact-partials and Neumaier variants are deliberately separate because
+//! they have different rounding contracts. A naive left-to-right fold is not an
+//! acceptable substitute for either one.
 
-/// Error-compensated summation with the same partials construction used by
-/// CPython's `math.fsum` for the finite values these harnesses produce.
+/// Error-compensated summation using an exact-partials construction.
 pub fn fsum(values: impl IntoIterator<Item = f64>) -> f64 {
     let mut partials: Vec<f64> = Vec::new();
     for mut x in values {
@@ -40,7 +35,7 @@ pub fn fsum(values: impl IntoIterator<Item = f64>) -> f64 {
             break;
         }
     }
-    // CPython's final half-even correction. If the remaining partial has the
+    // Final half-even correction. If the remaining partial has the
     // same sign as the rounding residue, twice the residue may be exactly one
     // representable step and therefore decides the correctly rounded result.
     if partials
@@ -56,19 +51,12 @@ pub fn fsum(values: impl IntoIterator<Item = f64>) -> f64 {
     high
 }
 
-/// CPython's builtin `sum` over floats, which is *not* a naive accumulation.
-///
-/// Since CPython 3.12 `sum()` carries a Neumaier compensation term, so
-/// `sum([0.1] * 10)` is exactly `1.0` where a left-to-right fold gives
-/// `0.9999999999999999`. Every `sum(...)` over floats in the Python this crate
-/// was ported from therefore has compensated semantics, and a Rust
-/// `.sum::<f64>()` in the same place does not reproduce them. That difference
-/// reached the reported correlations.
+/// Neumaier-compensated summation for metrics whose locked contract uses one
+/// correction term.
 ///
 /// This is a different algorithm from [`fsum`], which is exactly rounded;
-/// `statistics.fmean` uses `fsum` and the builtin uses this one, so a port has
-/// to keep them apart rather than route both through the more accurate of the
-/// two.
+/// Keep it distinct from [`fsum`] rather than routing both contracts through
+/// whichever routine happens to be more accurate.
 pub fn nsum(values: impl IntoIterator<Item = f64>) -> f64 {
     let mut total = 0.0f64;
     let mut compensation = 0.0f64;
@@ -88,18 +76,16 @@ pub fn nsum(values: impl IntoIterator<Item = f64>) -> f64 {
 mod tests {
     use super::*;
 
-    /// The three values CPython prints for these inputs, typed in from a real
-    /// interpreter rather than derived here, so this fails if either routine
-    /// drifts towards the other.
+    /// Locked vectors fail if either routine drifts toward the other.
     #[test]
-    fn the_two_summations_are_the_ones_python_uses() {
+    fn the_two_summations_are_the_locked_contract() {
         // sum([0.1] * 10) == 1.0, and a naive fold does not.
         let tenths = [0.1f64; 10];
         assert_eq!(nsum(tenths), 1.0);
         assert_eq!(
             tenths.iter().sum::<f64>(),
             0.999_999_999_999_999_9,
-            "the naive fold is what the port used to do"
+            "the naive fold is intentionally a different contract"
         );
         // math.fsum agrees here; the point of keeping both is the cases below.
         assert_eq!(fsum(tenths), 1.0);

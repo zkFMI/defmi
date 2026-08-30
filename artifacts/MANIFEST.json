@@ -1,8 +1,42 @@
 {
   "artifacts": {
     "avalanche_l1_acceptance.json": {
-      "bytes": 3638,
-      "sha256": "569f0a9a2cf472f555a9ca542002b375808004f4bbb3435d18a79fac4dc640d3"
+      "bytes": 3658,
+      "sha256": "98adf850d479843d114385f3575c5c93bdd123af521b2436462d5d59ca442a9c"
+    },
+    "avalanche_qomm_full_acceptance.json": {
+      "bytes": 5888,
+      "runtime": {
+        "avalanche_validators": 5,
+        "avalanchego_sha256": "33cffd0d95accb6adffdaf163ac06a747877accbc273925cd37b1624d00a30ca",
+        "avalanchego_version": "avalanchego/1.14.2 [database=v1.4.5, rpcchainvm=45, commit=6e5acf909c7a16b991142d6b3979bac5699bdb68, go=1.25.8]",
+        "embedded_libspdz_used": false,
+        "mp_spdz_commit": "9d809599ea6ce627216a389ca7d984fbb75d0cb9",
+        "mpc_execution_mode": "external-seven-process-mp-spdz",
+        "mpc_parties": 7,
+        "network_runner_sha256": "a20d3bc533afb3e1c3aafbc980194a15b71de97f8a4eba92153456e263aececb",
+        "network_runner_version": "[08-29|20:56:23.835] INFO ux/output.go:13 version response: version:1",
+        "physical_hosts": 1,
+        "qomm_rust_vm_sha256": "3c38805ebbcdb59ba506cad0b607f6b86f8c6cddbada2349f47ae41018c42db6",
+        "rpcchainvm_protocol": 45,
+        "validator_fast_state_sync": {
+          "completed": true,
+          "height": 54,
+          "install_mode": "atomic-static",
+          "merkle_chunk_transport": "rpcchainvm-app-request-response",
+          "node": "node3",
+          "summary_id": "2APhSMp3caJip9HXJjD2ttGPkTezA4TPSo3aHpw9Qyj8oa47Gc"
+        },
+        "validator_restart": {
+          "database_reset": true,
+          "elapsed_seconds": 1,
+          "node": "node3",
+          "recovered": true,
+          "removed_database_entries": 9,
+          "roots_verified": 5
+        }
+      },
+      "sha256": "b02d236098dd065cdc6fc392cddd019bae413964d93a01cfc904f77db81130df"
     },
     "ccp_rust.json": {
       "bytes": 2921,
@@ -15,38 +49,11 @@
       "host": "host-a",
       "sha256": "cfd908064ec0f0a846401235fa52a1039149e2c22b530f7a27e84441b84cb85e"
     },
-    "deccp_prediction.json": {
-      "bytes": 5909,
-      "sha256": "e8b8608df2d545b94c0a017a51a83f4a51335dd0873368318f49da9a20f81362"
-    },
-    "deccp_rust_prediction.json": {
-      "bytes": 3925,
-      "sha256": "686f59464f7a521188c1a44c48ef2a6a2a0cba217a7470d318f452500e3399f1"
-    },
     "defmi.json": {
-      "bytes": 51433,
-      "host": "host-a",
-      "python": "3.12.3",
-      "sha256": "d95bffab000589e2724f784f16c284385a08b53de4450b9300bb528a84f338ee"
-    },
-    "defmi_host_a.json": {
-      "bytes": 16513,
-      "host": "host-a",
-      "python": "3.12.3",
-      "sha256": "9dd650db6b30940f40b2f1a672be506694c19464c1bfbc3ffefe358d92d3f063"
-    },
-    "evm_gas.json": {
-      "bytes": 238,
-      "sha256": "18f19d269de23ea3a86b6376ad31a165bf12e27ee39b924e0227b431cd4e4c9a"
-    },
-    "evm_settlement.json": {
-      "bytes": 1451,
+      "bytes": 51281,
       "host": "host-c",
-      "sha256": "9edc1c5e94141da9ecabe83322dfc96b9d02aca4cad471890cb44a5101b5c0aa"
-    },
-    "evm_state.json": {
-      "bytes": 352,
-      "sha256": "0fd2d7ade7ae64241def6c00f589fd335a3f20533eb5d2944d2c233301e13880"
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "sha256": "59116c5cf0b5e4b5c7591bb74c1649721ab592478408e2b55e23fa2052e4307b"
     },
     "note_dvp_rust.json": {
       "bytes": 2079,
@@ -90,8 +97,8 @@
       "sha256": "d59ff209251ab42f764ac83c01fadb8924b792e06cd1548434a0c52822290e26"
     },
     "solana_cu.json": {
-      "bytes": 3328,
-      "sha256": "196bf2a6dc19272248c346c364aab7472d5c35e96777464059e6950975e4d46b"
+      "bytes": 3334,
+      "sha256": "e2b8c67a9c9a4106f922ecd6b82e319994936115876f3f8af0cdf8ad84c87a68"
     },
     "stylus_gas.json": {
       "bytes": 4479,
@@ -123,5 +130,5 @@
       "target": "wasm32"
     }
   },
-  "commit": "e786c3d0f92c420654a21d4fd97a45a9cf6806f8"
+  "commit": "f6d2d679c05b20a81a1eeebbd538ef17bb7caebe"
 }

@@ -188,7 +188,6 @@ fn the_group_size_is_a_power_of_two_because_the_proof_needs_one() {
 fn a_membership_proof_at_a_group_of_sixteen_is_one_thousand_and_four_bytes() {
     // Predicted before running: 928 for the ring (4 bits x (4 points + 3
     // scalars) + one scalar), 64 for the control proof, 12 for the group and
-    // epoch. The 928 is the same figure the Python measurement of this
     // construction reports at N=16, which is how the two are known to be the
     // same object.
     let (key, operator, mut roll) = world(16);

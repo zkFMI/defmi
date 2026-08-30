@@ -10,6 +10,7 @@ qomm_root="$(CDPATH= cd -- "$root/../.." && pwd)"
 runner="${AVALANCHE_NETWORK_RUNNER:-$(command -v avalanche-network-runner || true)}"
 avalanchego="${AVALANCHEGO_PATH:-$(command -v avalanchego || true)}"
 acceptance_bin="${QOMM_AVALANCHE_ACCEPTANCE_BIN:-$qomm_root/rust/target/release/run_avalanche_l1_acceptance}"
+rust_vm="${QOMM_AVALANCHE_VM_BIN:-$qomm_root/rust/target/release/qomm-avalanche-vm}"
 runner_port="${QOMM_ANR_PORT:-18080}"
 gateway_port="${QOMM_ANR_GATEWAY_PORT:-18081}"
 endpoint="localhost:${runner_port}"
@@ -25,6 +26,10 @@ if [[ -z "$avalanchego" || ! -x "$avalanchego" ]]; then
 fi
 if [[ ! -x "$acceptance_bin" ]]; then
   echo "QOMM_AVALANCHE_ACCEPTANCE_BIN must name the built Rust acceptance binary" >&2
+  exit 2
+fi
+if [[ ! -x "$rust_vm" ]]; then
+  echo "QOMM_AVALANCHE_VM_BIN must name the built QOMM Rust VM binary" >&2
   exit 2
 fi
 
@@ -51,10 +56,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-"$root/scripts/build.sh" "$root/build/defmivm"
-vm_id="$("$root/build/defmivm" vmid)"
-install -m 0755 "$root/build/defmivm" "$plugin_dir/$vm_id"
-"$root/build/defmivm" genesis --config "$root/config/test-genesis.json" --out "$genesis"
+vm_id="$("$rust_vm" vmid)"
+install -m 0755 "$rust_vm" "$plugin_dir/$vm_id"
+"$rust_vm" genesis --config "$root/config/test-genesis.json" --out "$genesis"
 
 "$runner" server --port=":$runner_port" --grpc-gateway-port=":$gateway_port" \
   --log-dir="$logs_dir" >"$logs_dir/server.log" 2>&1 &

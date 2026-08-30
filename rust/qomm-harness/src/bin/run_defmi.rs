@@ -1,8 +1,5 @@
-//! Rust port of `scripts/run_defmi.py`.
 //!
-//! The artifact schema remains the Python contract because the paper checker
 //! reads it. Timings are newly measured by the Rust implementations; exact wire
-//! counts use the same canonical 32-byte point/scalar accounting as Python.
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
@@ -211,16 +208,13 @@ struct SettlementSample {
 
 fn main() {
     let mut raw = std::env::args().skip(1);
-    match raw.next().as_deref() {
-        Some("__verify_job") => {
-            let args: Vec<String> = raw.collect();
-            if let Err(error) = verify_job_main(&args) {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-            return;
+    if let Some("__verify_job") = raw.next().as_deref() {
+        let args: Vec<String> = raw.collect();
+        if let Err(error) = verify_job_main(&args) {
+            eprintln!("{error}");
+            std::process::exit(1);
         }
-        _ => {}
+        return;
     }
     let code = match run_main() {
         Ok(()) => 0,
@@ -241,7 +235,7 @@ fn run_main() -> HarnessResult<()> {
     let mut rng = OsRng;
     let mut result = Map::new();
     result.insert("host".into(), json!(qomm_measure::hosts::this_host()));
-    result.insert("python".into(), json!(python_version()));
+    result.insert("rustc".into(), json!(qomm_harness::rustc_version()));
     result.insert("group".into(), json!("ed25519"));
     result.insert("quantity".into(), json!(QTY));
     result.insert("price".into(), json!(PRICE));
@@ -596,7 +590,6 @@ fn tagged_settlement(
         rng,
     )?;
     let build_ms = started.elapsed().as_secs_f64() * 1e3;
-    // Python's default account ledgers use 40-bit balances here even though
     // Rust's Bulletproof backend rounds the executable proof width to 64.
     let package_bytes = account_package_bytes(40, 40)
         + match choice {
@@ -967,10 +960,7 @@ fn one_cycle(
         let handle = format!("p{i}").into_bytes();
         let holder = NetHolder {
             securities: (10_000_000, Scalar::random(rng)),
-            cash: (
-                (100_000_000_000u64 % (1u64 << 40)) as i64,
-                Scalar::random(rng),
-            ),
+            cash: (100_000_000_000i64, Scalar::random(rng)),
         };
         sec_book.open(
             &handle,
@@ -1680,13 +1670,10 @@ fn validate_widths(options: &Options) -> HarnessResult<()> {
     if options.parties.iter().any(|count| *count < 2) {
         return Err("netting needs at least two parties".into());
     }
-    if options.tranches.iter().any(|count| *count == 0) {
+    if options.tranches.contains(&0) {
         return Err("waterfalls need at least one tranche".into());
     }
-    if options.workers.iter().any(|count| *count == 0)
-        || options.parallel_each == 0
-        || options.parallel_repeats == 0
-    {
+    if options.workers.contains(&0) || options.parallel_each == 0 || options.parallel_repeats == 0 {
         return Err("parallel worker counts and repeats must be positive".into());
     }
     Ok(())
@@ -1735,33 +1722,12 @@ fn note_dvp_wire_bytes(ring: usize) -> u64 {
     95_627 + 64 * ring as u64 + 448 * ring.ilog2() as u64
 }
 
-fn python_version() -> String {
-    let root = qomm_harness::repo_root();
-    let local = root.join(".venv/bin/python");
-    let executable = if local.exists() {
-        local
-    } else {
-        PathBuf::from("python3")
-    };
-    Command::new(executable)
-        .arg("--version")
-        .output()
-        .ok()
-        .map(|output| {
-            let mut text = String::from_utf8_lossy(&output.stdout).to_string();
-            text.push_str(&String::from_utf8_lossy(&output.stderr));
-            text.trim().trim_start_matches("Python ").to_string()
-        })
-        .filter(|version| !version.is_empty())
-        .unwrap_or_else(|| "unknown".into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn canonical_sizes_match_the_python_wire_counter() {
+    fn canonical_sizes_match_the_locked_wire_counter() {
         assert_eq!(account_package_bytes(8, 8), 29_267);
         assert_eq!(account_package_bytes(40, 40), 57_939);
         assert_eq!(note_spend_wire_bytes(2), 37_024);
@@ -1774,12 +1740,12 @@ mod tests {
     fn narrow_rail_trade_stays_inside_the_requested_width() {
         for bits in [8usize, 16, 24, 40, 48] {
             let (quantity, price) = trade_for(bits);
-            assert!(quantity * price <= (1u64 << bits) - 1);
+            assert!(quantity * price < (1u64 << bits));
         }
     }
 
     #[test]
-    fn one_timing_sample_has_null_spread_like_python() {
+    fn one_timing_sample_has_null_spread() {
         let value = summary(&[7.0]);
         assert_eq!(value["n"], 1);
         assert!(value["sd"].is_null());

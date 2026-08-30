@@ -1,10 +1,8 @@
-//! Rust port of `scripts/run_viewing.py`.
-
 use curve25519_dalek::scalar::Scalar;
 use qomm_defmi::notes::NoteLedger;
 use qomm_defmi::viewing::{check_grant, scan_scope, total_seen, ScopedWallet};
 use qomm_harness::{parse_value, timing_summary, write_pretty_json, HarnessResult};
-use qomm_sim::pyrandom::PyRandom;
+use qomm_sim::deterministic_random::DeterministicRng;
 use qomm_zk::pedersen::{asset_tag, Pedersen};
 use rand::rngs::OsRng;
 use serde_json::json;
@@ -78,7 +76,7 @@ fn run_main() -> HarnessResult<()> {
             return Err("--pools must contain positive values".into());
         }
         let mut ledger = NoteLedger::new(key.clone(), NOTE_BITS);
-        let mut values = PyRandom::new(pool_size as u64);
+        let mut values = DeterministicRng::new(pool_size as u64);
         let mut planted = scope_names
             .iter()
             .map(|scope| (scope.clone(), 0u64))
@@ -93,7 +91,6 @@ fn run_main() -> HarnessResult<()> {
                 *planted.get_mut(scope).expect("scope exists") += value;
                 (owner.address(scope), value)
             };
-            // Python draws the note blinding from this same Random stream. Use
             // the exact 253-bit rejection sampler so later planted values stay
             // byte-for-byte reproducible.
             let blinding = py_ed25519_scalar(&mut values);
@@ -128,10 +125,10 @@ fn run_main() -> HarnessResult<()> {
         let row = json!({
             "pool": pool_size,
             "scan": timing_summary(&scan_ms),
-            "per_note_ms": py_round_places(per_note, 4),
+            "per_note_ms": round_half_even_places(per_note, 4),
             "notes_reached": reached,
             "notes_in_pool": pool_size,
-            "fraction_reached": py_round_places(fraction, 4),
+            "fraction_reached": round_half_even_places(fraction, 4),
             "total_seen": seen_total,
             "total_planted_in_that_scope": planted_total,
             "sees_exactly_its_scope": seen_total == planted_total,
@@ -160,8 +157,8 @@ fn run_main() -> HarnessResult<()> {
     Ok(())
 }
 
-/// CPython `randrange(ed25519_order)`, including its rejection and word order.
-fn py_ed25519_scalar(rng: &mut PyRandom) -> Scalar {
+/// Deterministic rejection sampling over the Ed25519 scalar order.
+fn py_ed25519_scalar(rng: &mut DeterministicRng) -> Scalar {
     loop {
         let mut bytes = [0u8; 32];
         for word in 0..7 {
@@ -176,9 +173,9 @@ fn py_ed25519_scalar(rng: &mut PyRandom) -> Scalar {
     }
 }
 
-fn py_round_places(value: f64, places: i32) -> f64 {
+fn round_half_even_places(value: f64, places: i32) -> f64 {
     let scale = 10f64.powi(places);
-    qomm_sim::market::py_round(value * scale) as f64 / scale
+    qomm_sim::market::round_half_even(value * scale) as f64 / scale
 }
 
 fn parse_args() -> HarnessResult<Options> {

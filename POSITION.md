@@ -144,8 +144,14 @@ differential-privacy budget, because a venue publishing exact winning quotes
 leaks the policy through repetition. Nothing in the auditable-MPC line addresses
 what the output *reveals*; it addresses whether the output is *right*. Both are
 needed, and together they create a problem neither has alone: the audited value
-and the published value are not the same value. **The noise being provably drawn
-is not finished** --- section 8.
+and the published value are not the same value. **The production publication
+state machine now draws its noise inside seven MP-SPDZ processes and binds the
+result, the entity-level budget transition and a 3-of-7 certificate in one
+atomic operation**, `artifacts/distributed_publication.json`. The implemented
+finite-support mechanism states its measured `(epsilon, delta)` explicitly; it
+does not relabel that mechanism as ideal unbounded pure DP. The economic
+comparison artifacts still use the original sampler so historical arms remain
+comparable. Section 8.
 
 **2.6a What is not noised, and why that is a decision.** The count of settled
 trades over a range of blocks is **not** put behind the budget, because it is
@@ -469,10 +475,46 @@ bank's existing pipeline.
   the preprocessing, which is allowed to abort because it consumes no inputs.
   What it costs is two more institutions, which is the risk this register says
   matters most.
-- **The differential-privacy noise is generated outside the MPC**, so the
-  published quote is noised but not *provably* noised.
-- **Selective disclosure is unimplemented.** The design says which fields a
-  supervisor can open; the code does not do it.
+- **The differential-privacy publication path is distributed.** Seven real
+  MP-SPDZ processes jointly generate the noise; seven isolated publication
+  signers bind the transcript and result; `PublicationLedger` atomically spends
+  the entity budget and rejects a repeated operation or changed output. The
+  measured release is 28 rounds and 63.9 MB at n=7, T=2, against 2 rounds and
+  0.0022 MB with no mechanism, so **the noise is 92.9% of the rounds**. The
+  acceptance ran all fourteen processes on one host, not at seven physical
+  sites.
+- **The in-MPC protocol truncates, unlike the ideal sampler.** The
+  protocol carries a finite support and folds the tails onto its endpoints. That
+  is 1.8e-4 from the ideal two-sided geometric at support 8 and 6.1e-8 at
+  support 16, against a rounding term of 2.4e-16 to 6.7e-16 --- and worse than a
+  distance, it breaks the *form* of the guarantee: adjacent inputs give releases
+  whose supports do not coincide at the edges, so the ratio there is infinite
+  and the mechanism is **(epsilon, delta) with delta 2.5e-4 at support 8**. That
+  delta is a hockey-stick divergence over the released cells, not a closed form:
+  the folded tail understates it by e^epsilon, and the endpoint cell understates
+  it whenever the sensitivity exceeds one. Widening the
+  support is bounded by the 64 shared bits, which stop near |k|=35 at epsilon 1.
+  The deployed certificate therefore carries the exact measured
+  `(epsilon, delta)` rather than claiming the appendix's ideal pure-DP bound.
+  An exact unbounded sampler would still be required before making a pure-DP
+  production claim.
+- **A cheaper construction is known and not implemented.** The discrete Laplace
+  is exactly divisible: the sum of `m` differences of Pólya (negative binomial,
+  shape `1/m`) variates is exactly discrete Laplace, so each party could draw its
+  own share at home and the engine would do nothing beyond the plain sum, at 2
+  rounds instead of 28. Against `T` colluding parties who know their own shares,
+  the shape has to be `1/(n-T)`, so that the honest `n-T` sum to the target on
+  their own; the sum of all `n` shares then has shape `n/(n-T)`, which at n=7,
+  T=2 is **1.4x the target variance** --- about 1.18x the standard deviation, not
+  1.4x. The price is that a corrupt party can draw from the wrong distribution
+  and skew the published value, which the in-MPC protocol makes impossible. That
+  party can already lie about its own quote, so the trust surface does not
+  widen; the choice is deliberate and unmeasured.
+- **Selective disclosure primitives are implemented, but institutional use is
+  external.** Scoped viewing grants, exact-scope note scanning, signed spend
+  disclosures, expiry and wrong-owner rejection are implemented and measured in
+  `artifacts/viewing.json`. A real supervisor's key ceremony, legal request and
+  revocation workflow are not connected.
 - **There has never been a seven-site deployment.** Cross-region figures come
   from a delay proxy on one machine, which reproduces round trips and not
   jitter, loss or clock skew.

@@ -1,4 +1,3 @@
-//! Same shape as the Python reference dump, so the two can be diffed.
 use qomm_sim::market::*;
 
 fn main() {

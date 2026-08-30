@@ -1,4 +1,3 @@
-//! The tape path has to reproduce the Python exactly, because the real-data
 //! results in the paper were produced by it. The fixture below is written in the
 //! archive's own format, newest-first, which is the shape that has silently
 //! broken this loader before.
@@ -36,7 +35,7 @@ fn fixture() -> String {
     // A deterministic stand-in for a symbol-day: the columns the loader reads,
     // in the order the archive writes them.
     let mut rows = vec!["timestamp,symbol,side,size,price,tickDirection,trdMatchID".to_string()];
-    let mut rng = qomm_sim::pyrandom::PyRandom::new(3);
+    let mut rng = qomm_sim::deterministic_random::DeterministicRng::new(3);
     let mut t = 1_623_715_200.0f64;
     for i in 0..600 {
         t += rng.random() * 0.4;
@@ -182,8 +181,7 @@ fn the_default_keeps_one_entity_per_observed_address() {
     assert_eq!(setup.cfg.wallets_per_entity, 1);
     assert!(setup.source.starts_with("bybit:qomm-sim-default-entities-"));
     // The fixture writes six hundred fills under six hundred distinct
-    // addresses, and the default keeps them apart. The Rust port used to carry
-    // `Some(24)` where the Python library carried `None`, so it collapsed those
+    // addresses, and the default keeps them apart. An earlier implementation carried
     // six hundred round robin into twenty-four. That collapse is not neutral:
     // a per-entity cap then binds twenty-four synthetic entities aggregating
     // twenty-five fills each, rather than the six hundred the tape actually
@@ -205,7 +203,7 @@ fn the_default_keeps_one_entity_per_observed_address() {
 }
 
 #[test]
-fn round_robin_assignment_reproduces_the_python() {
+fn round_robin_assignment_reproduces_the_locked_contract() {
     let tape = load_bybit(&fixture(), &cfg(), "t.csv", Some(4_000), Some(50), None).unwrap();
     let market = TapeMarket::new(&cfg(), &tape, 20, 60.0, 200, 0);
     let out = requests_from_tape(&cfg(), &market, &tape, Entities::RoundRobin(24), 1, 7);

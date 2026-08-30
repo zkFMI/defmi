@@ -1,0 +1,36 @@
+[package]
+name = "qomm-avalanche-vm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Non-EVM Avalanche custom VM for QOMM and DeFMI"
+
+[dependencies]
+avalanche-rpcchainvm-qomm = { path = "../vendor/avalanche-rs-qomm/crates/avalanche-rpcchainvm" }
+qomm-defmi.workspace = true
+qomm-transport.workspace = true
+qomm-proofs.workspace = true
+qomm-zk.workspace = true
+qomm-zkpi.workspace = true
+curve25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+rand_core.workspace = true
+tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tonic = { version = "0.12", features = ["transport"] }
+prost-types = "0.13"
+bs58 = "0.5"
+base64.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+merlin.workspace = true
+
+[[bin]]
+name = "qomm-avalanche-vm"
+path = "src/main.rs"

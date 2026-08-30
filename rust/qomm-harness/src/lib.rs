@@ -1,5 +1,3 @@
-//! Rust measurement harnesses for the artifact-producing Python scripts.
-
 use serde_json::Value;
 use std::ffi::OsString;
 use std::fs;
@@ -92,8 +90,7 @@ where
         .map_err(|error| format!("invalid {name}: {error}").into())
 }
 
-/// Python's document builders use a one-element list for a few legacy exact
-/// measurements. Keep that compatibility at the rendering boundary.
+/// Return the first value from a legacy list-wrapped scalar artifact.
 pub fn one(value: &Value) -> &Value {
     match value {
         Value::Array(values) => values.first().unwrap_or(&Value::Null),
@@ -107,8 +104,7 @@ pub fn numeric(value: &Value) -> HarnessResult<f64> {
         .ok_or_else(|| format!("expected a number, got {value}").into())
 }
 
-/// The single reading quoted from a measurement summary. This is the Rust
-/// counterpart of `scripts.measure.value`.
+/// Return the single reading quoted from a measurement summary.
 pub fn measurement_value(value: &Value) -> HarnessResult<f64> {
     if value.is_number() {
         return numeric(value);
@@ -133,7 +129,7 @@ pub fn render_measurement(value: &Value, places: usize) -> HarnessResult<String>
         return Ok(fixed(numeric(value)?, places));
     }
     if let Some(exact) = value.get("exact") {
-        return Ok(format!("{} (exact)", py_display(exact)));
+        return Ok(format!("{} (exact)", value_display(exact)));
     }
     let n = value.get("n").and_then(Value::as_u64).unwrap_or(0);
     if n == 0 {
@@ -150,37 +146,13 @@ pub fn render_measurement(value: &Value, places: usize) -> HarnessResult<String>
     ))
 }
 
-/// Python-style scalar/list display for f-string fields (`True`, `None`, and
-/// single-quoted strings inside containers rather than JSON spellings).
-pub fn py_display(value: &Value) -> String {
-    fn inner(value: &Value, quote_string: bool) -> String {
-        match value {
-            Value::Null => "None".to_string(),
-            Value::Bool(v) => if *v { "True" } else { "False" }.to_string(),
-            Value::Number(v) => v.to_string(),
-            Value::String(v) if quote_string => {
-                format!("'{}'", v.replace('\\', "\\\\").replace('\'', "\\'"))
-            }
-            Value::String(v) => v.clone(),
-            Value::Array(values) => format!(
-                "[{}]",
-                values
-                    .iter()
-                    .map(|value| inner(value, true))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            Value::Object(values) => format!(
-                "{{{}}}",
-                values
-                    .iter()
-                    .map(|(key, value)| format!("'{key}': {}", inner(value, true)))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        }
+/// Render a JSON value compactly for human-readable reports. Top-level strings
+/// are left unquoted; structured values use canonical JSON spelling.
+pub fn value_display(value: &Value) -> String {
+    if let Value::String(value) = value {
+        return value.clone();
     }
-    inner(value, false)
+    serde_json::to_string(value).expect("serde_json::Value always serializes")
 }
 
 pub fn comma_i64(value: i64) -> String {
@@ -199,43 +171,32 @@ pub fn comma_i64(value: i64) -> String {
     out
 }
 
-/// The interpreter version recorded by the Python artifacts. Keeping the
-/// provenance field stable makes a language-port comparison about the harness
-/// output rather than about a renamed metadata key.
-pub fn python_version() -> String {
-    let local = repo_root().join(".venv/bin/python");
-    let executable = if local.exists() {
-        local
-    } else {
-        PathBuf::from("python3")
-    };
-    Command::new(executable)
+/// The Rust compiler version that built the experiment harness.
+pub fn rustc_version() -> String {
+    Command::new("rustc")
         .arg("--version")
         .output()
         .ok()
-        .map(|output| {
-            let mut value = String::from_utf8_lossy(&output.stdout).to_string();
-            value.push_str(&String::from_utf8_lossy(&output.stderr));
-            value.trim().trim_start_matches("Python ").to_string()
-        })
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "unknown".into())
 }
 
 /// The mean `statistics.fmean` computes: `math.fsum` and one division.
 ///
-/// There are two of these because the Python has two, and a single `mean`
 /// helper standing for both is how a difference hides. `statistics.fmean` is
 /// exactly rounded; the builtin `sum` carries a Neumaier term and is not. They
 /// agree on most inputs, which is the problem.
 pub fn fmean(values: &[f64]) -> Option<f64> {
-    (!values.is_empty()).then(|| qomm_measure::fsum::fsum(values.iter().copied()) / values.len() as f64)
+    (!values.is_empty())
+        .then(|| qomm_measure::fsum::fsum(values.iter().copied()) / values.len() as f64)
 }
 
 /// The mean `sum(values) / len(values)` computes, with the builtin's
 /// compensation. See [`fmean`] for why the two are kept apart.
 pub fn sum_mean(values: &[f64]) -> Option<f64> {
-    (!values.is_empty()).then(|| qomm_measure::fsum::nsum(values.iter().copied()) / values.len() as f64)
+    (!values.is_empty())
+        .then(|| qomm_measure::fsum::nsum(values.iter().copied()) / values.len() as f64)
 }
 
 pub fn median(values: &[f64]) -> Option<f64> {
@@ -258,7 +219,6 @@ pub fn median(values: &[f64]) -> Option<f64> {
 /// deviations in exact rational arithmetic and takes one square root at the
 /// end, and can therefore differ from this in the last place. Everything that
 /// reaches it here is a duration, and durations are excluded from the
-/// Python-against-Rust comparisons, so the difference is not observable --- but
 /// it would be the moment a non-timing value arrived.
 pub fn sample_sd(values: &[f64]) -> Option<f64> {
     if values.len() < 2 {
@@ -276,12 +236,10 @@ pub fn sample_sd(values: &[f64]) -> Option<f64> {
 ///
 /// A wall-clock acceptance predicate compiled without optimisation describes the
 /// build profile rather than the implementation: `run_three_times` reported
-/// 9,319 ms against the Python's 977 ms for the same work, and its
 /// `audited_rfs_met <= 1000 ms` flipped on that alone. The Makefile builds every
 /// measurement `--release`, so this only fires when something runs a binary out
 /// of `target/debug` --- which is exactly the mistake that produced that number.
 /// It goes to stderr rather than into the JSON so that the artifact shape stays
-/// the same as the Python's.
 fn warn_once_if_unoptimized() {
     #[cfg(debug_assertions)]
     {
@@ -295,7 +253,6 @@ fn warn_once_if_unoptimized() {
     }
 }
 
-/// Python `scripts.measure.summarise`, represented directly as JSON.
 pub fn timing_summary(values: &[f64]) -> Value {
     warn_once_if_unoptimized();
     let Some(mean) = fmean(values) else {

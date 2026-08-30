@@ -1,37 +1,43 @@
-# DeFMI VM for Avalanche L1
+# DeFMI VM deployment for Avalanche L1
 
-This is a dedicated Avalanche custom VM. It does not execute EVM bytecode and
-does not require Solidity. Avalanche consensus orders three native transition
-types:
+The product VM is implemented in Rust at `rust/qomm-avalanche-vm`. This
+directory contains its Avalanche L1 genesis configuration and reproducible
+acceptance launchers. No QOMM-owned alternative VM implementation is retained.
 
-1. register an asset rail;
-2. open an opaque committed account on that rail;
-3. atomically apply a multi-leg zkPI settlement.
+The VM is a dedicated non-EVM state machine. AvalancheGo remains an external
+consensus host and launches the Rust executable as a separate process through
+RPCChainVM protocol 45. The focused protocol fork lives at
+`rust/vendor/avalanche-rs-qomm`; DeFMI transactions, validation, canonical
+state, ordering, reservations and settlement live in QOMM Rust crates.
 
-Every transition carries the same configurable k-of-n Ed25519 approval used by
-the QOMM/DeFMI service. The VM independently checks the statement, signer
-epoch, threshold, its own Avalanche Chain ID, the signed pre-state root,
-deadline, nullifier, asset rail, account sequence and before commitment. A
-committee signature issued for another L1 or an earlier global state is not a
-valid transaction here. Only commitments and digests become chain data.
+The authoritative product rail is account-free. CSD-authorized confidential
+notes are reserved before quoting, a seven-party MPC committee finalizes zkPI,
+and DeFMI atomically consumes the delegated one-use notes without a Maker or
+Taker signature after the quote.
 
-The lifecycle scaffolding is adapted from AvalancheGo's maintained XSVM at the
-commit and license recorded in `THIRD_PARTY_NOTICES.md`; the DeFMI transaction,
-authorization and state code is project-specific.
-
-## Local gates
+## Build
 
 ```sh
-go test ./...
-go vet ./...
-go build -trimpath -o build/defmivm ./cmd/defmivm
+cd rust
+env -u MP_SPDZ_ROOT cargo build --release \
+  -p qomm-avalanche-vm --bin qomm-avalanche-vm \
+  -p qomm-harness --bin run_avalanche_l1_acceptance
 ```
 
-`scripts/run-local-l1.sh` is the deployment acceptance entrypoint. Set
-`AVALANCHEGO_PATH` and `AVALANCHE_NETWORK_RUNNER` to pinned executable paths (or
-put those binaries on `PATH`) and run it from any directory. It builds and
-installs the VM into a disposable plugin directory, starts a five-node local L1,
-submits registration, account and settlement transactions through the JSON-RPC
-surface, restarts one validator, verifies root convergence, writes
-`artifacts/avalanche_l1_acceptance.json`, and stops the network. The script does
-not download or silently replace either external binary.
+The VM deliberately does not link `libSPDZ`. Stock MP-SPDZ runs as seven
+external processes only in the full product gate.
+
+## Acceptance gates
+
+Set `AVALANCHEGO_PATH` and `AVALANCHE_NETWORK_RUNNER` to pinned executable
+paths. The scripts never download or silently substitute either binary.
+
+- `scripts/run-local-l1.sh` checks five validators, native state transitions,
+  state-root agreement and validator restart recovery. It writes
+  `artifacts/avalanche_l1_acceptance.json`.
+- `scripts/run-full-qomm-l1.sh` additionally checks external KYB evidence,
+  process-isolated CSD signing, seven external MP-SPDZ parties, pre-quote note
+  reservations, shared legal-entity caps, rejection of a concurrent excess
+  RFQ, threshold zkPI, atomic multi-RFQ DvP, no post-quote owner signature,
+  account-free settlement and restart recovery. It writes
+  `artifacts/avalanche_qomm_full_acceptance.json`.

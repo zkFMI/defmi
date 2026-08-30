@@ -1,5 +1,3 @@
-//! Rust port of `scripts/run_reconcile.py`.
-
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
 use qomm_defmi::reconcile::{
@@ -7,7 +5,7 @@ use qomm_defmi::reconcile::{
 };
 use qomm_harness::{parse_value, timing_summary, write_pretty_json, HarnessResult};
 use qomm_proofs::threshold_sigma::{deal, joint_prove_opening};
-use qomm_sim::pyrandom::PyRandom;
+use qomm_sim::deterministic_random::DeterministicRng;
 use qomm_zk::pedersen::{asset_tag, Pedersen};
 use rand::rngs::OsRng;
 use serde_json::json;
@@ -47,7 +45,7 @@ fn run_main() -> HarnessResult<()> {
         if positions == 0 {
             return Err("--sizes must contain positive values".into());
         }
-        let mut values_rng = PyRandom::new(positions as u64);
+        let mut values_rng = DeterministicRng::new(positions as u64);
         let values = (0..positions)
             .map(|_| values_rng.randrange(1, 10_000) as u64)
             .collect::<Vec<_>>();
@@ -141,10 +139,10 @@ fn run_main() -> HarnessResult<()> {
             "two_log_n_plus_one": 2 * log + 1,
             "subtotals_made_public": search.ranges_made_public.len(),
             "narrowest_range": search.narrowest(),
-            "ms": py_round_places(search_ms, 1),
+            "ms": round_half_even_places(search_ms, 1),
             "per_position_register": {
                 "found": per_position,
-                "ms": py_round_places(per_position_ms, 1),
+                "ms": round_half_even_places(per_position_ms, 1),
                 "disclosed": 0,
             },
         }));
@@ -193,9 +191,9 @@ fn prove_by_quorum(
     })
 }
 
-fn py_round_places(value: f64, places: i32) -> f64 {
+fn round_half_even_places(value: f64, places: i32) -> f64 {
     let scale = 10f64.powi(places);
-    qomm_sim::market::py_round(value * scale) as f64 / scale
+    qomm_sim::market::round_half_even(value * scale) as f64 / scale
 }
 
 fn parse_args() -> HarnessResult<Options> {

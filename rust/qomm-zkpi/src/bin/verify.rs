@@ -4,6 +4,7 @@
 //! qomm-zkpi-verify --quorum <hex> --now <unix seconds> [--domain <s>] < instruction.bin
 //! qomm-zkpi-verify --vectors <dir>          # write the test vectors
 //! qomm-zkpi-verify --check-vectors <dir>    # and check them again
+//! qomm-zkpi-verify --write-spec <path>      # refresh only the generated section
 //! ```
 //!
 //! The point of it being a binary is that "pluggable" is a claim about what
@@ -17,8 +18,11 @@ use std::io::Read;
 use std::process::ExitCode;
 
 use qomm_zk::pedersen::Pedersen;
-use qomm_zkpi::wire::{decode, fingerprint, hex, WireError};
+use qomm_zkpi::wire::{decode, fingerprint, hex};
 use qomm_zkpi::{Bounds, Venue};
+
+const SPEC_BEGIN: &str = "<!-- BEGIN GENERATED WIRE SPEC -->";
+const SPEC_END: &str = "<!-- END GENERATED WIRE SPEC -->";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -27,6 +31,7 @@ fn main() -> ExitCode {
     let mut domain: Option<String> = None;
     let mut vectors: Option<String> = None;
     let mut check: Option<String> = None;
+    let mut write_spec: Option<String> = None;
     let mut self_test = false;
     let mut i = 0;
     while i < args.len() {
@@ -51,6 +56,10 @@ fn main() -> ExitCode {
                 check = args.get(i + 1).cloned();
                 i += 2;
             }
+            "--write-spec" => {
+                write_spec = args.get(i + 1).cloned();
+                i += 2;
+            }
             "--self-test" => {
                 self_test = true;
                 i += 1;
@@ -66,11 +75,25 @@ fn main() -> ExitCode {
         }
     }
 
+    if let Some(path) = write_spec {
+        return match update_spec_file(&path) {
+            Ok(()) => {
+                println!("updated generated wire specification in {path}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("could not update {path}: {error}");
+                ExitCode::from(2)
+            }
+        };
+    }
+
     if self_test {
         // Issue one, put it on the wire, take it off again, and verify it the
         // way a venue would --- so the binary can demonstrate the whole path
         // without anybody having to hold a quorum key first.
-        let (instruction, package) = qomm_zkpi::wire_vectors::sample_with_quorum();
+        let (instruction, package, bounds) =
+            qomm_zkpi::wire_vectors::production_sample_with_quorum();
         let bytes = qomm_zkpi::wire::encode(&instruction);
         let back = match decode(&bytes) {
             Ok(i) => i,
@@ -79,7 +102,8 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         };
-        let mut venue = Venue::new(Pedersen::new(b"qomm:defmi:v1"), &Bounds::default(), package);
+        let mut venue = Venue::new(Pedersen::new(b"qomm:defmi:v1"), &bounds, package)
+            .require_threshold_ranges();
         venue.domain = qomm_zkpi::DEFAULT_DOMAIN.to_vec();
         return match venue.verify(&back, instruction.deadline - 1) {
             Ok(()) => {
@@ -121,10 +145,13 @@ fn main() -> ExitCode {
         }
     };
     println!(
-        "decoded: deadline {}, quote key {}, {} range commitment(s)",
+        "decoded: deadline {}, quote binding {}, {} range commitment(s)",
         instruction.deadline,
-        instruction.quote_key,
-        instruction.range_commitments.len()
+        instruction
+            .legacy_quote_key()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "proof-digest".to_string()),
+        instruction.range_commitment_count()
     );
 
     let (Some(quorum), Some(now)) = (quorum, now) else {
@@ -176,6 +203,38 @@ fn main() -> ExitCode {
     }
 }
 
+fn splice_generated_spec(document: &str) -> Result<String, String> {
+    let begin = document
+        .find(SPEC_BEGIN)
+        .ok_or_else(|| format!("missing {SPEC_BEGIN}"))?;
+    let after_begin = begin + SPEC_BEGIN.len();
+    let relative_end = document[after_begin..]
+        .find(SPEC_END)
+        .ok_or_else(|| format!("missing {SPEC_END}"))?;
+    let end = after_begin + relative_end;
+    if document[end + SPEC_END.len()..].contains(SPEC_END) {
+        return Err(format!("more than one {SPEC_END}"));
+    }
+    if document[..begin].contains(SPEC_BEGIN) || document[after_begin..end].contains(SPEC_BEGIN) {
+        return Err(format!("more than one {SPEC_BEGIN}"));
+    }
+    let mut updated = String::with_capacity(document.len() + qomm_zkpi::wire::spec().len());
+    updated.push_str(&document[..begin]);
+    updated.push_str(SPEC_BEGIN);
+    updated.push('\n');
+    updated.push_str(qomm_zkpi::wire::spec().trim_end());
+    updated.push('\n');
+    updated.push_str(SPEC_END);
+    updated.push_str(&document[end + SPEC_END.len()..]);
+    Ok(updated)
+}
+
+fn update_spec_file(path: &str) -> Result<(), String> {
+    let document = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let updated = splice_generated_spec(&document)?;
+    std::fs::write(path, updated).map_err(|error| error.to_string())
+}
+
 fn decode_hex(text: &str) -> Option<Vec<u8>> {
     if !text.len().is_multiple_of(2) {
         return None;
@@ -222,6 +281,12 @@ fn vectors_command(dir: &str, checking: bool) -> ExitCode {
         ("truncated", false),
         ("trailing-byte", false),
         ("not-a-point", false),
+        ("accepted-v2", true),
+        ("wrong-magic-v2", false),
+        ("unknown-version-v2", false),
+        ("truncated-v2", false),
+        ("trailing-byte-v2", false),
+        ("not-a-point-v2", false),
     ] {
         let path = format!("{dir}/{name}.bin");
         let bytes = match std::fs::read(&path) {
@@ -258,5 +323,24 @@ fn vectors_command(dir: &str, checking: bool) -> ExitCode {
     }
 }
 
-#[allow(unused)]
-fn unused(_: WireError) {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_spec_update_preserves_the_reviewed_tail() {
+        let document =
+            format!("prefix\n{SPEC_BEGIN}\nstale\n{SPEC_END}\n## Reviewed tail\nkeep me\n");
+        let updated = splice_generated_spec(&document).expect("marked document");
+        assert!(updated.starts_with("prefix\n"));
+        assert!(updated.contains(&qomm_zkpi::wire::spec()));
+        assert!(updated.ends_with("## Reviewed tail\nkeep me\n"));
+        assert!(!updated.contains("stale"));
+    }
+
+    #[test]
+    fn generated_spec_update_fails_closed_without_both_markers() {
+        assert!(splice_generated_spec("reviewed text only").is_err());
+        assert!(splice_generated_spec(&format!("{SPEC_BEGIN}\nno end")).is_err());
+    }
+}

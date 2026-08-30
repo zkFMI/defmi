@@ -375,10 +375,12 @@ has, and it does not depend on any of the DLT regimes above.
 
 **Selective disclosure.** No supervisor in any of these jurisdictions accepts an
 inability to produce transaction records. Every regime here assumes records can
-be produced on demand. If the only way to open a trade is the participant's own
-secret key, the system is unusable in production regardless of where it is
-authorised. **This is the largest unimplemented gap in the stack and it is
-jurisdiction-independent.**
+be produced on demand. The code now supports signed, scope- and time-limited
+viewing grants, exact-scope note discovery and signed spend disclosure, with
+expiry and wrong-owner rejection. What remains unresolved is institutional:
+who authorises a grant, how the supervisor's keys are held, how a legal request
+is authenticated, and how assets move to a new scope when access must end. That
+production governance gap is jurisdiction-independent.
 
 **Seven node operators are seven third parties.** Under DORA in the EU, the
 critical-third-parties regime in the UK, MAS outsourcing and technology risk

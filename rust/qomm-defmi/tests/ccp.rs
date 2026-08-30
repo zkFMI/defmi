@@ -1,4 +1,3 @@
-//! Novation as arithmetic, and the two holes the Python version left open.
 //!
 //! The claim is that interposing a house costs two point additions and no
 //! proof, because it rewrites the obligation graph rather than asserting
@@ -213,7 +212,6 @@ fn both_parties_have_to_have_signed() {
 
 #[test]
 fn a_house_cannot_novate_a_trade_nobody_agreed_to() {
-    // The Python version could, and said so in a test. This is that test with
     // the opposite outcome, which is the point of the pair of signatures.
     let mut rng = OsRng;
     let room = room(4);

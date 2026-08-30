@@ -30,7 +30,7 @@ pub const DISCLOSURES: [&str; 3] = ["A_none", "B_threshold", "C_dp"];
 
 pub enum LabMarket {
     Generated(ReferenceMarket),
-    Tape(TapeMarket),
+    Tape(Box<TapeMarket>),
 }
 
 impl PricePath for LabMarket {
@@ -141,7 +141,7 @@ pub fn build(options: &BuildOptions) -> Result<Setup, String> {
             );
             (
                 loaded.cfg,
-                LabMarket::Tape(tape_market),
+                LabMarket::Tape(Box::new(tape_market)),
                 loaded.requests,
                 tape.source,
                 loaded.meta,
@@ -175,7 +175,7 @@ pub fn build(options: &BuildOptions) -> Result<Setup, String> {
             );
             (
                 loaded.cfg,
-                LabMarket::Tape(tape_market),
+                LabMarket::Tape(Box::new(tape_market)),
                 loaded.requests,
                 tape.source,
                 loaded.meta,
@@ -302,7 +302,6 @@ pub fn sweep_epsilon(setup: &Setup, values: &[f64], fixed: &ArmParams) -> Vec<Ar
         .collect()
 }
 
-/// Typed equivalent of Python's dynamic `sweep(setup, over, values, **fixed)`.
 pub enum Sweep<'a> {
     Rho(&'a [f64]),
     Epsilon(&'a [f64]),

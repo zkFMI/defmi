@@ -10,11 +10,11 @@
 //! so a simulation result and a circuit result can be checked against each
 //! other. All quantities are integers: prices in ticks, sizes in lots.
 //!
-//! Every draw goes through [`crate::pyrandom`], which reproduces CPython's
-//! stream, so this market is the same market the published runs used rather
-//! than a market with the same distribution.
+//! Every draw goes through [`crate::deterministic_random`], whose stream is
+//! fixed by checked vectors. Published runs therefore use the same market,
+//! rather than merely another market with the same distribution.
 
-use crate::pyrandom::PyRandom;
+use crate::deterministic_random::DeterministicRng;
 
 pub const SIZE_BUCKETS: [(i64, i64); 3] = [(1, 20), (21, 100), (101, 400)];
 pub const BUCKET_NAMES: [&str; 3] = ["small", "medium", "large"];
@@ -32,8 +32,7 @@ pub fn size_bucket(size: i64) -> usize {
     SIZE_BUCKETS.len() - 1
 }
 
-pub use qomm_measure::pyround::py_round;
-
+pub use qomm_measure::rounding::round_half_even;
 
 #[derive(Clone, Copy, Debug)]
 pub struct SimConfig {
@@ -117,7 +116,7 @@ impl MarketMaker {
     /// results are about.
     pub fn half_spread(&self, phi_hat: f64, size: i64) -> i64 {
         let premium = self.kappa * phi_hat.max(0.0) * (size.max(1) as f64).sqrt();
-        self.base_half + py_round(premium)
+        self.base_half + round_half_even(premium)
     }
 
     pub fn quote(&self, ref_mid: i64, size: i64, phi_hat: f64) -> (i64, i64) {
@@ -155,14 +154,14 @@ impl PricePath for ReferenceMarket {
 
 impl ReferenceMarket {
     pub fn new(cfg: &SimConfig, seed: u64) -> Self {
-        let mut rng = PyRandom::new(seed);
+        let mut rng = DeterministicRng::new(seed);
         let mut mid_values = vec![cfg.ref_mid0];
         let mut phi_values = vec![cfg.informed_base];
         let mut phi = cfg.informed_base;
         let mut mid = cfg.ref_mid0 as f64;
         for _ in 0..cfg.steps {
             mid += rng.gauss(0.0, cfg.sigma_ticks);
-            mid_values.push(py_round(mid));
+            mid_values.push(round_half_even(mid));
             phi = cfg.informed_base
                 + cfg.informed_ar * (phi - cfg.informed_base)
                 + rng.gauss(0.0, cfg.informed_sd);
@@ -182,7 +181,7 @@ impl ReferenceMarket {
 }
 
 pub fn build_market_makers(cfg: &SimConfig, seed: u64) -> Vec<MarketMaker> {
-    let mut rng = PyRandom::new(seed);
+    let mut rng = DeterministicRng::new(seed);
     (0..cfg.n_mm)
         .map(|i| MarketMaker {
             mm_id: i,
@@ -204,7 +203,7 @@ pub fn build_market_makers(cfg: &SimConfig, seed: u64) -> Vec<MarketMaker> {
 /// One shared request stream. Every arm replays exactly this stream, which is
 /// what makes the arms comparable at all.
 pub fn build_requests(cfg: &SimConfig, market: &ReferenceMarket, seed: u64) -> Vec<Request> {
-    let mut rng = PyRandom::new(seed);
+    let mut rng = DeterministicRng::new(seed);
     let mut requests = Vec::new();
 
     // Entity activity is heterogeneous: a few large entities dominate, which is
@@ -246,7 +245,7 @@ pub fn build_requests(cfg: &SimConfig, market: &ReferenceMarket, seed: u64) -> V
     requests
 }
 
-fn weighted_choice(rng: &mut PyRandom, weights: &[f64]) -> usize {
+fn weighted_choice(rng: &mut DeterministicRng, weights: &[f64]) -> usize {
     let draw = rng.random();
     let mut acc = 0.0;
     for (index, w) in weights.iter().enumerate() {

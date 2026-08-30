@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 qomm-zk.workspace = true
+qomm-proofs.workspace = true
 curve25519-dalek.workspace = true
 bulletproofs.workspace = true
 merlin.workspace = true

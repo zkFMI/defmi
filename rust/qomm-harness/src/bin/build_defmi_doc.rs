@@ -1,10 +1,7 @@
-//! Rust port of `scripts/build_defmi_doc.py`.
-//!
-//! Formatting and line boundaries intentionally follow the Python publication
-//! generator byte for byte.
+//! Build the DeFMI technical document from native Rust measurement artifacts.
 
 use qomm_harness::{
-    comma_i64, measurement_value, py_display, render_measurement, repo_root, HarnessResult,
+    comma_i64, measurement_value, render_measurement, repo_root, value_display, HarnessResult,
 };
 use qomm_measure::hosts::label;
 use serde_json::Value;
@@ -81,7 +78,6 @@ fn run() -> HarnessResult<()> {
         return Err("artifacts/defmi.json is missing; run `make defmi` first.".into());
     };
     let rust = load(&art, "rust_bench.json")?;
-    let big = load(&art, "defmi_host_a.json")?;
     let pvp = load(&art, "pvp.json")?;
     let same_chain = load(&art, "same_chain.json")?;
     let rings = load(&art, "rings.json")?;
@@ -103,22 +99,8 @@ fn run() -> HarnessResult<()> {
     build_viewing(&mut d, viewing.as_ref())?;
     build_vetting(&mut d, vetting.as_ref())?;
     build_avalanche(&mut d, avalanche.as_ref())?;
-    // Preserve Python's function-scope binding exactly: the local named `big`
-    // is overwritten by the ring state-root row and then by the vetting row,
-    // so the optional host-a parallel block is not emitted when either exists.
-    let python_big = if rings
-        .as_ref()
-        .and_then(|v| v.get("state_root"))
-        .and_then(Value::as_array)
-        .is_some_and(|v| !v.is_empty())
-        || vetting.is_some()
-    {
-        None
-    } else {
-        big.as_ref()
-    };
-    build_parallel(&mut d, &data, python_big)?;
-    build_rust_port(&mut d, &data, rust.as_ref())?;
+    build_parallel(&mut d, &data, None)?;
+    build_proof_backend_comparison(&mut d, &data, rust.as_ref())?;
     build_missing(&mut d, &data);
 
     let output = root.join("DEFMI.md");
@@ -135,10 +117,10 @@ fn build_core(out: &mut Document, d: &Value) -> HarnessResult<()> {
         "carbon units and other governed assets.\n"
     ));
     out.push(format!(
-        "Measured on `{}` / Python {} / group {}.",
+        "Measured on `{}` / {} / group {}.",
         label(d["host"].as_str().ok_or("host is not text")?),
-        py_display(&d["python"]),
-        py_display(&d["group"])
+        value_display(&d["rustc"]),
+        value_display(&d["group"])
     ));
     out.push(concat!(
         "This document is generated from the measurement JSON by `make defmi-doc`. No number in it ",
@@ -185,7 +167,7 @@ fn build_core(out: &mut Document, d: &Value) -> HarnessResult<()> {
     for row in scaling {
         out.push(format!(
             "| {} bit | {} ms | {} ms | {} ms | {} B |",
-            py_display(&row["bits"]),
+            value_display(&row["bits"]),
             ms(&row["issue"], 1)?,
             ms(&row["build"], 1)?,
             ms(&row["settle"], 1)?,
@@ -243,8 +225,8 @@ fn build_core(out: &mut Document, d: &Value) -> HarnessResult<()> {
         for row in split {
             out.push(format!(
                 "| {} bit | {} bit | {} ms | {} ms | {} B |",
-                py_display(&row["securities_bits"]),
-                py_display(&row["cash_bits"]),
+                value_display(&row["securities_bits"]),
+                value_display(&row["cash_bits"]),
                 ms(&row["build"], 1)?,
                 ms(&row["settle"], 1)?,
                 comma_i64(count(&row["package_bytes"])?),
@@ -269,8 +251,8 @@ fn build_core(out: &mut Document, d: &Value) -> HarnessResult<()> {
                 "Against both rails at {} bits, running securities at {} and cash at {} settles ",
                 "**{:.0}% faster** and sends **{} B less**. Not one line of the cryptography changed.\n"
             ),
-            py_display(&base["securities_bits"]), py_display(&best["securities_bits"]),
-            py_display(&best["cash_bits"]), drop,
+            value_display(&base["securities_bits"]), value_display(&best["securities_bits"]),
+            value_display(&best["cash_bits"]), drop,
             comma_i64(count(&base["package_bytes"])? - count(&best["package_bytes"])?),
         ));
     }
@@ -307,14 +289,14 @@ fn build_asset_hiding(out: &mut Document, d: &Value) -> HarnessResult<()> {
         let tagged = &row["arms"]["tagged"];
         out.push(format!(
             concat!("| {} | {} | {} ms | {} ms | +{} B | prove {} / verify {} ms, {} B |"),
-            py_display(&row["assets"]),
-            py_display(&row["set_size"]),
+            value_display(&row["assets"]),
+            value_display(&row["set_size"]),
             ms(&plain["build"], 1)?,
             ms(&tagged["build"], 1)?,
             count(&tagged["package_bytes"])? - count(&plain["package_bytes"])?,
             ms(&row["membership_prove"], 2)?,
             ms(&row["membership_verify"], 2)?,
-            py_display(&row["membership_bytes"]),
+            value_display(&row["membership_bytes"]),
         ));
     }
     out.push("");
@@ -357,7 +339,7 @@ fn build_asset_hiding(out: &mut Document, d: &Value) -> HarnessResult<()> {
         let first = per_asset.values().next().ok_or("per_asset is empty")?;
         out.push(format!(
             "- {} instruments: the package is identical whichever one it is ({}, {} B across {} instruments).",
-            py_display(&row["assets"]),
+            value_display(&row["assets"]),
             if row["indistinguishable"].as_bool().unwrap_or(false) { "identical" } else { "NOT identical" },
             comma_i64(count(&first["package_bytes"])?), per_asset.len()
         ));
@@ -375,8 +357,8 @@ fn build_asset_hiding(out: &mut Document, d: &Value) -> HarnessResult<()> {
             };
             out.push(format!(
                 "  - {display}: `{}` --- {}",
-                py_display(&attack["status"]),
-                py_display(&attack["reason"])
+                value_display(&attack["status"]),
+                value_display(&attack["reason"])
             ));
         }
     }
@@ -416,9 +398,9 @@ fn build_netting_and_credit(out: &mut Document, d: &Value) -> HarnessResult<()> 
         for row in net_rows {
             out.push(format!(
                 "| {} | {} | {} | {} ms | {} ms | {} ms | {:.2}x |",
-                py_display(&row["trades"]),
-                py_display(&row["participants"]),
-                py_display(&row["mode"]),
+                value_display(&row["trades"]),
+                value_display(&row["participants"]),
+                value_display(&row["mode"]),
                 ms(&row["verify_per_order"], 2)?,
                 ms(&row["verify_close"], 1)?,
                 ms(&row["verify_total"], 1)?,
@@ -521,7 +503,7 @@ fn build_netting_and_credit(out: &mut Document, d: &Value) -> HarnessResult<()> 
             for row in waterfall {
                 out.push(format!(
                     "| {} | {} ms | {} ms |",
-                    py_display(&row["tranches"]),
+                    value_display(&row["tranches"]),
                     ms(&row["build"], 1)?,
                     ms(&row["check"], 1)?
                 ));
@@ -561,7 +543,7 @@ fn build_deccp_and_notes(
         ));
         out.push(format!(
             "Measured at {} participants, against the two arms above run by the same harness:\n",
-            py_display(&deccp["participants"])
+            value_display(&deccp["participants"])
         ));
         out.push("| trades | net-net | net-net+attested | **DeCCP** | vs net-net | novation |");
         out.push("| ---: | ---: | ---: | ---: | ---: | ---: |");
@@ -569,12 +551,12 @@ fn build_deccp_and_notes(
         for row in deccp_rows {
             out.push(format!(
                 "| {} | {} | {} | **{:.1} ms** | **{}x** | {} us/trade |",
-                py_display(&row["trades"]),
+                value_display(&row["trades"]),
                 ms(&row["net_net"], 1)?,
                 ms(&row["net_net_attested"], 1)?,
                 num(&row["deccp_total"])?,
-                py_display(&row["speedup_deccp_vs_plain"]),
-                py_display(&row["novate_us_per_trade"])
+                value_display(&row["speedup_deccp_vs_plain"]),
+                value_display(&row["novate_us_per_trade"])
             ));
         }
         out.push("");
@@ -586,8 +568,8 @@ fn build_deccp_and_notes(
                 "instruction path goes {:.0} ms to {:.0} ms while the cleared cycle goes {:.0} ms ",
                 "to {:.0} ms. What is left is the close, and the close is per participant.\n"
             ),
-            py_display(&first["trades"]),
-            py_display(&last["trades"]),
+            value_display(&first["trades"]),
+            value_display(&last["trades"]),
             num(&first["net_net"]["median"])?,
             num(&last["net_net"]["median"])?,
             num(&first["deccp_total"])?,
@@ -602,7 +584,7 @@ fn build_deccp_and_notes(
                 "default waterfall between the defaulting member's fund contribution and the ",
                 "mutualised pool, which is where CPMI-IOSCO and EMIR put it.\n"
             ),
-            py_display(&last["novate_us_per_trade"])
+            value_display(&last["novate_us_per_trade"])
         ));
         out.push(concat!(
             "A slot rather than a dependency. A deployment names the providers it accepts and ",
@@ -644,7 +626,7 @@ fn build_deccp_and_notes(
             for row in ring_rows {
                 out.push(format!(
                     "| {} | {} ms | {} ms | {} B |",
-                    py_display(&row["ring"]),
+                    value_display(&row["ring"]),
                     ms(&row["build"], 1)?,
                     ms(&row["check"], 1)?,
                     comma_i64(count(&row["wire_bytes"])?),
@@ -662,8 +644,8 @@ fn build_deccp_and_notes(
                 ),
                 ms(&small["check"], 1)?,
                 ms(&large["check"], 1)?,
-                py_display(&small["ring"]),
-                py_display(&large["ring"]),
+                value_display(&small["ring"]),
+                value_display(&large["ring"]),
                 ms(&small["build"], 1)?,
                 ms(&large["build"], 1)?
             ));
@@ -685,14 +667,14 @@ fn build_deccp_and_notes(
                     "proportional to the pool."
                 ),
                 num(&notes["scan_ms_per_note"] )?, num(&notes["scan_ms"] )?,
-                py_display(&notes["pool_size"])
+                value_display(&notes["pool_size"])
             ));
             out.push(format!(
                 concat!(
                     "Two payments to the same address cannot be linked: **{}** (neither the ",
                     "commitments nor the ephemeral points match).\n"
                 ),
-                py_display(&notes["outputs_unlinkable"])
+                value_display(&notes["outputs_unlinkable"])
             ));
         }
     }
@@ -720,7 +702,7 @@ fn build_deccp_and_notes(
             };
             out.push(format!(
                 "| {} | {} ms | {} ms | {} B | {delta} |",
-                py_display(&row["ring"]),
+                value_display(&row["ring"]),
                 ms(&row["build"], 1)?,
                 ms(&row["settle"], 1)?,
                 comma_i64(count(&row["package_bytes"])?),
@@ -737,9 +719,9 @@ fn build_deccp_and_notes(
                 ),
                 ms(&at40["settle"], 1)?,
                 100.0 * (measurement_value(&first["settle"])? - base) / base,
-                py_display(&first["ring"]),
+                value_display(&first["ring"]),
                 100.0 * (measurement_value(&last["settle"])? - base) / base,
-                py_display(&last["ring"])
+                value_display(&last["ring"])
             ));
             out.push(concat!(
                 "**Adding up the parts was off by more than a factor of two.** A note leg and an ",
@@ -963,32 +945,32 @@ fn build_pvp(out: &mut Document, d: &Value, pvp: Option<&Value>) -> HarnessResul
     ));
     out.push(format!(
         "| | measured, {}-bit rails |",
-        py_display(&pvp["rail_bits"])
+        value_display(&pvp["rail_bits"])
     ));
     out.push("| --- | ---: |");
     out.push(format!(
         "| prepare one leg (check, and move it out of reach) | {:.2} ± {:.2} ms (n={}) |",
         num(&milli["prepare"]["mean"])?,
         num(&milli["prepare"]["sd"])?,
-        py_display(&milli["prepare"]["n"])
+        value_display(&milli["prepare"]["n"])
     ));
     out.push(format!(
         "| the first mover's claim | {:.2} ± {:.2} ms (n={}) |",
         num(&milli["claim"]["mean"])?,
         num(&milli["claim"]["sd"])?,
-        py_display(&milli["claim"]["n"])
+        value_display(&milli["claim"]["n"])
     ));
     out.push(format!(
         "| **the second mover's reaction** | **{:.2} ± {:.2} ms (n={})** |",
         num(&milli["react"]["mean"])?,
         num(&milli["react"]["sd"])?,
-        py_display(&milli["react"]["n"])
+        value_display(&milli["react"]["n"])
     ));
     out.push(format!(
         "| unwind an expired leg | {:.2} ± {:.2} us (n={}) |",
         num(&micro["unwind"]["mean"])?,
         num(&micro["unwind"]["sd"])?,
-        py_display(&micro["unwind"]["n"])
+        value_display(&micro["unwind"]["n"])
     ));
     out.push("");
     out.push(format!(
@@ -1082,8 +1064,8 @@ fn build_same_chain(
     ] {
         out.push(format!(
             "| {label} | {} | {} |",
-            py_display(&one[key]),
-            py_display(&adaptor[key])
+            value_display(&one[key]),
+            value_display(&adaptor[key])
         ));
     }
     out.push(format!(
@@ -1232,7 +1214,7 @@ fn build_reconcile(out: &mut Document, reconcile: Option<&Value>) -> HarnessResu
             ms(&row["check"], 2)?,
             ms(&joint["assemble"], 2)?,
             rows(&joint["quorum"])?.len(),
-            py_display(&joint["of"])
+            value_display(&joint["of"])
         ));
     }
     out.push("");
@@ -1244,7 +1226,7 @@ fn build_reconcile(out: &mut Document, reconcile: Option<&Value>) -> HarnessResu
         ),
         comma_i64(int(&biggest["positions"])?),
         ms(&biggest["check"], 1)?,
-        py_display(&biggest["wire_bytes"])
+        value_display(&biggest["wire_bytes"])
     ));
     out.push(concat!(
         "The **quorum** column is the same statement assembled by nodes holding shares of the ",
@@ -1267,10 +1249,10 @@ fn build_reconcile(out: &mut Document, reconcile: Option<&Value>) -> HarnessResu
         out.push(format!(
             "| {} | {} | {} | {} | {} position |",
             comma_i64(int(&row["positions"])?),
-            py_display(&row["sub_range_proofs"]),
-            py_display(&row["two_log_n_plus_one"]),
-            py_display(&row["subtotals_made_public"]),
-            py_display(&row["narrowest_range"])
+            value_display(&row["sub_range_proofs"]),
+            value_display(&row["two_log_n_plus_one"]),
+            value_display(&row["subtotals_made_public"]),
+            value_display(&row["narrowest_range"])
         ));
     }
     out.push("");
@@ -1282,7 +1264,7 @@ fn build_reconcile(out: &mut Document, reconcile: Option<&Value>) -> HarnessResu
             "holds the mapping from handle to book-entry account, so it holds the openings and the ",
             "check is arithmetic on numbers it has. At {} positions that is {} ms.\n"
         ),
-        comma_i64(int(&last["positions"])?), py_display(&last["per_position_register"]["ms"])
+        comma_i64(int(&last["positions"])?), value_display(&last["per_position_register"]["ms"])
     ));
     out.push(concat!(
         "**Reconciling is the cheap half and the search is not.** Which one you are in depends on ",
@@ -1306,7 +1288,7 @@ fn build_note_dvp(out: &mut Document, note_dvp: Option<&Value>) -> HarnessResult
     for row in rows(&note_dvp["rows"])? {
         out.push(format!(
             "| {} | {} | {} | {} B |",
-            py_display(&row["ring"]),
+            value_display(&row["ring"]),
             ms(&row["build"], 1)?,
             ms(&row["settle_including_build"], 1)?,
             comma_i64(int(&row["package_bytes"])?),
@@ -1319,10 +1301,9 @@ fn build_note_dvp(out: &mut Document, note_dvp: Option<&Value>) -> HarnessResult
         "Bulletproofs-against-bit-decomposition effect the account rail showed in section 5.1.\n"
     ));
     out.push(concat!(
-        "The two `build` columns are **not** comparable and the ratio between them means nothing: ",
-        "the Rust one includes the whole three-of-seven FROST ceremony that issues the instruction, ",
-        "and the Python one does not. Saying so is cheaper than a footnote nobody reads under a ",
-        "number somebody quotes.\n"
+        "The `build` column includes the whole three-of-seven FROST ceremony that issues the ",
+        "instruction. It is therefore an end-to-end construction cost, not only a range-proof ",
+        "microbenchmark.\n"
     ));
     out.push(concat!(
         "`settle` builds a fresh world and a fresh package each time, because settling consumes both, ",
@@ -1357,8 +1338,8 @@ fn build_viewing(out: &mut Document, viewing: Option<&Value>) -> HarnessResult<(
             "| {} | {} | {} ms | {} of {} ({:.1}%) | {} | {} |",
             comma_i64(int(&row["pool"])?),
             ms(&row["scan"], 1)?,
-            py_display(&row["per_note_ms"]),
-            py_display(&row["notes_reached"]),
+            value_display(&row["per_note_ms"]),
+            value_display(&row["notes_reached"]),
             comma_i64(int(&row["notes_in_pool"])?),
             num(&row["fraction_reached"])? * 100.0,
             if row["sees_exactly_its_scope"].as_bool().unwrap_or(false) {
@@ -1366,7 +1347,7 @@ fn build_viewing(out: &mut Document, viewing: Option<&Value>) -> HarnessResult<(
             } else {
                 "NO"
             },
-            py_display(&row["serials_recovered"])
+            value_display(&row["serials_recovered"])
         ));
     }
     out.push("");
@@ -1379,8 +1360,8 @@ fn build_viewing(out: &mut Document, viewing: Option<&Value>) -> HarnessResult<(
             "numbers at all**, because a serial needs the spend key and the grant does not carry ",
             "one.\n"
         ),
-        py_display(&last["per_note_ms"]),
-        py_display(&viewing["scopes"])
+        value_display(&last["per_note_ms"]),
+        value_display(&viewing["scopes"])
     ));
     out.push(format!(
         concat!(
@@ -1508,7 +1489,7 @@ fn build_vetting(out: &mut Document, vetting: Option<&Value>) -> HarnessResult<(
     out.push(format!(
         "Measured on `{}`, {} repeats, medians.\n",
         label(vetting["host"].as_str().ok_or("vetting host is not text")?),
-        py_display(&vetting["repeats"])
+        value_display(&vetting["repeats"])
     ));
     out.push("| crowd | prove | verify | proof | ring |");
     out.push("|---:|---:|---:|---:|---:|");
@@ -1517,8 +1498,8 @@ fn build_vetting(out: &mut Document, vetting: Option<&Value>) -> HarnessResult<(
             "| {crowd} | {} | {} | {} B | {} B |",
             ms(&row["prove_ms"], 2)?,
             ms(&row["verify_ms"], 2)?,
-            py_display(&row["proof_bytes"]),
-            py_display(&row["ring_bytes"])
+            value_display(&row["proof_bytes"]),
+            value_display(&row["ring_bytes"])
         ));
     }
     out.push("");
@@ -1529,18 +1510,16 @@ fn build_vetting(out: &mut Document, vetting: Option<&Value>) -> HarnessResult<(
             "the control proof and 12 the group and epoch. Every doubling adds exactly {} --- one ",
             "point in each of the ring's four vectors and one scalar in each of its three.\n"
         ),
-        py_display(&small["proof_bytes"]), py_display(&small["ring_bytes"]), step
+        value_display(&small["proof_bytes"]), value_display(&small["ring_bytes"]), step
     ));
     let ratio = num(&big["verify_ms"]["median"])? / num(&by_crowd[&4]["verify_ms"]["median"])?;
     let grew = int(&big["crowd"])? / 4;
     out.push(format!(
         concat!(
             "**Two predictions missed, and the second changed a design choice.** Verifying was ",
-            "predicted under 1 ms in Rust against Python's 1.81 ms at a crowd of 16; it came in at ",
-            "{}, a factor of 1.4. The reason is the one `BINDING.md` gives about VOLEitH: the Python ",
-            "side already runs its group arithmetic in C through PyNaCl, so Rust wins the glue and ",
-            "not the arithmetic. The Rust figure also does strictly more --- it verifies the ",
-            "control proof and shifts every envelope.\n"
+            "predicted under 1 ms at a crowd of 16; it came in at {}. The measured verifier also ",
+            "checks the control proof and shifts every envelope, so this is the complete verifier ",
+            "cost rather than a group-arithmetic microbenchmark.\n"
         ),
         ms(&small["verify_ms"], 2)?
     ));
@@ -1553,8 +1532,8 @@ fn build_vetting(out: &mut Document, vetting: Option<&Value>) -> HarnessResult<(
             "against the 51.9 ms a note settlement already costs, and the wire grows by {} bytes. ",
             "**{} is the default the code carries** (`vetting::CROWD`).\n"
         ),
-        grew, ratio, py_display(&big["crowd"]), ms(&big["verify_ms"], 2)?,
-        int(&big["proof_bytes"])? - int(&small["proof_bytes"] )?, py_display(&big["crowd"])
+        grew, ratio, value_display(&big["crowd"]), ms(&big["verify_ms"], 2)?,
+        int(&big["proof_bytes"])? - int(&small["proof_bytes"] )?, value_display(&big["crowd"])
     ));
     out.push(concat!(
         "What stays out of reach is a crowd of thousands. That needs a Merkle tree checked inside a ",
@@ -1563,9 +1542,11 @@ fn build_vetting(out: &mut Document, vetting: Option<&Value>) -> HarnessResult<(
     ));
     out.push(concat!(
         "**Where the check runs.** The node committee verifies the complete proof before it signs. ",
-        "The dedicated Avalanche VM verifies the 3-of-7 approval and binds it to the proof digest, ",
-        "chain, rail, deadline, sequence and previous state root. Validators do not yet re-run every ",
-        "Bulletproof; that remaining trust boundary is explicit in `ZKPI_WIRE.md`.\n"
+        "The product transaction carries the submitted evidence, and every dedicated Avalanche VM ",
+        "validator independently verifies the 3-of-7 approval, typed zkPI, complete quote proof, ",
+        "joint ranges, taker price limit, asset link, DvP relation and state transition. Validators ",
+        "do not re-run the private MP-SPDZ transcript or prove the node-local share-to-proof handoff; ",
+        "that remaining trust boundary is explicit in `ZKPI_WIRE.md`.\n"
     ));
     Ok(())
 }
@@ -1584,7 +1565,7 @@ fn build_avalanche(out: &mut Document, avalanche: Option<&Value>) -> HarnessResu
         "settlement",
     ]
     .iter()
-    .map(|key| py_display(&accepted[*key]["height"]))
+    .map(|key| value_display(&accepted[*key]["height"]))
     .collect::<Vec<_>>()
     .join(", ");
     out.push("### 6.8 Native Avalanche L1 acceptance\n");
@@ -1597,7 +1578,7 @@ fn build_avalanche(out: &mut Document, avalanche: Option<&Value>) -> HarnessResu
     out.push("| --- | ---: |");
     out.push(format!(
         "| local AvalancheGo processes | {} |",
-        py_display(&avalanche["nodes"])
+        value_display(&avalanche["nodes"])
     ));
     out.push(format!("| accepted heights | {heights} |"));
     out.push(format!(
@@ -1613,7 +1594,7 @@ fn build_avalanche(out: &mut Document, avalanche: Option<&Value>) -> HarnessResu
         num(&avalanche["restart"]["elapsed_ms"])?
     ));
     let roots = rows(&avalanche["roots_before_restart"])?;
-    let unique: BTreeSet<String> = roots.iter().map(py_display).collect();
+    let unique: BTreeSet<String> = roots.iter().map(value_display).collect();
     out.push(format!(
         "| one state root before restart | {} |",
         if unique.len() == 1 { "yes" } else { "no" }
@@ -1657,7 +1638,7 @@ fn build_parallel(out: &mut Document, d: &Value, big: Option<&Value>) -> Harness
     for row in parallel {
         out.push(format!(
             "| {} | {} | {:.2}x |",
-            py_display(&row["workers"]),
+            value_display(&row["workers"]),
             ms(&row["per_second"], 1)?,
             measurement_value(&row["per_second"])? / one
         ));
@@ -1671,7 +1652,7 @@ fn build_parallel(out: &mut Document, d: &Value, big: Option<&Value>) -> Harness
             "question, not a design one.\n"
         ),
         measurement_value(&top["per_second"])?,
-        py_display(&top["workers"])
+        value_display(&top["workers"])
     ));
     if let Some(big) = big.filter(|v| {
         v.get("parallel")
@@ -1691,7 +1672,7 @@ fn build_parallel(out: &mut Document, d: &Value, big: Option<&Value>) -> Harness
                 "to {:.1} per second), which is the same ratio by an independent route.\n"
             ),
             label(big["host"].as_str().ok_or("big host is not text")?),
-            py_display(&btop["workers"]), bcal, ccal, bcal / ccal,
+            value_display(&btop["workers"]), bcal, ccal, bcal / ccal,
             one / measurement_value(&bone["per_second"] )?, one,
             measurement_value(&bone["per_second"])?
         ));
@@ -1700,7 +1681,7 @@ fn build_parallel(out: &mut Document, d: &Value, big: Option<&Value>) -> Harness
         for row in bp {
             out.push(format!(
                 "| {} | {:.1} | {:.2}x | {:.0}% |",
-                py_display(&row["workers"]),
+                value_display(&row["workers"]),
                 measurement_value(&row["per_second"])?,
                 measurement_value(&row["per_second"])? / measurement_value(&bone["per_second"])?,
                 100.0 * measurement_value(&row["per_second"])?
@@ -1716,133 +1697,140 @@ fn build_parallel(out: &mut Document, d: &Value, big: Option<&Value>) -> Harness
                 "**{:.0} per second** on {} workers, only {:.0}% short of linear. Nothing is shared ",
                 "between verifications, so this shape is what was expected.\n"
             ),
-            measurement_value(&btop["per_second"] )?, py_display(&btop["workers"]), shortfall
+            measurement_value(&btop["per_second"] )?, value_display(&btop["workers"]), shortfall
         ));
     }
     Ok(())
 }
 
-fn build_rust_port(out: &mut Document, d: &Value, rust: Option<&Value>) -> HarnessResult<()> {
-    let Some(rust) = rust else {
+fn build_proof_backend_comparison(
+    out: &mut Document,
+    baseline: &Value,
+    optimized: Option<&Value>,
+) -> HarnessResult<()> {
+    let Some(optimized) = optimized else {
         return Ok(());
     };
-    out.push("## 8. The Rust port\n");
-    let py_cal = d
+    out.push("## 8. Native Rust proof backends\n");
+    let baseline_calibration = baseline
         .get("calibration")
-        .and_then(|c| c.get("scalar_mult_us"))
+        .and_then(|calibration| calibration.get("scalar_mult_us"))
         .map(measurement_value)
         .transpose()?;
-    let rs_cal = measurement_value(&rust["calibration"]["scalar_mult_us"])?;
-    let same_machine = rust["host"] == d["host"];
+    let optimized_calibration = measurement_value(&optimized["calibration"]["scalar_mult_us"])?;
+    let same_machine = optimized["host"] == baseline["host"];
     let location = if same_machine {
         format!(
-            "Measured on the same machine (`{}` / ",
-            label(rust["host"].as_str().ok_or("rust host is not text")?)
+            "Both backends were measured on `{}`",
+            label(
+                optimized["host"]
+                    .as_str()
+                    .ok_or("optimized host is not text")?
+            )
         )
     } else {
         format!(
-            "Measured on `{}` against Python on `{}` / ",
-            label(rust["host"].as_str().ok_or("rust host is not text")?),
-            label(d["host"].as_str().ok_or("python host is not text")?)
+            "The optimized backend was measured on `{}` and the baseline on `{}`",
+            label(
+                optimized["host"]
+                    .as_str()
+                    .ok_or("optimized host is not text")?
+            ),
+            label(
+                baseline["host"]
+                    .as_str()
+                    .ok_or("baseline host is not text")?
+            )
         )
     };
-    let calibration = match py_cal {
-        Some(py) => format!("{rs_cal:.1} us in Rust against {py:.1} us in Python, "),
-        None => format!("{rs_cal:.1} us in Rust, "),
-    };
-    let conclusion = if same_machine {
-        concat!(
-            "That they agree says the two are equally fast and, more usefully, that **the machine ",
-            "was in the same state**, which is what stops the ratios below being explained by the ",
-            "machine.\n"
-        )
-    } else {
-        concat!(
-            "**These are two different machines**, so the ratios below carry the difference between ",
-            "the hosts as well as the difference between the languages, and should not be read as a ",
-            "port measurement until both sides are retaken together.\n"
-        )
-    };
+    let calibration = baseline_calibration.map_or_else(
+        || format!("{optimized_calibration:.1} us for the optimized backend"),
+        |baseline_value| {
+            format!(
+                "{baseline_value:.1} us for the baseline and {optimized_calibration:.1} us for the optimized backend"
+            )
+        },
+    );
     out.push(format!(
-        concat!(
-            "{}{} / group ristretto255). The scalar-multiplication calibration is {}and **this one ",
-            "figure is the only thing that compares across the two languages** --- Python goes ",
-            "through libsodium and Rust through dalek, different implementations of the same thing: ",
-            "a scalar multiplication on a native-code 255-bit curve. {}"
-        ),
-        location, py_display(&rust["rustc"]), calibration, conclusion
+        "{location} with {}. Scalar-multiplication calibration was {calibration}.{}\n",
+        value_display(&optimized["rustc"]),
+        if same_machine {
+            " The following ratios therefore compare proof backends on the same host."
+        } else {
+            " Host differences are included in the following ratios; rerun both artifacts on one host before using them as promotion evidence."
+        }
     ));
     out.push(concat!(
-        "What is being compared is not only the language. The port also replaced a hand-rolled ",
-        "bit-decomposition range proof with the audited `bulletproofs` crate, so **the ratios below ",
-        "are 'became Rust' and 'became Bulletproofs' added together**. The order-of-magnitude change ",
-        "on the wire is the second of those: linear became logarithmic.\n"
+        "The baseline uses a linear bit-decomposition range proof. The optimized backend uses the ",
+        "audited `bulletproofs` crate, changing proof size from linear to logarithmic. Both ",
+        "implementations, the benchmark driver and the document generator are native Rust.\n"
     ));
-    let mut python_by_bits = BTreeMap::new();
-    for row in rows(&d["scaling"])? {
-        python_by_bits.insert(int(&row["bits"])?, row);
+
+    let mut baseline_by_bits = BTreeMap::new();
+    for row in rows(&baseline["scaling"])? {
+        baseline_by_bits.insert(int(&row["bits"])?, row);
     }
-    let shared: Vec<&Value> = rows(&rust["scaling"])?
+    let shared: Vec<&Value> = rows(&optimized["scaling"])?
         .iter()
         .filter(|row| {
             row["bits"]
                 .as_i64()
-                .is_some_and(|bits| python_by_bits.contains_key(&bits))
+                .is_some_and(|bits| baseline_by_bits.contains_key(&bits))
         })
         .collect();
-    out.push("| balance width | Python settle | Rust settle | ratio | Python package | Rust package | ratio |");
+    out.push("| balance width | linear settle | Bulletproof settle | speedup | linear package | Bulletproof package | reduction |");
     out.push("| ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
     for row in shared {
         let bits = int(&row["bits"])?;
-        let py = python_by_bits[&bits];
-        let py_settle = measurement_value(&py["settle"])?;
-        let rs_settle = measurement_value(&row["settle_ms"])?;
-        let py_bytes = count(&py["package_bytes"])?;
-        let rs_bytes = count(&row["package_bytes"])?;
+        let baseline_row = baseline_by_bits[&bits];
+        let baseline_settle = measurement_value(&baseline_row["settle"])?;
+        let optimized_settle = measurement_value(&row["settle_ms"])?;
+        let baseline_bytes = count(&baseline_row["package_bytes"])?;
+        let optimized_bytes = count(&row["package_bytes"])?;
         out.push(format!(
-            "| {bits} bit | {} ms | {rs_settle:.2} ms | {:.1}x | {} B | {} B | {:.1}x |",
-            ms(&py["settle"], 1)?,
-            py_settle / rs_settle,
-            comma_i64(py_bytes),
-            comma_i64(rs_bytes),
-            py_bytes as f64 / rs_bytes as f64
+            "| {bits} bit | {} ms | {optimized_settle:.2} ms | {:.1}x | {} B | {} B | {:.1}x |",
+            ms(&baseline_row["settle"], 1)?,
+            baseline_settle / optimized_settle,
+            comma_i64(baseline_bytes),
+            comma_i64(optimized_bytes),
+            baseline_bytes as f64 / optimized_bytes as f64
         ));
     }
     out.push("");
-    let wide = rows(&rust["scaling"])?
+
+    let wide = rows(&optimized["scaling"])?
         .iter()
-        .find(|r| r["bits"].as_i64() == Some(64));
-    let py40 = python_by_bits.get(&40).copied();
-    if let (Some(wide), Some(py40)) = (wide, py40) {
-        let py_settle = measurement_value(&py40["settle"])?;
-        let rs_settle = measurement_value(&wide["settle_ms"])?;
-        let py_bytes = count(&py40["package_bytes"])?;
-        let rs_bytes = count(&wide["package_bytes"])?;
+        .find(|row| row["bits"].as_i64() == Some(64));
+    let baseline40 = baseline_by_bits.get(&40).copied();
+    if let (Some(wide), Some(baseline40)) = (wide, baseline40) {
+        let baseline_settle = measurement_value(&baseline40["settle"])?;
+        let optimized_settle = measurement_value(&wide["settle_ms"])?;
+        let baseline_bytes = count(&baseline40["package_bytes"])?;
+        let optimized_bytes = count(&wide["package_bytes"])?;
         out.push(format!(
             concat!(
-                "Bulletproofs only comes in powers of two, so a 40-bit rail **rounds up to 64**. ",
-                "Comparing against the rounded-up side is the honest comparison: {} ms for Python ",
-                "at 40 bits against {:.2} ms for Rust at 64, **{:.1}x**. The package goes from {} to ",
-                "{} B, **{:.1}x**.\n"
+                "Bulletproofs uses power-of-two widths, so a 40-bit rail rounds up to 64 bits. ",
+                "The honest cross-width comparison is {} ms for the 40-bit linear backend against ",
+                "{:.2} ms for the 64-bit Bulletproof backend, **{:.1}x**. The package falls from {} ",
+                "B to {} B, **{:.1}x**.\n"
             ),
-            ms(&py40["settle"], 1)?, rs_settle, py_settle / rs_settle,
-            comma_i64(py_bytes), comma_i64(rs_bytes), py_bytes as f64 / rs_bytes as f64
+            ms(&baseline40["settle"], 1)?,
+            optimized_settle,
+            baseline_settle / optimized_settle,
+            comma_i64(baseline_bytes),
+            comma_i64(optimized_bytes),
+            baseline_bytes as f64 / optimized_bytes as f64
         ));
         out.push(format!(
-            concat!(
-                "Per core that is {:.1} to {:.1} settlements per second. Parallelism is ",
-                "independent, so multiply by cores.\n"
-            ),
-            1000.0 / py_settle,
-            1000.0 / rs_settle
+            "Per core, that is {:.1} to {:.1} settlements per second.\n",
+            1000.0 / baseline_settle,
+            1000.0 / optimized_settle
         ));
     }
     out.push(concat!(
-        "**Losing the fine grain of the width is a real cost.** A bit decomposition could prove 24 ",
-        "or 40 bits directly, which is what made the per-rail width optimisation of section 2.1 ",
-        "work. With only powers of two, securities at 24 bits round up to 32 and cash at 40 to 64. ",
-        "The conclusion here is that the table above is still a large enough difference to swallow ",
-        "that.\n"
+        "The optimized backend loses fine-grained proof widths: securities at 24 bits round to 32, ",
+        "and cash at 40 bits rounds to 64. The table measures whether the logarithmic proof still ",
+        "wins after paying that rounding cost.\n"
     ));
     Ok(())
 }
@@ -1850,9 +1838,10 @@ fn build_rust_port(out: &mut Document, d: &Value, rust: Option<&Value>) -> Harne
 fn build_missing(out: &mut Document, d: &Value) {
     out.push("## 9. What is still missing\n");
     out.push(concat!(
-        "- Avalanche validators verify the committee approval and proof digest, not the complete ",
-        "zero-knowledge proof. Removing that committee trust requires a consensus-safe verifier ",
-        "inside the VM and a separate audit."
+        "- Avalanche validators independently verify the complete submitted product proof suite, ",
+        "but they do not re-run the private MP-SPDZ transcript or prove the node-local ",
+        "share-to-proof handoff. Removing that remaining committee trust requires a proof of the ",
+        "whole private computation and a separate consensus benchmark."
     ));
     if d.get("note_settlement").is_none_or(Value::is_null) {
         out.push(concat!(

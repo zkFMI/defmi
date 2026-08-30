@@ -1,4 +1,3 @@
-//! The confidence bound the epsilon audit rests on, checked against the Python
 //! it replaces and against the cases where a bound is easy to get wrong.
 
 use qomm_sim::audit::{betainc_public, clopper_pearson};
@@ -8,7 +7,7 @@ fn close(a: f64, b: f64, tol: f64) -> bool {
 }
 
 #[test]
-fn the_interval_matches_the_python_to_twelve_decimals() {
+fn the_interval_matches_the_locked_to_twelve_decimals() {
     for (k, n, lo, hi) in [
         (0usize, 100usize, 0.0, 0.036_216_692_645),
         (5, 100, 0.016_431_879_182, 0.112_834_911_105),
@@ -33,7 +32,7 @@ fn the_endpoints_are_exact_rather_than_nearly_exact() {
 }
 
 #[test]
-fn the_incomplete_beta_agrees_with_the_python() {
+fn the_incomplete_beta_agrees_with_the_locked_values() {
     assert!(close(betainc_public(2.0, 3.0, 0.4), 0.524_8, 1e-13));
     assert!(close(
         betainc_public(0.5, 0.5, 0.25),

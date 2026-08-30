@@ -2,21 +2,51 @@
   "node": 0,
   "host": "0.0.0.0",
   "port": 9443,
-  "certificate": "pki/node-0.cert.pem",
-  "private_key": "pki/node-0.key.pem",
+  "certificate": "pki/node.cert.pem",
+  "private_key": "pki/node.key.pem",
   "ca_certificate": "pki/ca.cert.pem",
-  "database": "/var/lib/qomm/node-0.sqlite3",
+  "database": "/var/lib/qomm/node-0/resident.sqlite3",
   "program_registry": "approved-programs.json",
   "idle_timeout_seconds": 30,
+  "response_delay_ms": 0,
+  "rate_limit": {"max_requests":60,"max_probe_lots":2000,"max_epsilon":1.0,"slots_per_epoch":60},
+  "sealing_keys": {
+    "encrypted_store": "/var/lib/qomm/node-0/sealing-keys.qks",
+    "passphrase_file": "secrets/sealing-store.passphrase",
+    "admission_authority_key_id": "REPLACE_AFTER_KEY_PROVISIONING",
+    "ordering_beacon_key_id": "REPLACE_AFTER_KEY_PROVISIONING",
+    "node_receipt_key_id": "REPLACE_AFTER_KEY_PROVISIONING"
+  },
+  "kyb": {
+    "venue_scope": "QOMM/venue-A/KYB",
+    "required_cohort": "JP/regulated-dealer/tier>=2",
+    "trusted_issuer": "REPLACE_WITH_32_BYTE_HEX_ED25519_KEY",
+    "registry": {
+      "cohort": "JP/regulated-dealer/tier>=2",
+      "registry_epoch": 1,
+      "expires_at": 4102444800,
+      "points": ["REPLACE_WITH_CANONICAL_RISTRETTO_POINT"],
+      "issuer": "REPLACE_WITH_32_BYTE_HEX_ED25519_KEY",
+      "registry_id": "REPLACE_WITH_32_BYTE_HEX_REGISTRY_ID",
+      "signature": "REPLACE_WITH_64_BYTE_HEX_SIGNATURE"
+    }
+  },
   "principals": [
+    {"certificate_der":"pki/coordinator.cert.pem","role":"coordinator"},
     {
-      "certificate_der": "pki/client.der",
+      "certificate_der": "pki/client-a.cert.pem",
       "role": "client",
-      "frame_key_file": "secrets/client-frame.key"
-    },
-    {
-      "certificate_der": "pki/coordinator.der",
-      "role": "coordinator"
+      "frame_key_file": "secrets/client-a-frame.key",
+      "scope_nullifier": "REPLACE_WITH_CANONICAL_RISTRETTO_POINT",
+      "kyb_presentation": {
+        "cohort": "JP/regulated-dealer/tier>=2",
+        "registry_id": "REPLACE_WITH_32_BYTE_HEX_REGISTRY_ID",
+        "scope": "QOMM/venue-A/KYB",
+        "context_hash": "REPLACE_WITH_32_BYTE_HEX_CONTEXT_HASH",
+        "nullifier": "REPLACE_WITH_CANONICAL_RISTRETTO_POINT",
+        "challenges": ["REPLACE_WITH_CANONICAL_SCALAR_PER_REGISTRY_ENTRY"],
+        "responses": ["REPLACE_WITH_CANONICAL_SCALAR_PER_REGISTRY_ENTRY"]
+      }
     }
   ]
 }

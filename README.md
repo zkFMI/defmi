@@ -6,7 +6,7 @@ Delivery versus payment for committed holdings: two legs that move together or n
 
 ## Deployment target
 
-The deployment target is a dedicated **non-EVM Avalanche L1**. `avalanche/defmivm/` contains the custom VM and a one-command five-AvalancheGo-process acceptance run covering asset registration, account creation, atomic multi-leg settlement, replay rejection, restart recovery and state-root agreement. The `evm/` directory is retained only as a historical comparison benchmark; it is not the product execution path.
+The deployment target is a dedicated **non-EVM Avalanche L1**. `rust/qomm-avalanche-vm/` contains the Rust state machine, while `avalanche/defmivm/` contains configuration and five-validator acceptance launchers. The full gate covers account-free notes, pre-authorized reserves, seven-party MPC zkPI, atomic multi-RFQ settlement, shared legal-entity caps, restart recovery, and state-root agreement. AvalancheGo remains an external consensus host and launches the Rust VM over RPCChainVM protocol 45.
 
 
 ## What it does
@@ -91,17 +91,25 @@ Rust crates:
 - `rust/qomm-zkpi`
 - `rust/qomm-measure`
 - `rust/qomm-sim`
+- `rust/qomm-dsl`
+- `rust/qomm-mpc`
+- `rust/qomm-transport`
+- `rust/qomm-audit`
+- `rust/qomm-avalanche-vm`
 - `rust/qomm-harness`
 
 Measurement binaries carried by `qomm-harness`:
 
 - `build_defmi_doc`
-- `ed_reference`
+- `build_settlement_contexts`
+- `issue_external_kyb`
+- `qomm_hsm_signer`
 - `run_avalanche_l1_acceptance`
 - `run_deccp`
 - `run_defmi`
-- `run_evm`
+- `run_pretrade_reservations`
 - `run_reconcile`
+- `settle_finalized_batch`
 - `run_viewing`
 
 `artifacts/` holds the measurements the numbers in the paper are taken from, as
@@ -115,12 +123,7 @@ to real machines is not published.
 - [`REGULATION.md`](REGULATION.md) --- which accounts and which statutes a live deployment touches, in Japan and in four other jurisdictions
 - [`POSITION.md`](POSITION.md) --- what is new here and what is not, stated line by line against the nearest prior work
 - [`REVIEW.md`](REVIEW.md) --- what two rounds of review found, including what was checked and found sound
-
-## Depends on
-
-- [qomm](https://github.com/shukob/qomm)
-
-Cargo resolves these repositories from the checked-in lock file.
+- [`ZKPI_WIRE.md`](ZKPI_WIRE.md) --- the bytes an instruction travels as, the vectors to check an implementation against, and where it can run
 
 ## Running it
 

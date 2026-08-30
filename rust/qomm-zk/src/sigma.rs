@@ -9,7 +9,6 @@
 //!
 //! Everything verifies in batch. A sigma check has the shape `P^z Q^w == T C^c`,
 //! and a random linear combination collapses any number of them into one
-//! multiscalar multiplication. That is the operation the Python version could
 //! not make pay: a point addition there costs a quarter of a scalar
 //! multiplication because of the call overhead, against 1/256 here, so batching
 //! made things slower rather than faster.

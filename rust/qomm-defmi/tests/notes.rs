@@ -93,6 +93,83 @@ fn a_spend_verifies_and_the_payee_finds_its_note() {
 }
 
 #[test]
+fn a_hidden_input_can_be_bound_to_one_reservation_lock_class() {
+    let mut rng = OsRng;
+    let p = pool(&mut rng);
+    let (index, opening) = p.ledger.scan(&p.alice, &p.asset_key)[0];
+    let ring = ring_for(p.ledger.notes.len(), index, RING, 41).unwrap();
+    let position = ring
+        .iter()
+        .position(|candidate| *candidate == index)
+        .unwrap();
+    let mut eligibility = vec![false; ring.len()];
+    eligibility[position] = true;
+    let (tag, gamma) = p.registry.blind(3, false, &mut rng).unwrap();
+    let spend = p
+        .ledger
+        .build_spend_constrained(
+            &ring,
+            index,
+            &opening,
+            &tag.point,
+            &gamma,
+            &[(p.bob.address, 400), (p.alice.address, opening.value - 400)],
+            &eligibility,
+            b"locked-hold",
+            &mut rng,
+        )
+        .unwrap();
+    assert_eq!(
+        p.ledger.check_spend_constrained(
+            &ring,
+            &spend.proof,
+            &eligibility,
+            b"locked-hold",
+            &mut rng,
+        ),
+        Ok(())
+    );
+
+    let wrong_class = vec![true; ring.len()];
+    assert_eq!(
+        p.ledger.check_spend_constrained(
+            &ring,
+            &spend.proof,
+            &wrong_class,
+            b"locked-hold",
+            &mut rng,
+        ),
+        Err("no note in the ring carries this serial")
+    );
+}
+
+#[test]
+fn a_prover_cannot_select_an_ineligible_decoy() {
+    let mut rng = OsRng;
+    let p = pool(&mut rng);
+    let (index, opening) = p.ledger.scan(&p.alice, &p.asset_key)[0];
+    let ring = ring_for(p.ledger.notes.len(), index, RING, 42).unwrap();
+    let eligibility = vec![false; ring.len()];
+    let (tag, gamma) = p.registry.blind(3, false, &mut rng).unwrap();
+    assert_eq!(
+        p.ledger
+            .build_spend_constrained(
+                &ring,
+                index,
+                &opening,
+                &tag.point,
+                &gamma,
+                &[(p.bob.address, opening.value)],
+                &eligibility,
+                b"wrong-lock",
+                &mut rng,
+            )
+            .err(),
+        Some("the selected note does not satisfy the spend constraint")
+    );
+}
+
+#[test]
 fn two_payments_to_one_address_are_unlinkable() {
     let mut rng = OsRng;
     let mut p = pool(&mut rng);

@@ -101,7 +101,6 @@ pub struct Reconciliation {
 ///
 /// Added rather than multiscalar-multiplied. Every coefficient here is one, and
 /// asking a multiscalar routine to multiply by one is asking it for a full
-/// scalar multiplication --- which is what the Python version was doing, at
 /// four times the cost, until it was measured.
 pub fn aggregate(commitments: &[RistrettoPoint]) -> RistrettoPoint {
     commitments

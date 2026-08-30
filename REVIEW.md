@@ -329,7 +329,7 @@ capital is called.
 
 **Two documents described behaviour the code does not have.** DEFMI.md said
 admission, pledge, overdraft and payment are one event through
-`admit_with_credit`, with rollback; that function is in the Python
+`admit_with_credit`, with rollback; that function existed only in the deleted
 implementation and not in the Rust port, where `grant` and `admit` are separate
 calls and a grant that succeeds before a failing admit leaves the credit
 standing. And it said a house could novate trades nobody made and produce a
@@ -652,7 +652,7 @@ Section 8 priced the missing piece. This is the piece.
 `prove_bit` is a Chaum--Pedersen disjunction. The prover proves the real branch
 and simulates the other, and it picks which is which *from the bit*:
 
-```python
+```text
 real, fake = bit, 1 - bit
 t0, t1 = (t_real, t_fake) if bit == 0 else (t_fake, t_real)
 ```
@@ -901,7 +901,7 @@ Three demonstrations, all run:
 |---|---|---|
 | replace a maker's `cost` commitment outright | accepted | refused |
 | delete every minimality proof | accepted | refused |
-| winner index `-3`, which Python reads backwards | accepted | refused |
+| winner index `-3`, which retired implementation reads backwards | accepted | refused |
 | winner index `99` | `IndexError` | refused |
 | a proof about no makers | accepted | refused |
 | **a buy proof republished as a sell** | **accepted** | refused |
@@ -1235,7 +1235,7 @@ or a different variable is found, which needs measurement that does not exist.
 one on-chain instruction per trade "at 18,197,763 to 65,694,220 gas, so anyone
 with a node counts them exactly".
 
-`evm_settlement.json` labels those figures itself: **"an equivalent count, from
+`retired_chain_comparison.json` labels those figures itself: **"an equivalent count, from
 settle time over one scalar multiplication on the same machine. A floor."** They
 are a projection from off-chain timing, not a measurement of a transaction. The
 paper says elsewhere that the verifier is not deployable on chain
@@ -1367,14 +1367,14 @@ be claimed from a measurement that stands.
 
 ---
 
-## 16. The Rust port collapsed entities where the Python did not
+## 16. The Rust port collapsed entities where the retired implementation did not
 
 `lab::build` maps `tape_entities = None` to one entity per observed address and
-`Some(n)` to a round-robin collapse into `n`. Python's `lab.build` defaulted the
+`Some(n)` to a round-robin collapse into `n`. retired implementation's `lab.build` defaulted the
 argument to `None`. The Rust port defaulted it to `Some(24)`.
 
 That is not a cosmetic divergence. It means every Rust tape run collapsed the
-addresses a tape shows into twenty-four synthetic firms while the Python it was
+addresses a tape shows into twenty-four synthetic firms while the retired implementation it was
 ported from kept them apart, so the two languages were not measuring the same
 population. The port's own test asserted the collapsed count and recorded, in
 its comment, that whether the default should change "moves every tape
@@ -1431,17 +1431,17 @@ hold an `Option<usize>`.
 
 The test that asserted the collapse now asserts the opposite, and it is
 load-bearing: restoring `Some(24)` makes it fail at `tapes.rs:155`. Against the
-Python with identical arguments, `rho_sweep` agrees on 280 of 280 non-timing
+retired implementation with identical arguments, `rho_sweep` agrees on 280 of 280 non-timing
 values and `dp_effect` on 122 of 122, both reporting 411 entities and
 `one entity per observed address`.
 
 ### The same divergence again, in a script whose acceptance had passed
 
 `run_block_range_query.rs:107` did not read the default at all --- it passed
-`Entities::RoundRobin(24)` as a literal, where the Python calls
+`Entities::RoundRobin(24)` as a literal, where the retired implementation calls
 `lab.build(tape=...)` and takes whatever the library default is. That agreed
-with the Python only for as long as the Python's default was also twenty-four,
-and this script had been through a Python-against-Rust acceptance comparison
+with the retired implementation only for as long as the retired implementation's default was also twenty-four,
+and this script had been through a retired implementation-against-Rust acceptance comparison
 that reported no differences. The comparison was run while both were
 twenty-four, so it could not have found this.
 
@@ -1456,7 +1456,7 @@ default, and an acceptance run cannot distinguish them while the two coincide.
 
 ---
 
-## 17. Python stopped adding floats the obvious way, and the port had not noticed
+## 17. retired implementation stopped adding floats the obvious way, and the port had not noticed
 
 Comparing `run_sim_matrix` across the two languages left 23 values disagreeing.
 All of them were correlations, and all of them disagreed in the sixteenth
@@ -1470,10 +1470,10 @@ There are two causes, and they are different from each other.
 and `fsum` is exactly rounded --- Shewchuk's algorithm, every partial kept. The
 port computed `a.iter().sum::<f64>() / n`.
 
-**The builtin `sum` is not a naive sum either, and has not been since CPython
-3.12.** It carries a Neumaier compensation term, so `sum([0.1] * 10)` is exactly
+**The deleted implementation's runtime has not used a naive builtin `sum`
+since version 3.12.** It carries a Neumaier compensation term, so `sum([0.1] * 10)` is exactly
 `1.0` where a left-to-right fold gives `0.9999999999999999`. Every `sum(...)`
-over floats in the Python being ported therefore has compensated semantics.
+over floats in the retired implementation being ported therefore has compensated semantics.
 
 The two are not interchangeable. Routing everything through `fsum` because it is
 the more accurate of the two would be a different function from the one being
@@ -1482,13 +1482,13 @@ way. `qomm_sim::fsum` now carries both, `fsum` and `nsum`, pinned by a test
 against values typed in from a real interpreter rather than derived in Rust.
 
 `pearson` needed both at once: its two means are `fmean`, and its three
-sums-of-products are the builtin. With each routed to the one the Python
+sums-of-products are the builtin. With each routed to the one the retired implementation
 actually uses, the same comparison gives 379 non-timing values identical and 0
 different.
 
 ### Where else it reached
 
-The same substitution was applied at every site whose Python counterpart sums
+The same substitution was applied at every site whose retired implementation counterpart sums
 floats: `engine.rs` markout means, `report.rs`'s least-squares fit and its
 $R^2$, `derive_snr.rs`'s weighted mean size and its drawn medians,
 `run_deccp.rs`'s per-order verification mean, and `run_disclosure_ceiling.rs`'s
@@ -1496,7 +1496,7 @@ other-maker P&L. `run_block_range_query.rs` sums integer errors, which is exact
 either way, and was left alone.
 
 This is the third divergence today whose common shape is a Rust expression that
-*looks* like the Python next to it. A hardcoded `24` that equalled a default, a
+*looks* like the retired implementation next to it. A hardcoded `24` that equalled a default, a
 `RoundRobin` that should have read one, and a `.sum()` that is spelled the same
 as `sum()` and is not the same function.
 
@@ -1536,7 +1536,7 @@ like a service fault.
 **What the Rust does instead.** It writes the same bytes --- the array of pairs
 is the format that was already on disk --- and keeps the shape as a JSON value
 compared by equality rather than used as a hash key. So an approved file from
-either side loads. That is a deliberate difference from the Python and not a
+either side loads. That is a deliberate difference from the retired implementation and not a
 port of it, which is the reason to say so here.
 
 `an_approved_file_loads_back_the_shape_it_was_written_from` pins both halves: the
@@ -1548,14 +1548,14 @@ makes it fail on the second assertion, which is the drift it exists to catch.
 
 ## 19. What the sandbox had been hiding
 
-Ten of the ported measurement scripts had never been compared against the Python
+Ten of the ported measurement scripts had never been compared against the retired implementation
 they replace. Every one of them drives MP-SPDZ, the agent doing the porting ran
 sandboxed, and a sandboxed process cannot `bind(2)` the port block a party needs.
 So the report said "could not run end to end", which was true, and the ports were
 carried on the strength of the code reading correctly.
 
 They were run on a machine with the engine built and no sandbox. Eight of the ten
-could be run there; `run_placement` needs a second host and `run_evm` needs an
+could be run there; `run_placement` needs a second host and the retired chain comparison needs an
 Ethereum archive node.
 
 | script | non-timing identical | different |
@@ -1587,8 +1587,8 @@ MB for party 0 and 1.43587 MB globally, on the same protocol, party count,
 threshold, bit length and field width. The same program ran at the same cost, and
 MPC cost is data-independent, so the difference is in what was fed in.
 `1152921504606846976` is $2^{60}$, the value both sides say they expect; the
-Python reveals it and the Rust reveals a larger number with the companion flag
-set. On the Rust's inputs some maker is eligible where on the Python's none is.
+retired implementation reveals it and the Rust reveals a larger number with the companion flag
+set. On the Rust's inputs some maker is eligible where on the retired implementation's none is.
 
 `run_three_times` disagrees on `audited_rfs_met`, which is also a predicate over
 maker eligibility. Whether that is the same cause is being established rather
@@ -1635,7 +1635,7 @@ hypothesis rather than leaving it merely unlikely.
 **`run_three_times` was the build profile, and then the threshold.**
 `audited_rfs_met` is not an eligibility predicate at all; it is
 `total.mean <= 1000 ms`. The comparison was running the Rust out of
-`target/debug` while the Python calls optimised native libraries, so the same
+`target/debug` while the retired implementation calls optimised native libraries, so the same
 work took 9,319 ms against 977 ms and the flag turned over on that alone.
 
 The first fix offered was `[profile.dev] opt-level = 3` in the workspace
@@ -1648,7 +1648,7 @@ make that mistake is told rather than left to infer it from a number.
 
 The predicate itself is excluded from the comparison, for a reason worth stating
 precisely: it is a threshold on a duration and inherits the duration's
-nondeterminism. On a loaded machine the *Python alone* was observed at 976.9 ms
+nondeterminism. On a loaded machine the *retired implementation alone* was observed at 976.9 ms
 and 1007.0 ms, on opposite sides of its own threshold. A boolean like that cannot
 be compared between two runs whatever the language, and skipping it as a
 derived duration is honest where skipping it as "a difference we could not
@@ -1669,10 +1669,10 @@ explain" would not be.
 
 `run_identity` needed one more exclusion, and it is worth the paragraph because
 the reason had to be established rather than named. Its `honest/openings` are
-blinded, so they are fresh on every run: two consecutive runs of the *Python*
+blinded, so they are fresh on every run: two consecutive runs of the *retired implementation*
 give different numbers for them while agreeing on the challenge that produced
 them. A value that a single implementation disagrees with itself about cannot be
-evidence about a port, in either direction. Running the Python twice is what
+evidence about a port, in either direction. Running the retired implementation twice is what
 turned that from a guess into a fact, and it is cheaper than arguing about it.
 
 The three exclusions the comparison now makes are therefore of three different
@@ -1685,12 +1685,12 @@ threshold on a duration, and a value that is freshly randomised per run.
 
 Closing the aggregate proving API turned up something the API was not the point
 of. The Rust refuses to prove a quote when `n_slots` is smaller than the number
-of makers; the Python never checked; and
+of makers; the retired implementation never checked; and
 the predecessor of `rust/qomm-harness/src/bin/run_threshold_assembly.rs` set `n_slots=8` whatever `--makers`
 says, while the Makefile asks for `--makers 2 4 8 16`.
 
 So the checked-in `threshold_assembly.json` has a sixteen-maker row measured in
-eight slots, and the paper cites it: `check_numbers.py:187` pins
+eight slots, and the paper cites it: `paper_check:187` pins
 `quote[16]["verify_over_local"] == 1.18` and `main.tex:975` writes it out as
 "to 16 makers --- and 1.18x to verify".
 
@@ -1714,7 +1714,7 @@ makers at two different costs rank as one key, so a proof that the opened key is
 the minimum no longer says whose it is.
 
 Nothing catches this at run time, on either side. The prover and the verifier
-compute the same wrapped packing, so the proof verifies and the Python's
+compute the same wrapped packing, so the proof verifies and the retired implementation's
 `assert ok, why` passes. It is self-consistent and it does not mean what it says.
 
 `slot_collision.rs` pins both halves: the two derived key commitments are equal
@@ -1738,13 +1738,13 @@ Re-running `run_threshold_assembly` to re-pin the numbers the slot change moves
 turned up something larger. The paper says a node assembling a threshold proof
 pays about what a local prover pays:
 
-> `check_numbers.py:184` pins `per_node_over_local` at **1.06** across every
+> `paper_check:184` pins `per_node_over_local` at **1.06** across every
 > maker count, and `:175` at **1.09** for the width-26 range proof.
 
 Neither implementation produces those numbers now. On one host, at one load,
 with the same widths, the same maker counts and the same slot count:
 
-| | checked-in artifact | Python today | Rust today |
+| | checked-in artifact | retired implementation today | Rust today |
 |---|---:|---:|---:|
 | width 26, `per_node_over_local` | 1.0942 | **14.79** | **14.87** |
 | width 26, assembled bytes | 5,088 | 5,088 | 5,088 |
@@ -1786,7 +1786,7 @@ honest sentence is that a node pays tens of milliseconds and roughly fifteen
 times a solo prover for a proof no single node could have made, not that it pays
 about the same.
 
-`verify_over_local` moves too, and for a different reason: the Python gives 1.18
+`verify_over_local` moves too, and for a different reason: the retired implementation gives 1.18
 and the Rust 2.53 on the same input. Both are ratios *within* one language, and
 the two languages have different relative constants --- the Rust is faster at
 both sides and less lopsidedly so on the assembled one. With Rust as the record
@@ -1825,7 +1825,7 @@ paragraph's `1.06` and `1.18` were exactly that for as long as it took to notice
 
 ---
 
-## 22. "Identical to the Python" was always identical to *a build* of it
+## 22. "Identical to the retired implementation" was always identical to *a build* of it
 
 `run_dp_audit` compared clean on the laptop and did not on the measurement host.
 On host-a the two implementations disagreed on 81 values out of 3,231.
@@ -1844,22 +1844,22 @@ bisection agree bit for bit. The same eight `beta_ppf` inputs give:
 
 | | agreeing | differing |
 |---|---:|---:|
-| laptop, macOS arm64, CPython 3.13.5 | 8 | 0 |
-| host-a, Linux x86_64, CPython 3.12.3 | 5 | **3** |
+| laptop, macOS arm64, deleted runtime 3.13.5 | 8 | 0 |
+| host-a, Linux x86_64, deleted runtime 3.12.3 | 5 | **3** |
 
-CPython's own `lgamma` is *not* the variable: it returns identical bits on both
+The deleted runtime's own `lgamma` is *not* the variable: it returns identical bits on both
 machines for the same inputs. What changes is the Rust. `qomm-sim/src/audit.rs`
 computes the Lanczos tail with `mul_add`, and its comment says why:
 
 ```
-// CPython's C build contracts this multiply-add; spelling it explicitly
+// the deleted runtime contracts this multiply-add; spelling it explicitly
 // preserves the installed interpreter's last bit in release and debug.
 ```
 
 That is true of the interpreter it was written against and not of the one on the
 measurement host. `mul_add` rounds once where a separate multiply and add round
 twice, so the Rust is if anything the more accurate of the two --- the residue is
-CPython's second rounding, not an error here.
+the deleted runtime's second rounding, not an error here.
 
 ### The part that generalises
 
@@ -1869,8 +1869,8 @@ had to be written down. A port verified against one build is verified against
 one build. Nothing was wrong with the checks; what was missing was the sentence
 saying what they were relative to.
 
-It also has an expiry date. Matching CPython is a requirement only while there is
-a CPython to match: once it is deleted the constraint is accuracy and
+It also has an expiry date. Matching the deleted implementation is a requirement
+only while it remains available for migration checks; afterwards the constraint is accuracy and
 determinism, and `mul_add` is then simply the better implementation with no
 counter-argument left.
 
@@ -1892,10 +1892,10 @@ not on it, and they are not marginal ones:
 
 | never scanned | files |
 |---|---:|
-| `.go` --- the whole Avalanche VM | 23 |
+| retired VM source files | 23 |
 | `.data` --- binary test fixtures | 14 |
 | `.lock` | 6 |
-| `.sol` --- the Solidity contracts | 4 |
+| retired Solidity contracts | 4 |
 | `.law`, `.rule` --- the DSL sources | 6 |
 | `.html`, `.css`, `.js`, `.cpp`, `.service`, `.mod`, `.sum` | 8 |
 
@@ -1914,11 +1914,11 @@ what the fourteen `.data` fixtures are. The demo is a named exception,
 `JAPANESE_BY_DESIGN`, so that it is a decision somebody took rather than a hole
 in a list.
 
-Watched failing before being believed: a Japanese comment appended to
-`avalanche/defmivm/factory.go` --- a file the old guard never opened --- gives
+Watched failing before being believed: a temporary Japanese comment appended to
+a previously unscanned VM source gave
 
 ```
-PROBLEM defmi/avalanche/defmivm/factory.go: Japanese on line 17
+PROBLEM defmi/VM source: Japanese on line 17
 ```
 
 from both implementations, both exiting 1. The probe was then removed and the
@@ -1957,7 +1957,7 @@ always wins. Correcting that made it flake instead of fail.
 Not the build profile: `cargo test --release` failed three runs out of five.
 
 Not the transport: the release *binary*, given exactly the same options,
-delivered 144 of 144 frames on eight consecutive runs, and the Python passed
+delivered 144 of 144 frames on eight consecutive runs, and the retired implementation passed
 five out of five on the same host.
 
 ### What it was
@@ -1989,21 +1989,23 @@ laptop is fast enough to hide it, which is the worst place for it to be hidden.
 
 ---
 
-## 26. The Python is gone
+## 26. The project-owned implementation is Rust-only
 
-`find . -name '*.py'` under this directory returns nothing --- the boundary is
-this directory, and the one Python outside it that is ours is named below. What
-replaced it was checked before it replaced anything: every one of the 62
+The forbidden-source scan under this directory finds no project-owned product,
+experiment, research-harness or Avalanche VM implementation outside Rust. The
+sole language exception is the official MP-SPDZ toolchain described below; it is
+an external dependency, not QOMM source. Before deletion, every one of the 62
 measurement scripts, the three under `zk/` and `evm/`, and the 640 test
-assertions were compared against the Python value by value while both existed.
-The workspace is 759 `#[test]`, passing on this laptop and on the measurement
-host.
+assertions were compared against the retired implementation value by value while both existed.
+At the migration checkpoint the workspace had 759 passing `#[test]` cases on
+the laptop and measurement host; later acceptance counts are recorded in
+`STATUS.md` rather than frozen here.
 
 The three published repositories were rebuilt rather than trimmed. Each now
 ships `qomm-harness` carrying only the binaries that repository names, with a
 generated manifest, because the alternative --- shipping the whole harness
 everywhere --- would put the DeFMI measurements in `zkpi`, and listing the
-runners one by one is exactly what the Python did.
+runners one by one is exactly what the retired implementation did.
 
 | repository | files before | after | tests, run from inside the exported tree |
 |---|---:|---:|---:|
@@ -2012,20 +2014,20 @@ runners one by one is exactly what the Python did.
 | qomm | 368 | 330 | 479 |
 
 Verified independently of the exporter's own report: the three trees were
-exported, entered, and `cargo test --workspace` run inside each. No `.py` in any
+exported, entered, and `cargo test --workspace` run inside each. No retired source in any
 of them, none of the eight real machine names, and Japanese in exactly one file
 --- `qomm_demo/static/demo.js`, the demo's declared bilingual locale.
 
 ### Oracles that could not survive their subject
 
-Five tests took their expected values by running the Python. With the Python
+Five tests took their expected values by running the retired implementation. With the retired implementation
 deleted those are not weaker tests; they are not tests, because an oracle that
 has been deleted cannot disagree with anything. Each was recovered from the last
 commit that carried it and pinned:
 
 | where | what was pinned |
 |---|---|
-| `qomm-harness/src/measure.rs` | the whole public contract of `scripts/measure.py` |
+| `qomm-harness/src/measure.rs` | the whole public contract of the locked measurement contract |
 | `qomm-measure/src/hosts.rs` | the retired reader's contract |
 | `qomm-mpc/tests/program_parity.rs` | six generated programs, by length and SHA-256 |
 | `qomm-mpc/tests/all_files_parity.rs` | 27 cases: outputs, status, stdout, stderr, file bytes |
@@ -2036,25 +2038,20 @@ the recorded JSON makes it fail. The rest were found by asking for others of the
 same shape, which is the only way to find them: they do not fail, they stop
 meaning anything.
 
-### What still runs Python
+### External toolchain exception
 
-`MP_SPDZ_ROOT/compile.py`. MP-SPDZ's compiler is Python and belongs to MP-SPDZ.
-Any claim that this repository is Rust is about this repository's code; the
-pinned dependency still brings its own toolchain, and a measurement that compiles
-a circuit still invokes it.
+`MP_SPDZ_ROOT/compile.py` is MP-SPDZ's official compiler entry point. QOMM's Rust
+code emits the deterministic circuit source, invokes this pinned upstream
+compiler to produce MP-SPDZ bytecode and schedules, then calls the C++ libSPDZ
+engine from Rust through the narrow C ABI shim. No project-owned MPC or
+experiment implementation is retained in the compiler's language.
 
-The two notebooks are held. `evcxr` is a Rust kernel for Jupyter, so they can
-stop being Python without stopping being notebooks, which deleting them would
-not achieve.
-
-The paper's build chain is Python and stays Python: `check_numbers.py`,
-`make_appendix.py` and `make_revtex.py` under `papers/qomm/`, 1,909 lines that
-generate a LaTeX appendix from the artifacts, rewrite the body into a
-two-column layout, and check 140 numbers in the documents against the artifacts
-they cite. None of the three produces a measured value; they read the artifacts
-this repository writes and emit or verify a document. The claim worth making is
-that the numbers are Rust-measured, and that claim does not weaken because the
-checker that reads them is not.
+The earlier notebooks were removed; no project notebook remains. The paper
+build chain is also Rust: `paper_check`, `paper_appendix` and `paper_revtex`
+generate the LaTeX appendix, rewrite the body into a two-column layout, and now
+check 223 artifact-backed values and contextual claims. These tools do not
+produce measured values; they read the Rust-produced artifacts and emit or
+verify documents.
 
 ---
 
@@ -2063,7 +2060,7 @@ checker that reads them is not.
 The re-measurement wrote the measurement host's own node name --- not its
 label --- into four `clob_baseline_clean_d*.json` and into the manifest. The rule against that is
 old and it is written down: `hosts::this_host()` exists to apply it, and sixteen
-harnesses call it. The seventeenth, `run_clob_baseline`, carried its own four
+harnesses call it. The seventeenth, the removed baseline runner, carried its own four
 lines:
 
 ```rust
@@ -2109,7 +2106,7 @@ helper is only enforced where somebody chose to call it.
 The first draft of this section named the machine. `REVIEW.md` is exported to
 all three repositories, so that draft shipped the string the four artifacts had
 just stopped shipping --- and the guard said nothing, because the set it scanned
-was a list of thirteen top-level directories. Seven of those were the Python
+was a list of thirteen top-level directories. Seven of those were the retired implementation
 packages and no longer exist. None of them was the repository root, where every
 `.md` the exporter publishes lives.
 
@@ -2130,7 +2127,7 @@ code writes on that machine --- so the edit restores the value that should have
 been recorded rather than substituting a plausible one. The remaining 130
 artifacts already said `host-a`, which is what made the four visible. The
 manifest was regenerated and `manifest --check` reports 134 artifacts matching;
-`check_numbers.py` stays at 140/140, `host` being nothing any pin reads.
+`paper_check` stays at 140/140, `host` being nothing any pin reads.
 
 ---
 
@@ -2171,3 +2168,329 @@ line could have said.
 
 Recorded rather than closed. Two runs that pass do not explain one that did
 not.
+
+### A mechanism that existed, was tested, and had never run
+
+`DpMechanism::mp_spdz_source` was written when the audit layer was written. One
+unit test asserts on the *string* it returns; a second checks the error it
+raises when a budget is exhausted, without compiling anything either. Nothing in
+the repository ever compiled that string, so the noise that reached a release
+came from `discrete_laplace()` drawing on one `PyRandom` in one process: the
+mechanism was distributed on paper and central in fact. The paper's own DP
+appendix named this its largest gap and the position register carried it as an
+open item, so it was not hidden --- but a test that reads generated source
+cannot tell an unreachable mechanism from a working one, and that is the shape
+worth recording. It is the same shape as the export guard that only checked
+thirteen directories: the check was real and it was pointed somewhere else.
+
+Compiled and run under `malicious-shamir-party.x` at `n=7`, `T=2`:
+**28 rounds and 63.9 MB per release** against **2 rounds and 0.0022 MB** for the
+same release with no mechanism. The noise is 92.9% of the rounds and above
+99.9% of the bytes.
+
+Predictions were written to `artifacts/distributed_dp_prediction.json` before
+the program was compiled for the first time. Four held, one was confirmed by a
+failure, and **one was falsified**:
+
+- *Rounds flat in support* --- held as stated but the framing was too strong.
+  28 at support 8 and 28 at support 16, exactly flat across a doubling, then a
+  step to 43 at 32. The compiler batches independent comparisons until it runs
+  out of width.
+- *Bytes linear in support* --- held. Ratios 1.992 and 1.996 per doubling, and
+  the slope extrapolates to 0.26 MB at zero support, so the comparisons are the
+  traffic and the 64 shared bits are under one percent of it. This is also what
+  retires the risk the prediction named: had `get_random_bit()` dominated,
+  traffic would have been flat.
+- *The noise is the ideal one* --- **the pre-registered test rejected.** The
+  registered falsifier was "a chi-square against the ideal that rejects at
+  n=200". It rejected twice: 11.56 on 5 df (p=0.041) and 18.24 (p=0.0027). An
+  earlier revision of this file recorded it as held on the strength of a
+  re-run at 2,000 draws, which is not what the pre-registration said. Both
+  halves are the record: **the test rejected at the sample size it named, and
+  at ten times that sample size it does not.** See the next section.
+- *The noise dominates a plain release* --- held, above 90% of rounds in every
+  arm.
+- *Dropping malicious security does not buy rounds* --- **falsified in both
+  halves.** Rounds fell 46% to 58% and traffic fell about sixfold, against a
+  predicted fall of under a third and about half. The model behind it, that
+  malicious security adds triple sacrifice as work batched at the end rather
+  than circuit depth, is wrong for this circuit: the comparison consumes
+  generated random bits whose malicious-secure production is verified inline.
+  The corollary drawn in conversation --- that assuming no collusion is not a
+  lever on latency --- does not survive either. It is a lever worth about 2x.
+  What survives is the weaker claim: even semi-honest costs 15 rounds and 5.4
+  to 21.2 MB against 3 rounds and 0.0012 MB, so no threat model makes this
+  construction cheap.
+- *The 64-bit uniform bounds the support* --- confirmed by a refusal. The first
+  full run stopped before measuring anything: at epsilon 1 a support of 64 has
+  cells whose probability falls below 2^-64, and the quantised CDF cannot
+  advance through them. The sweep was relaunched at 8/16/32.
+
+### 200 draws cannot tell a fault from a fluke
+
+The distributional check at support 16 came out at chi-square 11.56 on 5 df on
+one run (p=0.041) and 18.24 on the next (p=0.0027). Two runs of the same cell
+both high is the point at which a fit stops being a formality.
+
+Looking at the cells rather than the statistic: the deviation was one cell,
+`k=+2` at 26 observed against 12.5 expected, z=+3.8, with everything else inside
+±1.8. Against that, the two runs' sample means pointed in *opposite*
+directions, -0.140 then +0.270, which is not what a biased sampler does. The
+harness was checked first for a misconfiguration --- `mp_spdz_source` takes a
+budget, not an epsilon, as its second argument, and the thresholds come from the
+mechanism's own `epsilon_micros`, so the program and the fit agreed.
+
+Both numbers are reported. The pre-registered falsifier named n=200 and the
+test rejected there, so the prediction is recorded as falsified; an earlier
+revision of this file wrote "rather than report either number", which was the
+wrong instinct and is corrected here. The cell was *also* re-run at **2,000
+draws**: chi-square 9.66 on 11 df, p about 0.56, sample mean -0.0305 against an
+ideal standard deviation of 1.357, every cell inside ±1.5, and `k=+2` at
+z=+0.80. The paper carries both halves --- the test rejected at the sample size
+it named and does not at ten times it --- because dropping the first half would
+make the pre-registration decorative.
+
+The general point is worth keeping separate from this instance. The sweep's 200
+draws per row were chosen to price the *cost*, which is deterministic and
+reproduced to the byte across runs. The same rows were then read as a
+distributional test, which they do not have the power to be. A sample size that
+settles one question is not thereby a sample size for another question asked of
+the same run.
+
+### What the in-MPC construction is not
+
+It is the conservative construction, not the cheap one. The discrete Laplace is
+exactly infinitely divisible: the sum of `m` differences of Polya variates with
+shape `1/m` has the generating function of one geometric difference, so each
+party could draw its own share locally and the engine would do nothing beyond
+the plain sum --- 2 rounds instead of 28, and no traffic at all. Against `T`
+colluding parties who know their own shares the shape has to be `1/(n-T)`, so
+the honest `n-T` sum to the target on their own. The sum of *all* `n` shares
+then has shape `n/(n-T)` and is **not** exactly discrete Laplace: at n=7, T=2 it
+carries **1.4x the target variance**, which is 1.18x the standard deviation. An
+earlier revision of this section wrote that the all-parties sum was exact; it is
+the honest subset that is exact, and the difference is the whole point of the
+`1/(n-T)`.
+
+What that construction gives up is that a corrupt party can draw from the wrong
+distribution and skew the published value. Privacy survives --- the honest
+`n-T` carry it --- but utility does not. The in-MPC construction makes it
+impossible instead. The argument that the cheaper one is acceptable is that the
+same party can already lie about its own quote, so the trust surface does not
+widen; that argument is written down in `POSITION.md` rather than acted on. It
+is unimplemented and unmeasured, and it is named here so the choice reads as a
+choice.
+
+### The measurement was right and the reading of it was wrong
+
+A `codex` audit of the two commits above found the cost figures sound --- the
+comparison bit length is `program.bit_length + 1`, 129 bits against the 65 a
+signed 64-bit difference needs, so the circuit is correct by construction and
+not by luck; the CDF inversion and its endpoints are right; every derived
+figure in the documents reproduces. What it found wrong was everything the
+measurement was said to *mean*.
+
+**The release path never changed.** `disclosure.rs:525-528` and
+`queries.rs:109,262` still call `discrete_laplace` with a `PyRandom`. The MPC
+mechanism is reached only from the harness and the audit tests. The paper said
+"the mechanism runs inside the engine" and POSITION.md marked the item closed;
+both were written from the fact that a program had been compiled and run, not
+from a call site. **A protocol that has been priced is not a protocol that is
+running,** and nothing in the run distinguishes the two --- which is why it took
+an outside reading to catch it. This is the same shape as the mechanism that was
+tested by reading its own source: the artifact was real and it was evidence for
+a narrower claim than the one made from it.
+
+**The total-variation bound was the wrong one of two.** The appendix claimed the
+released law differs from the ideal two-sided geometric by at most
+`(2s+1)/2^64`, below 1e-17. That is the *quantisation* term. The protocol also
+*truncates* at the support and folds the tails onto the endpoints, which is
+1.8e-4 from the ideal at support 8 and 6.1e-8 at support 16 --- at support 8,
+fourteen orders of magnitude above the term quoted. Two distances were collapsed
+into one and the smaller was published.
+
+**Truncation costs the form of the guarantee, not just a distance.** Adjacent
+inputs give releases whose supports are offset by the sensitivity, so at the
+edges one assigns positive probability where the other assigns zero. The ratio
+is infinite and the mechanism is (epsilon, delta), not pure epsilon. The
+appendix proves pure epsilon. Nothing said so.
+
+**The floating-point gap was already closed, and the claim ran backwards.**
+`discrete_laplace` is `geometric_exact() - geometric_exact()`, integer
+comparisons over a rationalised rate; the float inverse-CDF version survives
+only as `discrete_laplace_approximate`, kept so old results reproduce. The
+appendix's text about a floating-point sampler was stale before this work
+touched it. The paper then claimed the in-MPC protocol closed that gap --- while
+the protocol is in fact *less* faithful than the sampler in use, because it
+truncates and the exact one does not.
+
+Two smaller ones: "two unit tests, both of which assert on the string" is one
+test, the other checks a budget error; and "over a 128-bit field" is the
+`compile.py -F 128` integer bound, while the comparisons force a 170-bit
+schedule requirement that the stock virtual machine rounds up to a 192-bit
+field.
+
+The lesson worth keeping is narrower than "check your claims". Every one of
+these defects is a claim about *meaning* attached to a number that was itself
+correct, and `paper_check` passed 167/167 through all of them, because it
+checks that documents agree with artifacts and these documents did. A checker
+that verifies figures cannot verify what a figure is evidence for. The
+contextual `claim()` assertions in that file are the part that could have caught
+this, and they were written to match the prose rather than to constrain it.
+
+### The re-audit found four more, and two were in the code
+
+The corrections above were re-audited before publishing. Four findings survived,
+which is the argument for auditing a fix rather than only the thing it fixes.
+
+**`rounding_delta()` returned a bound that does not hold.** It returned
+`(2s+1)/2^64`, the cost of flooring the CDF endpoints onto a 2^-64 grid. But
+`thresholds()` accumulates that CDF in `f64`, whose resolution near one is
+2^-53, so the endpoints inherit an error four thousand times coarser than the
+grid. Measured in exact rationals the distance is 2.4e-16 to 6.7e-16 over
+supports 8 to 32 --- about 250x the value returned. It now returns
+`((2s+1)^2 + 1)/2^53`, derived from the accumulation, and
+`rounding_delta_is_a_bound_and_the_old_one_was_not` checks both halves of its
+name: that the new bound holds and that the old one would have failed. The old
+value had a test that *used* it inside a statement and compared statements,
+which is why nothing noticed.
+
+**delta was named as the folded tail, and the endpoint cell it was corrected to
+was also wrong.** See the third pass below: both are closed forms and neither is
+the delta.
+
+**The truncation does not dominate the rounding uniformly**, and the corrected
+text had implied it did. Truncation decays as `alpha^s` while the rounding grows
+with the cell count. The figures written at this point --- nine orders at 8,
+eight at 16, fourteenfold at 32 --- were themselves wrong at both ends; the
+first is twelve and the last is tenfold. See the third pass.
+
+**`MANIFEST.json` was stale** against the prediction file, which had been
+rewritten after the manifest was last generated. `make check` passed anyway,
+because it checks documents against artifacts and not artifacts against their
+own digests.
+
+Two smaller ones: the per-node bandwidth was quoted from party 0, which sends
+more than the average of the seven, and now says so; and `discrete_laplace` is
+unbounded except that a rate at or above 64 returns zero deterministically,
+which no configuration here reaches but which "exact and unbounded" did not
+admit.
+
+The pattern across both audits is one thing. Every defect was a claim *about* a
+number rather than a number, and the two most serious were claims a test was
+sitting next to without checking --- `rounding_delta` had a test that consumed
+it, and the fit had a pre-registration that named its own falsifier. A test that
+uses a value does not verify it, and a pre-registration read after the fact is
+not a pre-registration.
+
+### Three passes, and the third found the worst of them
+
+**The certificate was binding the wrong delta.** `PublicationStatement` carries
+`delta_numerator/denominator`, and it was filled from `rounding_delta()` --- the
+distance between the cells released and the law they approximate. That is not a
+privacy parameter, and at support 8 it is ten orders of magnitude below the
+delta the mechanism actually needs. A signed certificate asserting
+`delta = 4.7e-13` for a release whose delta is `2.5e-4` is worse than one
+carrying no delta at all, because it invites reliance. It now binds
+`certificate_delta()`, which is `privacy_delta()` rounded up to a rational, and
+a test asserts the two cannot be confused again by requiring the carried value
+to exceed the rounding distance by eight orders.
+
+**Both closed forms for delta were wrong, in the same direction.** The first
+draft named the folded tail. The correction named the endpoint cell, which is
+`e^epsilon` larger and right at unit sensitivity. It is still wrong:
+
+- When the sensitivity exceeds one, adjacent inputs shift the support by more
+  than one cell, so several cells escape rather than one. At `epsilon = 0.5`,
+  sensitivity 3, support 24 the endpoint cell is `9.92e-3` against a true delta
+  of `1.96e-2` --- understated twofold.
+- Even at unit sensitivity the folded endpoints carry far more mass than the
+  geometric ratio permits, so cells *inside* the support can exceed
+  `e^epsilon`. At support 32 that lifts the delta from `9.26e-15` to `1.12e-14`.
+
+`privacy_delta()` now computes the hockey-stick divergence at `e^epsilon` over
+the released cells, maximised over every shift the sensitivity permits. It is a
+finite sum over `2s+1` cells, so there was never a reason to reach for a closed
+form. Reaching for one twice, and being wrong twice in the direction that
+flatters the release, is the finding.
+
+**The margin figures were wrong at both ends.** "Nine orders at support 8" was
+twelve, and "fourteenfold at support 32" compared a delta against a distance
+rather than distance against distance --- it is tenfold like for like. A test
+now pins all three so prose cannot flatten or inflate them again.
+
+Also: the corrected table caption in the appendix generator still carried the
+withdrawn `10^-17`, so it survived into both built PDFs; and `main.tex` had a
+paragraph well away from the new section still reading as though the publication
+path were deployed, and reporting the quantisation as the explicit delta.
+
+**What this says about `paper_check`.** It passed 167/167, then 173/173,
+then 180/180, through every one of these. The audit demonstrated why by editing
+the prose to say something false and watching it still pass: `same()` compares a
+value derived from an artifact against a literal in the script, and only warns
+if that literal appears nowhere in any document. It never checks the literal is
+in the sentence that depends on it. The `claim()` assertions do constrain
+context, and the ones added for this work were written to match the prose that
+existed rather than to hold it to anything. Numbers that carry an argument are
+now bound inside their own sentence.
+
+### The fourth pass, and what four passes say about the method
+
+**`privacy_delta()` returned zero where the true delta was one.** At
+`epsilon = 709.782713` with sensitivity 710 and support 8 the sensitivity shifts
+the support clear of itself, so nothing overlaps and the delta is exactly one.
+It returned zero. `e^epsilon` overflows to infinity just past that epsilon,
+`infinity * 0.0` is NaN, and Rust's `f64::max` resolves NaN to its other
+operand --- so every escaping cell contributed nothing. Across a wide sweep the
+audit found it understating in well over a third of valid parameter
+combinations. The absent neighbour is now written out as a case rather than left
+to arithmetic, and a test sweeps the parameter space against two invariants that
+need no reference implementation: a delta lies in `[0, 1]`, and when the
+sensitivity clears the support it is exactly one.
+
+A delta of one cannot be certified, and `certificate_delta()` now refuses it
+with a message saying why --- the support is too narrow for the sensitivity ---
+rather than the previous "does not fit the certificate's rational", which
+described the symptom.
+
+**`validate()` could not see the difference between a privacy delta and a
+rounding distance.** All it checks is that delta is a proper fraction, which the
+rounding distance satisfies perfectly well. That is how a statement carrying the
+wrong one came to be built and signed in the first place, and fixing the
+construction site did not fix the check. `validate_against(&mechanism)` now
+recomputes the delta and rejects anything below it, with a test that builds the
+bad statement, confirms `validate` accepts it, and confirms the new check does
+not.
+
+**Three order-of-magnitude claims were wrong**, each by one: the quantisation
+against the delta is twelve orders, not nine; the rounding bound against the
+delta is ten, not nine. They were written from memory of a neighbouring ratio
+rather than computed. Every one of them is now computed in `paper_check`.
+
+**The appendices were outside `paper_check` entirely.** It read `main.tex`
+and the slides. That is how a withdrawn bound survived in an appendix table
+caption and rode into both built PDFs, and why the audit's falsification tests
+against appendix prose could not fail. They are now part of the corpus.
+
+**The checker was demonstrated, not assumed.** Eleven deliberate falsifications
+--- a round count, a noise share in one of two identical sentences and then in
+both, a table row, a margin figure, the delta in the body and again in the
+appendix, a reworded caveat, a deleted caveat, a counterexample figure, a
+rounding figure --- all eleven now fail the check. Two of them slipped through
+on the first attempt, both for the same reason: `claim()` regexes use `.*?`
+gaps, and under `re.S` those span whole sections, so a pattern happily matched a
+second, unedited copy of the same sentence. `occurs(literal, times)` counts an
+exact string instead and breaks on any edit to any instance.
+
+**What four passes say.** The first found that the release path had never
+changed while three documents said it had. The second found a bound that did not
+hold, sitting next to a test that used it. The third found a certificate signing
+the rounding distance as its privacy parameter. The fourth found the delta
+function returning zero for a mechanism with no privacy at all. The pattern is
+not carelessness in different places; it is one habit. Each defect was a claim
+*about* a computed thing, written next to the computed thing, and never
+recomputed. `paper_check` reported green through all of it because it
+compared documents against artifacts, and every one of these was a statement no
+artifact contained. The fix that generalises is not another checker: it is that
+a number carrying an argument gets computed in the check, and a property gets a
+test that fails when the property is removed.

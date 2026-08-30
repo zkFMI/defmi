@@ -1,11 +1,13 @@
-//! Rust mirror of `tests/test_threshold_range.py`.
+//! Threshold range-proof contract tests.
 
 use std::collections::BTreeMap;
 
 use curve25519_dalek::scalar::Scalar;
 use qomm_proofs::threshold_range::{
-    deal_bits, joint_prove_range_from_contributions, verify_threshold_range, BitShares,
-    RangeAssemblyTranscript, ThresholdRangeProof, ValueShares,
+    answer_range_challenge, assemble_range_from_rounds, deal_bits,
+    joint_prove_range_from_contributions, make_range_challenge, prepare_range_round1,
+    range_relations_from_evaluations, range_statement_from_evaluations, verify_threshold_range,
+    BitShares, LocalRangeShares, RangeAssemblyTranscript, ThresholdRangeProof, ValueShares,
 };
 use qomm_proofs::threshold_sigma::PartyId;
 use qomm_zk::bitrange::{prove_range, verify_range};
@@ -64,6 +66,7 @@ fn a_committed_two_is_not_accepted_as_a_bit() {
         commitment: key.commit(&two, &r),
         value: constant_shares(two),
         blinding: constant_shares(r),
+        value_coefficient_commitments: vec![key.commit(&two, &r)],
         bits: vec![dishonest],
         threshold: 0,
     };
@@ -287,4 +290,96 @@ fn the_square_proof_is_the_same_statement_as_the_ordinary_one() {
     assert!(verify_range(&key, &shares.commitment, &local, b"ctx"));
     assert_eq!(joint.bits, local.bits);
     assert_eq!(joint.bit_commitments.len(), local.bit_commitments.len());
+}
+
+#[test]
+fn distributed_rounds_never_send_raw_shares_to_the_assembler() {
+    let key = Pedersen::new(b"qomm:quote:v1");
+    let value = 42_123u64;
+    let dealt = deal_bits(
+        &key,
+        value,
+        &Scalar::random(&mut OsRng),
+        WIDTH,
+        &PARTIES,
+        T,
+        &mut OsRng,
+    )
+    .unwrap();
+    let quorum = [1, 2, 3];
+    let locals = quorum
+        .iter()
+        .map(|party| {
+            let view = dealt.node_view(*party).unwrap();
+            LocalRangeShares::new(
+                *party,
+                view.value_share,
+                view.blinding_share,
+                view.bits
+                    .into_iter()
+                    .map(|bit| (bit.bit_share, bit.blinding_share, bit.cross_share))
+                    .collect(),
+                T,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let statement = range_statement_from_evaluations(
+        &locals
+            .iter()
+            .map(|local| local.evaluations(&key))
+            .collect::<Vec<_>>(),
+        T,
+    )
+    .unwrap();
+    let bound = locals
+        .into_iter()
+        .map(|local| local.bind(&key, &statement).unwrap())
+        .collect::<Vec<_>>();
+    let relations = range_relations_from_evaluations(
+        &statement,
+        &bound
+            .iter()
+            .map(|node| node.relation_evaluations(&key))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+
+    let prepared = bound
+        .iter()
+        .map(|node| prepare_range_round1(&key, node, b"distributed", &mut OsRng))
+        .collect::<Vec<_>>();
+    let seals = prepared
+        .iter()
+        .map(|item| item.0.clone())
+        .collect::<Vec<_>>();
+    let messages = prepared
+        .iter()
+        .map(|item| item.2.clone())
+        .collect::<Vec<_>>();
+    let challenge =
+        make_range_challenge(&statement, &messages, &seals, &quorum, b"distributed").unwrap();
+    let responses = bound
+        .iter()
+        .zip(prepared)
+        .map(|(node, (_, secret, _))| answer_range_challenge(node, secret, &challenge).unwrap())
+        .collect::<Vec<_>>();
+    let proof = assemble_range_from_rounds(
+        &key,
+        &statement,
+        &relations,
+        &messages,
+        &seals,
+        &responses,
+        &quorum,
+        b"distributed",
+    )
+    .unwrap();
+    assert_eq!(statement.commitment.compress(), dealt.commitment.compress());
+    assert!(verify_threshold_range(
+        &key,
+        &statement.commitment,
+        &proof,
+        b"distributed"
+    ));
 }

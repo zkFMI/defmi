@@ -10,17 +10,27 @@
 //! thing the whole construction exists to avoid.
 //!
 //! Every sigma check in a package joins one batch and is settled by a single
-//! multiscalar multiplication. That is the whole reason this is not Python: a
 //! point addition there costs a quarter of a scalar multiplication, so batching
 //! made verification slower.
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
+use qomm_proofs::threshold_gadgets::{
+    joint_prove_product_from_contributions, ProductNodeContribution,
+};
+use qomm_proofs::threshold_range::{
+    joint_prove_range_from_contributions, verify_threshold_range, NodeValueShares,
+    ThresholdRangeProof,
+};
+use qomm_proofs::threshold_sigma::PartyId;
+use qomm_transport::dvp_issuer::{
+    DvpProofs, DVP_CASH_REMAINDER_CONTEXT, DVP_PRODUCT_CONTEXT, DVP_SECURITIES_REMAINDER_CONTEXT,
+};
 use qomm_zk::pedersen::Pedersen;
 use qomm_zk::sigma::{
-    product_terms, prove_product, prove_same_value, same_value_terms, Batch, CrossGeneratorProof,
-    ProductProof,
+    product_terms, prove_product, prove_same_value, same_value_terms, verify_product, Batch,
+    CrossGeneratorProof, ProductProof,
 };
 use qomm_zkpi::{Instruction, Venue};
 use rand_core::{CryptoRng, RngCore};
@@ -30,6 +40,8 @@ use crate::assets::BlindedTag;
 use crate::ledger::{Ledger, Transfer};
 
 pub const SETTLE_DOMAIN: &[u8] = b"QOMM:DEFMI:DVP:v1";
+pub const THRESHOLD_DVP_SECURITIES_REMAINDER_CONTEXT: &[u8] = DVP_SECURITIES_REMAINDER_CONTEXT;
+pub const THRESHOLD_DVP_CASH_REMAINDER_CONTEXT: &[u8] = DVP_CASH_REMAINDER_CONTEXT;
 
 pub struct DvpPackage {
     pub instruction: Instruction,
@@ -56,6 +68,360 @@ pub struct DvpPackage {
     pub cash_link: CrossGeneratorProof,
 }
 
+impl DvpPackage {
+    /// Canonical evidence identifier signed into the durable product
+    /// settlement.  Avalanche validators may rely on the committee-attested
+    /// digest while the Rust admission service verifies these full proof bytes.
+    pub fn digest(&self) -> [u8; 32] {
+        fn bytes(hash: &mut Sha256, value: &[u8]) {
+            hash.update((value.len() as u64).to_be_bytes());
+            hash.update(value);
+        }
+        fn point(hash: &mut Sha256, value: &RistrettoPoint) {
+            hash.update(value.compress().as_bytes());
+        }
+        fn scalar(hash: &mut Sha256, value: &Scalar) {
+            hash.update(value.to_bytes());
+        }
+        fn transfer(hash: &mut Sha256, value: &Transfer) {
+            point(hash, &value.amount_commitment);
+            match &value.amount_range {
+                Some((proof, commitment)) => {
+                    hash.update([1]);
+                    hash.update(commitment.as_bytes());
+                    bytes(hash, &proof.to_bytes());
+                }
+                None => hash.update([0]),
+            }
+            point(hash, &value.remainder_commitment);
+            bytes(hash, &value.remainder_range.to_bytes());
+            match &value.tag {
+                Some(tag) => {
+                    hash.update([1]);
+                    point(hash, &tag.point);
+                }
+                None => hash.update([0]),
+            }
+        }
+        fn cross(hash: &mut Sha256, value: &CrossGeneratorProof) {
+            point(hash, &value.t_first);
+            point(hash, &value.t_second);
+            scalar(hash, &value.z_value);
+            scalar(hash, &value.z_first);
+            scalar(hash, &value.z_second);
+        }
+        fn product(hash: &mut Sha256, value: &ProductProof) {
+            point(hash, &value.t_factor);
+            point(hash, &value.t_product);
+            scalar(hash, &value.z_b);
+            scalar(hash, &value.z_rb);
+            scalar(hash, &value.z_s);
+        }
+
+        let mut hash = Sha256::new();
+        hash.update(b"QOMM:DEFMI:DVP-PACKAGE:v1");
+        bytes(&mut hash, &qomm_zkpi::wire::encode(&self.instruction));
+        for handle in [
+            &self.securities_from,
+            &self.securities_to,
+            &self.cash_from,
+            &self.cash_to,
+        ] {
+            bytes(&mut hash, handle);
+        }
+        transfer(&mut hash, &self.securities_leg);
+        transfer(&mut hash, &self.cash_leg);
+        cross(&mut hash, &self.quantity_link);
+        point(&mut hash, &self.cash_reference);
+        product(&mut hash, &self.value_proof);
+        cross(&mut hash, &self.cash_link);
+        hash.finalize().into()
+    }
+}
+
+/// One node's private contribution to a DvP package. Each field contains only
+/// that node's Shamir evaluation; no constructor accepts a map of all scalar
+/// shares. The product contribution proves `quantity * price = cash`, while
+/// the two range contributions prove that both reserved maxima cover the
+/// resulting transfer.
+#[derive(Clone, Debug)]
+pub struct ThresholdDvpNodeContribution {
+    product: ProductNodeContribution,
+    securities_remainder: NodeValueShares,
+    cash_remainder: NodeValueShares,
+}
+
+impl ThresholdDvpNodeContribution {
+    pub fn new(
+        product: ProductNodeContribution,
+        securities_remainder: NodeValueShares,
+        cash_remainder: NodeValueShares,
+    ) -> Result<Self, String> {
+        let party = product.party();
+        if securities_remainder.party() != party || cash_remainder.party() != party {
+            return Err("one DvP contribution mixes shares from different nodes".into());
+        }
+        Ok(Self {
+            product,
+            securities_remainder,
+            cash_remainder,
+        })
+    }
+
+    pub fn party(&self) -> PartyId {
+        self.product.party()
+    }
+}
+
+/// Public, verifier-complete DvP evidence assembled from node-local shares.
+/// Unlike [`DvpPackage`], this form never requires one process to know either
+/// payer's balance, the quantity, the price, or any commitment blinding.
+#[derive(Clone)]
+pub struct ThresholdDvpPackage {
+    pub instruction: Instruction,
+    pub securities_from: Vec<u8>,
+    pub securities_to: Vec<u8>,
+    pub cash_from: Vec<u8>,
+    pub cash_to: Vec<u8>,
+    pub cash_commitment: RistrettoPoint,
+    pub securities_remainder: RistrettoPoint,
+    pub cash_remainder: RistrettoPoint,
+    pub securities_remainder_range: ThresholdRangeProof,
+    pub cash_remainder_range: ThresholdRangeProof,
+    pub value_proof: ProductProof,
+}
+
+fn hash_product_proof(hash: &mut Sha256, proof: &ProductProof) {
+    hash.update(proof.t_factor.compress().as_bytes());
+    hash.update(proof.t_product.compress().as_bytes());
+    hash.update(proof.z_b.to_bytes());
+    hash.update(proof.z_rb.to_bytes());
+    hash.update(proof.z_s.to_bytes());
+}
+
+fn hash_threshold_range(hash: &mut Sha256, proof: &ThresholdRangeProof) {
+    hash.update((proof.bits as u64).to_be_bytes());
+    hash.update((proof.bit_commitments.len() as u64).to_be_bytes());
+    for commitment in &proof.bit_commitments {
+        hash.update(commitment.compress().as_bytes());
+    }
+    hash.update((proof.bit_proofs.len() as u64).to_be_bytes());
+    for bit_proof in &proof.bit_proofs {
+        hash_product_proof(hash, bit_proof);
+    }
+    hash.update(proof.linkage.t.compress().as_bytes());
+    hash.update(proof.linkage.z_value.to_bytes());
+    hash.update(proof.linkage.z_blinding.to_bytes());
+}
+
+impl ThresholdDvpPackage {
+    pub fn digest(&self) -> [u8; 32] {
+        fn bytes(hash: &mut Sha256, value: &[u8]) {
+            hash.update((value.len() as u64).to_be_bytes());
+            hash.update(value);
+        }
+        let mut hash = Sha256::new();
+        hash.update(b"QOMM:DEFMI:THRESHOLD-DVP-PACKAGE:v1");
+        bytes(&mut hash, &qomm_zkpi::wire::encode(&self.instruction));
+        for handle in [
+            &self.securities_from,
+            &self.securities_to,
+            &self.cash_from,
+            &self.cash_to,
+        ] {
+            bytes(&mut hash, handle);
+        }
+        for point in [
+            &self.cash_commitment,
+            &self.securities_remainder,
+            &self.cash_remainder,
+        ] {
+            hash.update(point.compress().as_bytes());
+        }
+        hash_threshold_range(&mut hash, &self.securities_remainder_range);
+        hash_threshold_range(&mut hash, &self.cash_remainder_range);
+        hash_product_proof(&mut hash, &self.value_proof);
+        hash.finalize().into()
+    }
+}
+
+fn threshold_value_transcript() -> Transcript {
+    Transcript::new(DVP_PRODUCT_CONTEXT)
+}
+
+/// Build the verifier-complete DvP package from public proofs produced by the
+/// distributed node protocol.  The caller supplies no scalar witness, balance,
+/// price, quantity or commitment opening.
+#[allow(clippy::too_many_arguments)]
+pub fn build_threshold_package_from_proofs(
+    key: &Pedersen,
+    instruction: Instruction,
+    sides: Sides,
+    securities_reserve: RistrettoPoint,
+    cash_reserve: RistrettoPoint,
+    cash_commitment: RistrettoPoint,
+    proofs: DvpProofs,
+    bits: usize,
+) -> Result<ThresholdDvpPackage, String> {
+    let package = ThresholdDvpPackage {
+        securities_remainder: securities_reserve - instruction.amount_commitment,
+        cash_remainder: cash_reserve - cash_commitment,
+        instruction,
+        securities_from: sides.securities_from,
+        securities_to: sides.securities_to,
+        cash_from: sides.cash_from,
+        cash_to: sides.cash_to,
+        cash_commitment,
+        securities_remainder_range: proofs.securities_remainder,
+        cash_remainder_range: proofs.cash_remainder,
+        value_proof: proofs.product,
+    };
+    verify_threshold_package(key, &package, &securities_reserve, &cash_reserve, bits)?;
+    Ok(package)
+}
+
+/// Assemble public DvP evidence from a k-of-n set of recipient-scoped node
+/// contributions. Interpolation is applied only to proof responses and group
+/// elements; no clear value or Pedersen blinding is reconstructed.
+#[allow(clippy::too_many_arguments)]
+pub fn build_threshold_package_from_contributions<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    instruction: Instruction,
+    sides: Sides,
+    securities_reserve: RistrettoPoint,
+    cash_reserve: RistrettoPoint,
+    cash_commitment: RistrettoPoint,
+    contributions: &[ThresholdDvpNodeContribution],
+    quorum: &[PartyId],
+    threshold: usize,
+    bits: usize,
+    rng: &mut R,
+) -> Result<ThresholdDvpPackage, String> {
+    if contributions.len() != quorum.len() || contributions.is_empty() {
+        return Err("DvP contributions do not exactly fill the selected quorum".into());
+    }
+    let parties = contributions
+        .iter()
+        .map(ThresholdDvpNodeContribution::party)
+        .collect::<std::collections::BTreeSet<_>>();
+    if parties.len() != contributions.len()
+        || quorum
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            != parties
+    {
+        return Err("DvP contributions contain an omitted or duplicate party".into());
+    }
+    let product_nodes = contributions
+        .iter()
+        .map(|node| node.product.clone())
+        .collect::<Vec<_>>();
+    let securities_nodes = contributions
+        .iter()
+        .map(|node| node.securities_remainder.clone())
+        .collect::<Vec<_>>();
+    let cash_nodes = contributions
+        .iter()
+        .map(|node| node.cash_remainder.clone())
+        .collect::<Vec<_>>();
+    let securities_remainder = securities_nodes[0].commitment();
+    let cash_remainder = cash_nodes[0].commitment();
+    if securities_reserve - instruction.amount_commitment != securities_remainder
+        || cash_reserve - cash_commitment != cash_remainder
+    {
+        return Err("DvP remainders do not conserve the two reservation escrows".into());
+    }
+    let (value_proof, _) = joint_prove_product_from_contributions(
+        key,
+        &instruction.amount_commitment,
+        &cash_commitment,
+        &product_nodes,
+        quorum,
+        threshold,
+        &mut threshold_value_transcript(),
+        rng,
+    )?;
+    let (securities_remainder_range, _) = joint_prove_range_from_contributions(
+        key,
+        &securities_nodes,
+        quorum,
+        THRESHOLD_DVP_SECURITIES_REMAINDER_CONTEXT,
+        rng,
+    )?;
+    let (cash_remainder_range, _) = joint_prove_range_from_contributions(
+        key,
+        &cash_nodes,
+        quorum,
+        THRESHOLD_DVP_CASH_REMAINDER_CONTEXT,
+        rng,
+    )?;
+    if securities_remainder != securities_reserve - instruction.amount_commitment
+        || cash_remainder != cash_reserve - cash_commitment
+    {
+        return Err("threshold DvP proof statements changed during assembly".into());
+    }
+    build_threshold_package_from_proofs(
+        key,
+        instruction,
+        sides,
+        securities_reserve,
+        cash_reserve,
+        cash_commitment,
+        DvpProofs {
+            product: value_proof,
+            securities_remainder: securities_remainder_range,
+            cash_remainder: cash_remainder_range,
+        },
+        bits,
+    )
+}
+
+pub(crate) fn verify_threshold_package(
+    key: &Pedersen,
+    package: &ThresholdDvpPackage,
+    securities_reserve: &RistrettoPoint,
+    cash_reserve: &RistrettoPoint,
+    bits: usize,
+) -> Result<(), String> {
+    if package.securities_from == package.securities_to
+        || package.cash_from == package.cash_to
+        || *securities_reserve - package.instruction.amount_commitment
+            != package.securities_remainder
+        || *cash_reserve - package.cash_commitment != package.cash_remainder
+    {
+        return Err("threshold DvP account or escrow conservation failed".into());
+    }
+    if package.securities_remainder_range.bits != bits
+        || !verify_threshold_range(
+            key,
+            &package.securities_remainder,
+            &package.securities_remainder_range,
+            THRESHOLD_DVP_SECURITIES_REMAINDER_CONTEXT,
+        )
+        || package.cash_remainder_range.bits != bits
+        || !verify_threshold_range(
+            key,
+            &package.cash_remainder,
+            &package.cash_remainder_range,
+            THRESHOLD_DVP_CASH_REMAINDER_CONTEXT,
+        )
+    {
+        return Err("threshold DvP has a negative or out-of-range reservation remainder".into());
+    }
+    if !verify_product(
+        key,
+        &mut threshold_value_transcript(),
+        &package.instruction.amount_commitment,
+        &package.instruction.price_commitment,
+        &package.cash_commitment,
+        &package.value_proof,
+    ) {
+        return Err("threshold DvP cash amount is not quantity times price".into());
+    }
+    Ok(())
+}
+
 pub struct Receipt {
     pub status: Result<(), &'static str>,
     pub securities_before: [u8; 32],
@@ -72,6 +438,15 @@ pub struct Carry {
     pub securities_blinding: Scalar,
     pub cash_balance: u64,
     pub cash_blinding: Scalar,
+    /// Openings of the two rail amount commitments.  Product reservation
+    /// consumption uses these (not the separately blinded reference points) so
+    /// the unused escrow commitment is exactly the DvP remainder.
+    pub securities_amount_blinding: Scalar,
+    pub cash_amount_blinding: Scalar,
+    /// Opening of `DvpPackage::cash_reference`.  The product settlement layer
+    /// uses it to prove that the payer's pre-trade guarantee reservation is
+    /// consumed by exactly the same hidden cash amount as the DvP leg.
+    pub cash_reference_blinding: Scalar,
 }
 
 /// The account name a rail keeps a party's balance under.
@@ -142,6 +517,46 @@ pub struct InstructionOpenings {
 pub fn build_package<R: RngCore + CryptoRng>(
     key: &Pedersen,
     instruction: Instruction,
+    securities: &Ledger,
+    cash: &Ledger,
+    quantity: u64,
+    price: u64,
+    holdings: &Holdings,
+    openings: &InstructionOpenings,
+    securities_tag: Option<&BlindedTag>,
+    securities_gamma: &Scalar,
+    cash_tag: Option<&BlindedTag>,
+    cash_gamma: &Scalar,
+    rng: &mut R,
+) -> Result<(DvpPackage, Carry), &'static str> {
+    let sides = Sides::of(&instruction);
+    build_package_for_sides(
+        key,
+        instruction,
+        sides,
+        securities,
+        cash,
+        quantity,
+        price,
+        holdings,
+        openings,
+        securities_tag,
+        securities_gamma,
+        cash_tag,
+        cash_gamma,
+        rng,
+    )
+}
+
+/// Construct DvP proofs whose payer balances live in pre-trade reservation
+/// escrow rather than in the parties' spendable accounts.  The destination
+/// handles remain fixed by the signed instruction; the product verifier checks
+/// the supplied source handles against the two consumed reservation records.
+#[allow(clippy::too_many_arguments)]
+pub fn build_package_for_sides<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    instruction: Instruction,
+    sides: Sides,
     securities: &Ledger,
     cash: &Ledger,
     quantity: u64,
@@ -228,20 +643,22 @@ pub fn build_package<R: RngCore + CryptoRng>(
         rng,
     );
 
-    let who = Sides::of(&instruction);
     let carry = Carry {
         securities_balance: holdings.securities_balance - quantity,
         securities_blinding: securities_secrets.remainder_blinding,
         cash_balance: holdings.cash_balance - value,
         cash_blinding: cash_secrets.remainder_blinding,
+        securities_amount_blinding: securities_secrets.amount_blinding,
+        cash_amount_blinding: cash_secrets.amount_blinding,
+        cash_reference_blinding: reference_blinding,
     };
     Ok((
         DvpPackage {
             instruction,
-            securities_from: who.securities_from,
-            securities_to: who.securities_to,
-            cash_from: who.cash_from,
-            cash_to: who.cash_to,
+            securities_from: sides.securities_from,
+            securities_to: sides.securities_to,
+            cash_from: sides.cash_from,
+            cash_to: sides.cash_to,
             securities_leg,
             cash_leg,
             quantity_link,
@@ -261,6 +678,118 @@ fn value_transcript() -> Transcript {
 }
 fn cash_link_transcript() -> Transcript {
     Transcript::new(b"qomm:defmi:cash-link")
+}
+
+/// Verify the two confidential transfer legs and their links to the signed
+/// instruction against a caller-supplied ledger snapshot.  The durable DeFMI
+/// store uses this same verifier before atomically applying its four account
+/// updates and two guarantee-reservation consumptions.
+pub(crate) fn verify_package_legs<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    securities: &Ledger,
+    cash: &Ledger,
+    package: &DvpPackage,
+    rng: &mut R,
+) -> Result<(), &'static str> {
+    let who = Sides::of(&package.instruction);
+    verify_package_legs_for_sides(key, securities, cash, package, &who, rng)
+}
+
+pub(crate) fn verify_package_legs_for_sides<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    securities: &Ledger,
+    cash: &Ledger,
+    package: &DvpPackage,
+    who: &Sides,
+    rng: &mut R,
+) -> Result<(), &'static str> {
+    if package.securities_from != who.securities_from
+        || package.securities_to != who.securities_to
+        || package.cash_from != who.cash_from
+        || package.cash_to != who.cash_to
+    {
+        return Err("the package names accounts the instruction does not");
+    }
+
+    for (handle, ledger) in [
+        (&package.securities_from, securities),
+        (&package.securities_to, securities),
+        (&package.cash_from, cash),
+        (&package.cash_to, cash),
+    ] {
+        if ledger.balance(handle).is_none() {
+            return Err("an account is not open");
+        }
+    }
+    if package.securities_from == package.securities_to {
+        return Err("securities legs share a handle");
+    }
+    if package.cash_from == package.cash_to {
+        return Err("cash legs share a handle");
+    }
+
+    securities.check_transfer(
+        &package.securities_from,
+        &package.securities_leg,
+        &[SETTLE_DOMAIN, b":sec"].concat(),
+        true,
+    )?;
+    cash.check_transfer(
+        &package.cash_from,
+        &package.cash_leg,
+        &[SETTLE_DOMAIN, b":cash"].concat(),
+        true,
+    )?;
+
+    let mut batch = Batch::new();
+    let leg_generator = package
+        .securities_leg
+        .tag
+        .as_ref()
+        .map(|tag| tag.point)
+        .unwrap_or(key.g);
+    let (scalars, points) = same_value_terms(
+        key,
+        &mut link_transcript(),
+        &leg_generator,
+        &key.g,
+        &package.securities_leg.amount_commitment,
+        &package.instruction.amount_commitment,
+        &package.quantity_link,
+        &Batch::weight(rng),
+    );
+    batch.push(scalars, points);
+    let (scalars, points) = product_terms(
+        key,
+        &mut value_transcript(),
+        &package.instruction.price_commitment,
+        &package.instruction.amount_commitment,
+        &package.cash_reference,
+        &package.value_proof,
+        &Batch::weight(rng),
+    );
+    batch.push(scalars, points);
+    let cash_generator = package
+        .cash_leg
+        .tag
+        .as_ref()
+        .map(|tag| tag.point)
+        .unwrap_or(key.g);
+    let (scalars, points) = same_value_terms(
+        key,
+        &mut cash_link_transcript(),
+        &cash_generator,
+        &key.g,
+        &package.cash_leg.amount_commitment,
+        &package.cash_reference,
+        &package.cash_link,
+        &Batch::weight(rng),
+    );
+    batch.push(scalars, points);
+    if !batch.verify() {
+        return Err("the legs do not match what the instruction says");
+    }
+    Ok(())
 }
 
 pub struct Defmi {
@@ -287,101 +816,7 @@ impl Defmi {
         rng: &mut R,
     ) -> Result<(), &'static str> {
         self.venue.verify(&package.instruction, now)?;
-
-        // The four accounts are a function of the two handles the quorum
-        // signed. A package that names anything else is refused before any
-        // proof is looked at --- it is cheaper than a proof and it is the check
-        // that makes the handles mean something.
-        let who = Sides::of(&package.instruction);
-        if package.securities_from != who.securities_from
-            || package.securities_to != who.securities_to
-            || package.cash_from != who.cash_from
-            || package.cash_to != who.cash_to
-        {
-            return Err("the package names accounts the instruction does not");
-        }
-
-        for (handle, ledger) in [
-            (&package.securities_from, &self.securities),
-            (&package.securities_to, &self.securities),
-            (&package.cash_from, &self.cash),
-            (&package.cash_to, &self.cash),
-        ] {
-            if ledger.balance(handle).is_none() {
-                return Err("an account is not open");
-            }
-        }
-        if package.securities_from == package.securities_to {
-            return Err("securities legs share a handle");
-        }
-        if package.cash_from == package.cash_to {
-            return Err("cash legs share a handle");
-        }
-
-        self.securities.check_transfer(
-            &package.securities_from,
-            &package.securities_leg,
-            &[SETTLE_DOMAIN, b":sec"].concat(),
-            true,
-        )?;
-        self.cash.check_transfer(
-            &package.cash_from,
-            &package.cash_leg,
-            &[SETTLE_DOMAIN, b":cash"].concat(),
-            true,
-        )?;
-
-        // Everything that is a sigma check goes into one batch, so the package
-        // costs one multiscalar multiplication rather than one per proof.
-        let mut batch = Batch::new();
-        let leg_generator = package
-            .securities_leg
-            .tag
-            .as_ref()
-            .map(|t| t.point)
-            .unwrap_or(self.key.g);
-        let (s, p) = same_value_terms(
-            &self.key,
-            &mut link_transcript(),
-            &leg_generator,
-            &self.key.g,
-            &package.securities_leg.amount_commitment,
-            &package.instruction.amount_commitment,
-            &package.quantity_link,
-            &Batch::weight(rng),
-        );
-        batch.push(s, p);
-        let (s, p) = product_terms(
-            &self.key,
-            &mut value_transcript(),
-            &package.instruction.price_commitment,
-            &package.instruction.amount_commitment,
-            &package.cash_reference,
-            &package.value_proof,
-            &Batch::weight(rng),
-        );
-        batch.push(s, p);
-        let cash_generator = package
-            .cash_leg
-            .tag
-            .as_ref()
-            .map(|t| t.point)
-            .unwrap_or(self.key.g);
-        let (s, p) = same_value_terms(
-            &self.key,
-            &mut cash_link_transcript(),
-            &cash_generator,
-            &self.key.g,
-            &package.cash_leg.amount_commitment,
-            &package.cash_reference,
-            &package.cash_link,
-            &Batch::weight(rng),
-        );
-        batch.push(s, p);
-        if !batch.verify() {
-            return Err("the legs do not match what the instruction says");
-        }
-        Ok(())
+        verify_package_legs(&self.key, &self.securities, &self.cash, package, rng)
     }
 
     pub fn settle<R: RngCore + CryptoRng>(

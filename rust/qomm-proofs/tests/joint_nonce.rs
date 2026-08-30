@@ -62,7 +62,7 @@ fn reconstruct(observations: &[(PartyId, Scalar)]) -> Scalar {
 }
 
 fn reconstruct_if_quorum(observations: &[(PartyId, Scalar)], threshold: usize) -> Option<Scalar> {
-    (observations.len() >= threshold + 1).then(|| reconstruct(observations))
+    (observations.len() > threshold).then(|| reconstruct(observations))
 }
 
 #[test]

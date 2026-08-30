@@ -153,43 +153,48 @@ pub fn run_matrix(
 
 /// Run the same experiment matrix against one observed tape rather than a
 /// generated order stream.
+#[derive(Clone, Copy, Debug)]
+pub struct TapeMatrixOptions {
+    pub layer: Layer,
+    pub probes_per_window: usize,
+    pub entities: Entities,
+    pub wallets_per_entity: usize,
+}
+
 pub fn run_matrix_with_tape(
     cfg: &SimConfig,
     dp: &DpParams,
     protocols: &[&str],
     disclosures: &[&str],
-    layer: Layer,
-    probe_per_window: usize,
     tape: &Tape,
-    entities: Entities,
-    wallets_per_entity: usize,
+    matrix_options: TapeMatrixOptions,
 ) -> Vec<ArmRow> {
     let market = TapeMarket::new(cfg, tape, 20, 60.0, 200, cfg.seed);
     let loaded = requests_from_tape(
         cfg,
         &market,
         tape,
-        entities,
-        wallets_per_entity,
+        matrix_options.entities,
+        matrix_options.wallets_per_entity,
         cfg.seed + 2,
     );
     let cfg = loaded.cfg;
     let makers = build_market_makers(&cfg, cfg.seed + 1);
-    let probes = build_probes(&cfg, probe_per_window, 50);
+    let probes = build_probes(&cfg, matrix_options.probes_per_window, 50);
     let mut rows = Vec::new();
     for protocol in protocols {
         for name in disclosures {
             let mut disclosure = make_disclosure(name, &cfg, dp);
-            let mut options = ArmOptions::new(protocol, cfg.seed + 5);
-            options.probes = probes.clone();
-            options.reactive = layer == Layer::Reactive;
+            let mut arm_options = ArmOptions::new(protocol, cfg.seed + 5);
+            arm_options.probes = probes.clone();
+            arm_options.reactive = matrix_options.layer == Layer::Reactive;
             let result = run_arm(
                 &cfg,
                 &market,
                 &loaded.requests,
                 &makers,
                 &mut disclosure,
-                &options,
+                &arm_options,
             );
             let attacks = vec![
                 atk::passive_observer(&result, &cfg, 0.5, cfg.seed),
@@ -202,7 +207,7 @@ pub fn run_matrix_with_tape(
             rows.push(ArmRow {
                 protocol: (*protocol).to_string(),
                 disclosure: (*name).to_string(),
-                layer: layer.as_str().to_string(),
+                layer: matrix_options.layer.as_str().to_string(),
                 result,
                 attacks,
                 tape_meta: Some(loaded.meta.clone()),

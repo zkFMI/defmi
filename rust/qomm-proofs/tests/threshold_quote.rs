@@ -1,5 +1,4 @@
-//! Rust mirror of `tests/test_threshold_quote.py`, updated for the required
-//! unified ordinary verifier.
+//! Threshold quote-proof tests for the unified ordinary verifier.
 
 use qomm_proofs::quote_proof::{
     registry_digest, Invalid, MakerWitness, MinimalityProof, Public, QuoteCircuit, Registered,

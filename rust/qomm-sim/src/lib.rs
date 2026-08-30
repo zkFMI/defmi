@@ -8,6 +8,6 @@ pub mod experiment;
 pub use qomm_measure::fsum;
 pub mod lab;
 pub mod market;
-pub use qomm_measure::pyrandom;
+pub use qomm_measure::deterministic_random;
 pub mod queries;
 pub mod tapes;

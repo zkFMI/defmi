@@ -1,4 +1,3 @@
-//! Same shape as the Python attacker dump, for diffing.
 use qomm_sim::attackers as a;
 use qomm_sim::disclosure::Disclosure;
 use qomm_sim::engine::{run_arm, ArmOptions, Probe};

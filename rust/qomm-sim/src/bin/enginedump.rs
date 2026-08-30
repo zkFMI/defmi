@@ -1,4 +1,3 @@
-//! Same shape as the Python engine dump, for diffing.
 use qomm_sim::disclosure::{Disclosure, DpDisclosure};
 use qomm_sim::engine::{run_arm, ArmOptions};
 use qomm_sim::market::*;

@@ -2,10 +2,10 @@
 
 DeFMI means **Decentralized Financial Market Infrastructure**. It is not a stock-only ledger: the chain-neutral state machine registers cash, securities, funds, commodities, carbon units and other governed assets.
 
-Measured on `host-c` / Python 3.13.5 / group ed25519.
+Measured on `host-c` / rustc 1.97.1 (8bab26f4f 2026-07-14) / group ed25519.
 This document is generated from the measurement JSON by `make defmi-doc`. No number in it was typed by hand.
 
-**Calibration**: scalar multiplication 37.3 ± 3.5 (n=50) us, 40-bit range proof 8.99 ± 0.17 (n=15) ms.
+**Calibration**: scalar multiplication 38.4 ± 4.1 (n=50) us, 40-bit range proof 20.88 ± 0.21 (n=15) ms.
 Every millisecond below is from a machine in that state. The same machine has been half again slower at another time, so compare these two figures before comparing anything else here with anything measured elsewhere.
 
 ## 1. What is guaranteed, and what is not
@@ -29,16 +29,16 @@ The proof is a bit decomposition of the ledger's balance range, so it should be 
 
 | balance width | issue instruction | build package | settle (verify) | package |
 | ---: | ---: | ---: | ---: | ---: |
-| 8 bit | 11.7 ± 0.2 (n=15) ms | 4.5 ± 0.1 (n=15) ms | 30.4 ± 0.4 (n=15) ms | 15,187 B |
-| 16 bit | 11.9 ± 0.4 (n=15) ms | 8.0 ± 0.2 (n=15) ms | 34.8 ± 1.2 (n=15) ms | 18,771 B |
-| 24 bit | 12.0 ± 0.3 (n=15) ms | 11.5 ± 0.2 (n=15) ms | 39.3 ± 0.4 (n=15) ms | 22,355 B |
-| 32 bit | 12.3 ± 0.6 (n=15) ms | 15.6 ± 0.6 (n=15) ms | 47.5 ± 4.9 (n=15) ms | 25,939 B |
-| 40 bit | 12.3 ± 0.9 (n=15) ms | 19.2 ± 1.3 (n=15) ms | 48.8 ± 2.0 (n=15) ms | 29,523 B |
-| 48 bit | 12.0 ± 0.5 (n=15) ms | 22.1 ± 0.5 (n=15) ms | 52.3 ± 0.8 (n=15) ms | 33,107 B |
+| 8 bit | 11.0 ± 0.3 (n=15) ms | 8.8 ± 0.1 (n=15) ms | 8.5 ± 0.1 (n=15) ms | 29,267 B |
+| 16 bit | 10.9 ± 0.2 (n=15) ms | 16.5 ± 0.2 (n=15) ms | 14.8 ± 0.4 (n=15) ms | 36,435 B |
+| 24 bit | 10.9 ± 0.1 (n=15) ms | 24.3 ± 0.3 (n=15) ms | 21.2 ± 0.4 (n=15) ms | 43,603 B |
+| 32 bit | 11.1 ± 0.2 (n=15) ms | 32.2 ± 0.3 (n=15) ms | 27.6 ± 0.3 (n=15) ms | 50,771 B |
+| 40 bit | 11.0 ± 0.4 (n=15) ms | 40.1 ± 1.1 (n=15) ms | 34.0 ± 0.7 (n=15) ms | 57,939 B |
+| 48 bit | 11.1 ± 0.2 (n=15) ms | 47.8 ± 0.5 (n=15) ms | 40.6 ± 0.6 (n=15) ms | 65,107 B |
 
-The slopes are **0.44 ms/bit** to build, **0.55 ms/bit** to settle and **448 B/bit** on the wire.
-The settlement intercept, **26.1 ms**, is the part that does not depend on the ledger's width: it is the verification of the zkPI instruction itself.
-At 40 bits, settlement costs 48.8 ± 2.0 (n=15) ms, of which about 53% is the instruction and the rest is the ledger's range proofs.
+The slopes are **0.98 ms/bit** to build, **0.80 ms/bit** to settle and **896 B/bit** on the wire.
+The settlement intercept, **2.1 ms**, is the part that does not depend on the ledger's width: it is the verification of the zkPI instruction itself.
+At 40 bits, settlement costs 34.0 ± 0.7 (n=15) ms, of which about 6% is the instruction and the rest is the ledger's range proofs.
 
 **Consequence**: if settlement needs to be faster, reconsidering the balance width beats changing the cryptography. That is a listing decision, not a technical one.
 
@@ -48,12 +48,12 @@ A quantity of securities and an amount of cash are orders of magnitude apart. Th
 
 | securities rail | cash rail | build | settle | package |
 | ---: | ---: | ---: | ---: | ---: |
-| 48 bit | 48 bit | 34.0 ± 0.2 (n=15) ms | 52.4 ± 1.3 (n=15) ms | 33,107 B |
-| 32 bit | 48 bit | 30.5 ± 0.3 (n=15) ms | 47.8 ± 0.3 (n=15) ms | 29,523 B |
-| 24 bit | 48 bit | 29.5 ± 2.3 (n=15) ms | 45.6 ± 0.3 (n=15) ms | 27,731 B |
-| 32 bit | 40 bit | 33.1 ± 3.3 (n=15) ms | 59.4 ± 11.8 (n=15) ms | 27,731 B |
+| 48 bit | 48 bit | 57.6 ± 0.7 (n=15) ms | 42.2 ± 0.5 (n=15) ms | 65,107 B |
+| 32 bit | 48 bit | 50.1 ± 0.5 (n=15) ms | 35.6 ± 0.4 (n=15) ms | 57,939 B |
+| 24 bit | 48 bit | 46.1 ± 0.9 (n=15) ms | 32.2 ± 0.9 (n=15) ms | 54,355 B |
+| 32 bit | 40 bit | 46.4 ± 0.7 (n=15) ms | 32.4 ± 0.5 (n=15) ms | 54,355 B |
 
-Against both rails at 48 bits, running securities at 24 and cash at 48 settles **13% faster** and sends **5,376 B less**. Not one line of the cryptography changed.
+Against both rails at 48 bits, running securities at 24 and cash at 48 settles **24% faster** and sends **10,752 B less**. Not one line of the cryptography changed.
 
 ## 3. Hiding which instrument, from the settlement layer too
 
@@ -63,23 +63,23 @@ The construction used is an asset tag. Holding q units of asset a means holding 
 
 | instruments | set size | build, untagged | build, tagged | package | membership (at issue only) |
 | ---: | ---: | ---: | ---: | ---: | --- |
-| 4 | 4 | 18.9 ± 0.2 (n=15) ms | 19.0 ± 0.3 (n=15) ms | +32 B | prove 0.85 ± 0.06 (n=15) / verify 0.72 ± 0.04 (n=15) ms, 448 B |
-| 16 | 16 | 18.9 ± 0.3 (n=15) ms | 19.0 ± 0.3 (n=15) ms | +32 B | prove 3.20 ± 0.12 (n=15) / verify 1.82 ± 0.07 (n=15) ms, 896 B |
-| 64 | 64 | 18.7 ± 0.2 (n=15) ms | 19.0 ± 0.5 (n=15) ms | +32 B | prove 13.71 ± 0.51 (n=15) / verify 5.03 ± 0.21 (n=15) ms, 1344 B |
+| 4 | 4 | 19.4 ± 0.2 (n=15) ms | 19.5 ± 0.3 (n=15) ms | +32 B | prove 0.76 ± 0.09 (n=15) / verify 0.58 ± 0.03 (n=15) ms, 448 B |
+| 16 | 16 | 19.5 ± 0.3 (n=15) ms | 19.4 ± 0.3 (n=15) ms | +32 B | prove 1.74 ± 0.06 (n=15) / verify 1.16 ± 0.03 (n=15) ms, 896 B |
+| 64 | 64 | 19.5 ± 0.1 (n=15) ms | 19.9 ± 0.7 (n=15) ms | +32 B | prove 4.66 ± 0.10 (n=15) / verify 2.24 ± 0.08 (n=15) ms, 1344 B |
 
-Every row of the untagged column runs the same work, so its own spread --- **0.2 ms** --- is this measurement's noise floor. The tagged column differs from it by +0.1 to +0.3 ms, which is **inside that floor**. So the honest statement is that the time cost is too small to measure here; a percentage would mislead. Only the extra bytes are certain.
+Every row of the untagged column runs the same work, so its own spread --- **0.2 ms** --- is this measurement's noise floor. The tagged column differs from it by -0.2 to +0.3 ms, which is **inside that floor**. So the honest statement is that the time cost is too small to measure here; a percentage would mislead. Only the extra bytes are certain.
 
 Per settlement the addition is **32 B** (one published tag) and one sigma proof across generators. The one-out-of-many membership proof (Groth-Kohlweiss) is not needed every time: a balance already sitting under a registered tag passes soundness down to the transfer, so the proof is needed **once, when the balance is issued into the account**.
 
 Indistinguishability and the attack arms, measured:
 
-- 4 instruments: the package is identical whichever one it is (identical, 29,555 B across 4 instruments).
+- 4 instruments: the package is identical whichever one it is (identical, 57,971 B across 4 instruments).
   - carry it out under a registered tag for another asset: `rejected` --- securities leg: remainder does not equal balance minus amount
   - use a point that was never registered: `rejected` --- securities leg: remainder does not equal balance minus amount
-- 16 instruments: the package is identical whichever one it is (identical, 29,555 B across 8 instruments).
+- 16 instruments: the package is identical whichever one it is (identical, 57,971 B across 8 instruments).
   - carry it out under a registered tag for another asset: `rejected` --- securities leg: remainder does not equal balance minus amount
   - use a point that was never registered: `rejected` --- securities leg: remainder does not equal balance minus amount
-- 64 instruments: the package is identical whichever one it is (identical, 29,555 B across 8 instruments).
+- 64 instruments: the package is identical whichever one it is (identical, 57,971 B across 8 instruments).
   - carry it out under a registered tag for another asset: `rejected` --- securities leg: remainder does not equal balance minus amount
   - use a point that was never registered: `rejected` --- securities leg: remainder does not equal balance minus amount
 
@@ -94,18 +94,18 @@ A rail is either gross or net, and that single choice decides everything else.
 
 | N | P | mode | verify per order | verify at close | verify total | vs gross-gross |
 | ---: | ---: | --- | ---: | ---: | ---: | ---: |
-| 16 | 8 | gross-gross | 51.73 ± 6.23 (n=3) ms | 0.3 ± 0.0 (n=3) ms | 827.9 ± 99.6 (n=3) ms | 1.00x |
-| 16 | 8 | gross-net | 37.00 ± 0.11 (n=3) ms | 87.9 ± 0.6 (n=3) ms | 679.9 ± 2.3 (n=3) ms | 1.22x |
-| 16 | 8 | net-net | 27.58 ± 2.01 (n=3) ms | 181.8 ± 9.6 (n=3) ms | 623.1 ± 41.8 (n=3) ms | 1.33x |
-| 16 | 8 | net-net+attested | 0.04 ± 0.00 (n=3) ms | 197.8 ± 27.0 (n=3) ms | 198.5 ± 27.0 (n=3) ms | 4.17x |
-| 64 | 8 | gross-gross | 50.67 ± 1.78 (n=3) ms | 0.2 ± 0.0 (n=3) ms | 3243.0 ± 114.0 (n=3) ms | 1.00x |
-| 64 | 8 | gross-net | 38.72 ± 1.46 (n=3) ms | 95.3 ± 9.2 (n=3) ms | 2573.2 ± 101.4 (n=3) ms | 1.26x |
-| 64 | 8 | net-net | 26.47 ± 0.46 (n=3) ms | 176.9 ± 1.3 (n=3) ms | 1871.0 ± 28.1 (n=3) ms | 1.73x |
-| 64 | 8 | net-net+attested | 0.04 ± 0.00 (n=3) ms | 178.2 ± 2.7 (n=3) ms | 180.7 ± 2.7 (n=3) ms | 17.95x |
+| 16 | 8 | gross-gross | 6.18 ± 0.04 (n=3) ms | 0.0 ± 0.0 (n=3) ms | 98.9 ± 0.6 (n=3) ms | 1.00x |
+| 16 | 8 | gross-net | 4.86 ± 0.02 (n=3) ms | 10.3 ± 0.1 (n=3) ms | 88.1 ± 0.3 (n=3) ms | 1.12x |
+| 16 | 8 | net-net | 3.54 ± 0.01 (n=3) ms | 20.4 ± 0.2 (n=3) ms | 77.2 ± 0.3 (n=3) ms | 1.28x |
+| 16 | 8 | net-net+attested | 0.00 ± 0.00 (n=3) ms | 20.7 ± 0.6 (n=3) ms | 20.7 ± 0.6 (n=3) ms | 4.78x |
+| 64 | 8 | gross-gross | 6.25 ± 0.13 (n=3) ms | 0.0 ± 0.0 (n=3) ms | 400.0 ± 8.2 (n=3) ms | 1.00x |
+| 64 | 8 | gross-net | 4.84 ± 0.05 (n=3) ms | 10.3 ± 0.1 (n=3) ms | 320.1 ± 3.2 (n=3) ms | 1.25x |
+| 64 | 8 | net-net | 3.54 ± 0.02 (n=3) ms | 20.7 ± 0.8 (n=3) ms | 247.5 ± 2.1 (n=3) ms | 1.62x |
+| 64 | 8 | net-net+attested | 0.00 ± 0.00 (n=3) ms | 20.5 ± 0.1 (n=3) ms | 20.6 ± 0.1 (n=3) ms | 19.40x |
 
-**The first prediction was wrong.** Counting range proofs alone gave an estimate that net-net would be an eighth of the work; measured, it is only 1.73x. Even under net-net, 26.5 ± 0.5 (n=3) ms per order remains, and that is the verification of the zkPI instruction itself --- which carries range proofs on amount and price inside it. **It is needed once per trade and netting does not remove it.**
+**The first prediction was wrong.** Counting range proofs alone gave an estimate that net-net would be an eighth of the work; measured, it is only 1.62x. Even under net-net, 3.5 ± 0.0 (n=3) ms per order remains, and that is the verification of the zkPI instruction itself --- which carries range proofs on amount and price inside it. **It is needed once per trade and netting does not remove it.**
 
-What removes it is changing the **granularity of the instruction**. If the quorum signs a whole cycle rather than each trade, the settlement layer's work stops depending on the number of trades (0.04 ± 0.00 (n=3) ms per order, 180.7 ± 2.7 (n=3) ms in total, **18.0x**). The individual trades are then no longer verified, so the allocation between participants becomes **the quorum's attestation rather than a proof**. Conservation and coverage still hold, and each participant can check its own net, so what is lost is third-party verifiability of the allocation. That is what a central counterparty has always been; this only makes it explicit.
+What removes it is changing the **granularity of the instruction**. If the quorum signs a whole cycle rather than each trade, the settlement layer's work stops depending on the number of trades (0.00 ± 0.00 (n=3) ms per order, 20.6 ± 0.1 (n=3) ms in total, **19.4x**). The individual trades are then no longer verified, so the allocation between participants becomes **the quorum's attestation rather than a proof**. Conservation and coverage still hold, and each participant can check its own net, so what is lost is third-party verifiability of the allocation. That is what a central counterparty has always been; this only makes it explicit.
 
 ### 4.1 How far a net position may go (an intraday overdraft)
 
@@ -115,11 +115,11 @@ The limit is a **commitment**, and not only to hide its size. Coverage is then p
 
 | operation | cost | how often |
 | --- | ---: | --- |
-| grant a limit (proving the collateral covers it after haircut) | build 13.0 ± 0.4 (n=15) / verify 15.2 ± 0.5 (n=15) ms | once per limit |
-| coverage proof, no limit | 9.4 ± 0.3 (n=15) ms | per participant per rail, at the close |
-| coverage proof, with a limit | 9.5 ± 0.2 (n=15) ms | as above |
+| grant a limit (proving the collateral covers it after haircut) | build 9.4 ± 0.4 (n=15) / verify 1.3 ± 0.0 (n=15) ms | once per limit |
+| coverage proof, no limit | 9.4 ± 0.2 (n=15) ms | per participant per rail, at the close |
+| coverage proof, with a limit | 9.2 ± 0.2 (n=15) ms | as above |
 
-**The limit is essentially free** (9.4 ± 0.3 (n=15) to 9.5 ± 0.2 (n=15) ms --- the same range proof width against a different commitment). **Admission, pledge, overdraft and payment should be one event**, because doing them in sequence allows either collateral locked with no limit granted or a limit standing with no collateral behind it. **They are not one event here.** This paragraph named an `admit_with_credit` that does not exist in the Rust implementation: `PositionBook::grant` and `Cycle::admit` are separate calls, and a grant that succeeds before an admit that fails leaves the credit standing. There is also no state that locks and unlocks pledged collateral. What is measured above is the cost of the limit, which is real; the atomicity is a design requirement that is written down and not built.
+**The limit is essentially free** (9.4 ± 0.2 (n=15) to 9.2 ± 0.2 (n=15) ms --- the same range proof width against a different commitment). **Admission, pledge, overdraft and payment should be one event**, because doing them in sequence allows either collateral locked with no limit granted or a limit standing with no collateral behind it. **They are not one event here.** This paragraph named an `admit_with_credit` that does not exist in the Rust implementation: `PositionBook::grant` and `Cycle::admit` are separate calls, and a grant that succeeds before an admit that fails leaves the credit standing. There is also no state that locks and unlocks pledged collateral. What is measured above is the cost of the limit, which is real; the atomicity is a design requirement that is written down and not built.
 
 ### 4.2 The default waterfall
 
@@ -127,12 +127,12 @@ A net rail can fail at the close. The order in which that failure is worked thro
 
 | tranches | build | verify |
 | ---: | ---: | ---: |
-| 2 | 27.6 ± 0.7 (n=15) ms | 33.5 ± 0.6 (n=15) ms |
-| 4 | 46.0 ± 0.7 (n=15) ms | 56.0 ± 1.0 (n=15) ms |
-| 8 | 87.2 ± 6.3 (n=15) ms | 105.8 ± 7.4 (n=15) ms |
-| 16 | 159.9 ± 5.2 (n=15) ms | 194.7 ± 7.3 (n=15) ms |
+| 2 | 32.6 ± 0.5 (n=15) ms | 4.0 ± 0.1 (n=15) ms |
+| 4 | 55.3 ± 1.4 (n=15) ms | 6.8 ± 0.3 (n=15) ms |
+| 8 | 99.5 ± 2.1 (n=15) ms | 12.1 ± 0.2 (n=15) ms |
+| 16 | 188.7 ± 1.5 (n=15) ms | 23.1 ± 0.3 (n=15) ms |
 
-**9.5 ms per tranche** --- one range proof's worth, linear. It runs once per default, so nobody need ever care about this number.
+**11.2 ms per tranche** --- one range proof's worth, linear. It runs once per default, so nobody need ever care about this number.
 
 ### 4.2 Interposing a clearing house, and what novation is worth
 
@@ -144,13 +144,13 @@ Measured at 8 participants, against the two arms above run by the same harness:
 
 | trades | net-net | net-net+attested | **DeCCP** | vs net-net | novation |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 16 | 369.3 ± 4.5 (n=3) | 174.1 ± 2.5 (n=3) | **175.6 ms** | **2.09x** | 14.96 us/trade |
-| 64 | 946.8 ± 8.2 (n=3) | 173.2 ± 2.5 (n=3) | **174.0 ms** | **5.43x** | 16.15 us/trade |
-| 256 | 3258.0 ± 12.1 (n=3) | 178.4 ± 0.3 (n=3) | **186.7 ms** | **17.44x** | 15.98 us/trade |
+| 16 | 71.5 ± 9.9 (n=3) | 17.4 ± 0.0 (n=3) | **18.8 ms** | **3.51x** | 0.63 us/trade |
+| 64 | 210.9 ± 0.1 (n=3) | 17.4 ± 0.0 (n=3) | **22.8 ms** | **9.26x** | 0.48 us/trade |
+| 256 | 794.6 ± 1.5 (n=3) | 17.7 ± 0.0 (n=3) | **38.3 ms** | **20.72x** | 0.53 us/trade |
 
-**net-net grows with the trades and DeCCP does not.** From 16 to 256 trades the instruction path goes 367 ms to 3256 ms while the cleared cycle goes 176 ms to 187 ms. What is left is the close, and the close is per participant.
+**net-net grows with the trades and DeCCP does not.** From 16 to 256 trades the instruction path goes 66 ms to 794 ms while the cleared cycle goes 19 ms to 38 ms. What is left is the close, and the close is per participant.
 
-So the speed was never the contribution --- the attested arm already had it. **What novation costs is 15.98 us a trade, and what it buys is that the arm is defensible**: a named house took the other side, its book is checked flat by anyone, its margin is posted as a committed cap, and its own capital sits in the default waterfall between the defaulting member's fund contribution and the mutualised pool, which is where CPMI-IOSCO and EMIR put it.
+So the speed was never the contribution --- the attested arm already had it. **What novation costs is 0.53 us a trade, and what it buys is that the arm is defensible**: a named house took the other side, its book is checked flat by anyone, its margin is posted as a committed cap, and its own capital sits in the default waterfall between the defaulting member's fund contribution and the mutualised pool, which is where CPMI-IOSCO and EMIR put it.
 
 A slot rather than a dependency. A deployment names the providers it accepts and several may coexist; nothing in the netting cycle or the settlement layer knows which house cleared a trade, and a deployment with no provider at all is the bilateral case, which still works and pays per-trade proofs for it.
 
@@ -164,21 +164,21 @@ So accounts were replaced by notes. A note is `C = g^S . A_a^v . h^r`, where onl
 
 | ring size | prove (payer) | verify (node) | wire |
 | ---: | ---: | ---: | ---: |
-| 2 | 19.1 ± 0.3 (n=15) ms | 22.6 ± 0.2 (n=15) ms | 18,784 B |
-| 4 | 20.1 ± 0.4 (n=15) ms | 23.7 ± 0.5 (n=15) ms | 19,008 B |
-| 8 | 20.8 ± 0.4 (n=15) ms | 24.0 ± 0.4 (n=15) ms | 19,232 B |
-| 16 | 22.2 ± 0.5 (n=15) ms | 24.3 ± 0.5 (n=15) ms | 19,456 B |
-| 32 | 26.2 ± 0.9 (n=15) ms | 26.1 ± 0.7 (n=15) ms | 19,680 B |
-| 64 | 33.5 ± 0.9 (n=15) ms | 28.2 ± 0.8 (n=15) ms | 19,904 B |
-| 128 | 49.8 ± 1.5 (n=15) ms | 32.5 ± 0.7 (n=15) ms | 20,128 B |
-| 256 | 85.6 ± 1.5 (n=15) ms | 40.9 ± 0.7 (n=15) ms | 20,352 B |
-| 512 | 164.7 ± 3.5 (n=15) ms | 57.8 ± 0.8 (n=15) ms | 20,576 B |
+| 2 | 10.9 ± 0.3 (n=15) ms | 1.8 ± 0.1 (n=15) ms | 37,024 B |
+| 4 | 11.2 ± 0.3 (n=15) ms | 2.1 ± 0.1 (n=15) ms | 37,248 B |
+| 8 | 11.3 ± 0.1 (n=15) ms | 2.4 ± 0.1 (n=15) ms | 37,472 B |
+| 16 | 11.7 ± 0.2 (n=15) ms | 2.6 ± 0.1 (n=15) ms | 37,696 B |
+| 32 | 12.7 ± 0.2 (n=15) ms | 3.1 ± 0.1 (n=15) ms | 37,920 B |
+| 64 | 14.5 ± 0.2 (n=15) ms | 3.7 ± 0.1 (n=15) ms | 38,144 B |
+| 128 | 18.2 ± 0.3 (n=15) ms | 4.7 ± 0.2 (n=15) ms | 38,368 B |
+| 256 | 26.2 ± 0.3 (n=15) ms | 6.4 ± 0.2 (n=15) ms | 38,592 B |
+| 512 | 40.3 ± 1.0 (n=15) ms | 9.3 ± 0.3 (n=15) ms | 38,816 B |
 
-**The asymmetry is the point.** The wire grows by 224 B per doubling, and verification only goes from 22.6 ± 0.2 (n=15) to 57.8 ± 0.8 (n=15) ms between rings 2 and 512. What breaks is the proving side: 19.1 ± 0.3 (n=15) to 164.7 ± 3.5 (n=15) ms.
-So **what caps the anonymity set is the payer, not the settlement node**. A ring of 64 costs 33.5 ± 0.9 (n=15) ms to prove and 28.2 ± 0.8 (n=15) ms to verify, which a payer's own device can carry.
+**The asymmetry is the point.** The wire grows by 224 B per doubling, and verification only goes from 1.8 ± 0.1 (n=15) to 9.3 ± 0.3 (n=15) ms between rings 2 and 512. What breaks is the proving side: 10.9 ± 0.3 (n=15) to 40.3 ± 1.0 (n=15) ms.
+So **what caps the anonymity set is the payer, not the settlement node**. A ring of 64 costs 14.5 ± 0.2 (n=15) ms to prove and 3.7 ± 0.1 (n=15) ms to verify, which a payer's own device can carry.
 
-A payee has to scan the pool to find its own notes, at **0.055 ms** each (28.2 ms over 512). That is one scalar multiplication, and it is the only cost proportional to the pool.
-Two payments to the same address cannot be linked: **True** (neither the commitments nor the ephemeral points match).
+A payee has to scan the pool to find its own notes, at **0.063 ms** each (32.3 ms over 512). That is one scalar multiplication, and it is the only cost proportional to the pool.
+Two payments to the same address cannot be linked: **true** (neither the commitments nor the ephemeral points match).
 
 ### 5.1 The same DvP over note rails
 
@@ -186,14 +186,14 @@ Both rails were made note rails and the settlement itself was run through them. 
 
 | ring size | build | settle (verify) | package | vs the account version |
 | ---: | ---: | ---: | ---: | ---: |
-| 2 | 49.7 ± 9.7 (n=5) ms | 88.6 ± 13.1 (n=5) ms | 49,547 B | +82% |
-| 4 | 53.9 ± 16.9 (n=5) ms | 82.9 ± 14.9 (n=5) ms | 50,123 B | +70% |
-| 8 | 42.7 ± 0.2 (n=5) ms | 75.2 ± 1.2 (n=5) ms | 50,827 B | +54% |
-| 16 | 46.8 ± 1.1 (n=5) ms | 80.8 ± 7.3 (n=5) ms | 51,787 B | +66% |
-| 32 | 55.1 ± 4.1 (n=5) ms | 82.1 ± 7.6 (n=5) ms | 53,259 B | +68% |
-| 64 | 67.0 ± 0.6 (n=5) ms | 83.9 ± 0.5 (n=5) ms | 55,755 B | +72% |
+| 2 | 22.0 ± 0.2 (n=5) ms | 7.7 ± 0.3 (n=5) ms | 96,203 B | -77% |
+| 4 | 22.9 ± 0.5 (n=5) ms | 8.5 ± 0.2 (n=5) ms | 96,779 B | -75% |
+| 8 | 23.4 ± 0.2 (n=5) ms | 8.9 ± 0.2 (n=5) ms | 97,483 B | -74% |
+| 16 | 24.4 ± 0.4 (n=5) ms | 9.3 ± 0.1 (n=5) ms | 98,443 B | -73% |
+| 32 | 25.9 ± 0.1 (n=5) ms | 10.1 ± 0.1 (n=5) ms | 99,915 B | -70% |
+| 64 | 29.8 ± 0.2 (n=5) ms | 11.5 ± 0.1 (n=5) ms | 102,411 B | -66% |
 
-The account version settles in 48.8 ± 2.0 (n=15) ms at 40 bits. Hiding the counterparties costs +82% at ring 2 and +72% at ring 64.
+The account version settles in 34.0 ± 0.7 (n=15) ms at 40 bits. Hiding the counterparties costs -77% at ring 2 and -66% at ring 64.
 **Adding up the parts was off by more than a factor of two.** A note leg and an account leg both carry two range proofs; the difference is only the ring proof, the serial proof and one equality proof.
 
 ### 5.2 What the ring is actually worth
@@ -229,12 +229,12 @@ The benchmark above found something that is not about rings. Its verification ti
 
 | notes held | root by walking | root as kept | |
 | ---: | ---: | ---: | ---: |
-| 64 | 238.4 ± 2.4 (n=9) us | 0.19 ± 0.11 (n=9) us | 1,263x |
-| 256 | 949.3 ± 2.3 (n=9) us | 0.21 ± 0.17 (n=9) us | 4,480x |
-| 1,024 | 3800.0 ± 5.0 (n=9) us | 0.13 ± 0.03 (n=9) us | 28,788x |
-| 4,096 | 15187.3 ± 16.0 (n=9) us | 0.16 ± 0.01 (n=9) us | 95,278x |
+| 64 | 241.0 ± 2.2 (n=9) us | 0.15 ± 0.10 (n=9) us | 1,615x |
+| 256 | 956.2 ± 2.1 (n=9) us | 0.15 ± 0.11 (n=9) us | 6,233x |
+| 1,024 | 3819.0 ± 6.8 (n=9) us | 0.13 ± 0.03 (n=9) us | 29,929x |
+| 4,096 | 15324.9 ± 36.2 (n=9) us | 0.23 ± 0.12 (n=9) us | 66,027x |
 
-At 4,096 notes the four roots in one settlement came to **60.7 ms**, against about 8 ms of cryptography --- the bookkeeping had become an order of magnitude more expensive than the proofs, and it would keep growing, because it was a function of total history rather than of activity. That is the exact property §7 checks for the account rail and it had gone unchecked here.
+At 4,096 notes the four roots in one settlement came to **61.3 ms**, against about 8 ms of cryptography --- the bookkeeping had become an order of magnitude more expensive than the proofs, and it would keep growing, because it was a function of total history rather than of activity. That is the exact property §7 checks for the account rail and it had gone unchecked here.
 
 Nothing about the ledger required it. Notes are only ever appended --- a spent note stays in the pool, because removing it would say which one went --- and serials are only ever inserted, so the hash of the whole history is a running hash extended once per change. The sort was buying order-independence for a sequence that already has an order: the one the chain applied. The root is now kept rather than recomputed and the column above is flat.
 
@@ -259,10 +259,10 @@ Bob draws the secret and moves first, so Bob is never at risk: if he stops after
 
 | | measured, 32-bit rails |
 | --- | ---: |
-| prepare one leg (check, and move it out of reach) | 1.28 ± 0.01 ms (n=25) |
+| prepare one leg (check, and move it out of reach) | 1.29 ± 0.02 ms (n=25) |
 | the first mover's claim | 0.05 ± 0.00 ms (n=25) |
 | **the second mover's reaction** | **0.06 ± 0.00 ms (n=25)** |
-| unwind an expired leg | 0.63 ± 0.04 us (n=25) |
+| unwind an expired leg | 0.55 ± 0.03 us (n=25) |
 
 **The cryptography is not what puts the money at risk.** Recovering the secret, adapting the signature and having the second ledger accept it comes to 0.06 ms. The deadline gap has to cover that *plus* the time for one ledger to publish the first claim and the other to accept the second --- block times and network round trips, which are three to five orders of magnitude larger. So the exposure is set by the settlement finality of the two ledgers and not by anything in this repository, and a deployment that wants a short window should shop for finality rather than for faster proofs.
 
@@ -280,11 +280,11 @@ What the second arm costs is small and flat:
 | --- | ---: | ---: |
 | calls | 16 | 64 |
 | state slots written | 96 | 128 |
-| bytes written | 3328 | 3072 |
-| verification | 282.2 ± 0.2 (n=5) ms | 291.8 ± 0.3 (n=5) ms |
+| bytes written | 3328 | 4096 |
+| verification | 281.3 ± 0.1 (n=5) ms | 289.7 ± 0.2 (n=5) ms |
 | exposure window | none | at least one block |
 
-Four times the calls and a third more state slots --- holding **fewer bytes** in them, because a settlement records a nullifier and a deadline (40 bytes a venue) where the escrow path records neither: the escrow key is itself the replay guard, and it costs a slot rather than bytes --- for **3.4% more verification** (+3.0% to +3.8% across the table). The range proofs dominate, and the escrow and the signature are a few percent beside them rather than nothing at all: this is a difference the earlier run on a loaded machine could not resolve: both arms read 413 ms there, with standard deviations of 9 and 20 ms against a gap that should have been about 14. It was not measured to be zero; it was not measurable.
+Four times the calls and a third more state slots --- holding **fewer bytes** in them, because a settlement records a nullifier and a deadline (40 bytes a venue) where the escrow path records neither: the escrow key is itself the replay guard, and it costs a slot rather than bytes --- for **3.0% more verification** (+2.6% to +3.2% across the table). The range proofs dominate, and the escrow and the signature are a few percent beside them rather than nothing at all: this is a difference the earlier run on a loaded machine could not resolve: both arms read 413 ms there, with standard deviations of 9 and 20 ms against a gap that should have been about 14. It was not measured to be zero; it was not measurable.
 
 What it buys is the question, and the answer turned out to depend on something that was not cryptography at all.
 
@@ -331,13 +331,13 @@ It is one line of algebra. Commitments multiply, so the product of the balances 
 
 | positions | prove | check | quorum assembles |
 | ---: | ---: | ---: | ---: |
-| 16 | 0.25 ± 0.02 (n=7) | 0.30 ± 0.01 (n=7) | 1.29 ± 0.01 (n=7) (3 of 7) |
-| 64 | 0.61 ± 0.02 (n=7) | 0.65 ± 0.03 (n=7) | 1.60 ± 0.06 (n=7) (3 of 7) |
-| 256 | 2.04 ± 0.05 (n=7) | 2.04 ± 0.03 (n=7) | 3.04 ± 0.02 (n=7) (3 of 7) |
-| 1,024 | 7.79 ± 0.06 (n=7) | 7.81 ± 0.12 (n=7) | 8.55 ± 0.08 (n=7) (3 of 7) |
-| 4,096 | 34.77 ± 2.82 (n=7) | 30.15 ± 0.30 (n=7) | 31.02 ± 0.27 (n=7) (3 of 7) |
+| 16 | 0.09 ± 0.00 (n=9) | 0.08 ± 0.00 (n=9) | 4.51 ± 0.01 (n=9) (3 of 7) |
+| 64 | 0.10 ± 0.00 (n=9) | 0.09 ± 0.00 (n=9) | 4.50 ± 0.01 (n=9) (3 of 7) |
+| 256 | 0.13 ± 0.00 (n=9) | 0.11 ± 0.00 (n=9) | 4.52 ± 0.01 (n=9) (3 of 7) |
+| 1,024 | 0.26 ± 0.00 (n=9) | 0.22 ± 0.00 (n=9) | 4.51 ± 0.02 (n=9) (3 of 7) |
+| 4,096 | 0.75 ± 0.01 (n=9) | 0.65 ± 0.00 (n=9) | 4.51 ± 0.01 (n=9) (3 of 7) |
 
-Linear in the positions and nothing else: at 4,096 it is 30.2 ± 0.3 (n=7) to check, and the proof on the wire is 96 B whatever the ledger holds.
+Linear in the positions and nothing else: at 4,096 it is 0.6 ± 0.0 (n=9) to check, and the proof on the wire is 96 B whatever the ledger holds.
 
 The **quorum** column is the same statement assembled by nodes holding shares of the aggregate blinding, so nobody holds the sum --- which matters, because whoever holds it could open the whole ledger. A sigma response is affine in the witness, so the partials combine into an ordinary proof any verifier accepts.
 
@@ -353,7 +353,7 @@ If the totals disagree the proof does not verify, and that is all anyone learns.
 | 1,024 | 21 | 21 | 21 | 1 position |
 | 4,096 | 25 | 25 | 25 | 1 position |
 
-A register that holds **a figure per position** rather than one for the account localises for free and discloses nothing: an account management institution already holds the mapping from handle to book-entry account, so it holds the openings and the check is arithmetic on numbers it has. At 4,096 positions that is 322.2 ms.
+A register that holds **a figure per position** rather than one for the account localises for free and discloses nothing: an account management institution already holds the mapping from handle to book-entry account, so it holds the openings and the check is arithmetic on numbers it has. At 4,096 positions that is 251.1 ms.
 
 **Reconciling is the cheap half and the search is not.** Which one you are in depends on what the register keeps, which is a question about the counterparty and not about this ledger.
 
@@ -372,7 +372,7 @@ The note rail's delivery versus payment is ported, and this is the measurement t
 
 **The package is the comparable column and it is about nine times smaller** --- 5,476 B against 50,827 at a ring of eight --- which is the same Bulletproofs-against-bit-decomposition effect the account rail showed in section 5.1.
 
-The two `build` columns are **not** comparable and the ratio between them means nothing: the Rust one includes the whole three-of-seven FROST ceremony that issues the instruction, and the Python one does not. Saying so is cheaper than a footnote nobody reads under a number somebody quotes.
+The `build` column includes the whole three-of-seven FROST ceremony that issues the instruction. It is therefore an end-to-end construction cost, not only a range-proof microbenchmark.
 
 `settle` builds a fresh world and a fresh package each time, because settling consumes both, so it is an upper bound carrying a build inside it.
 
@@ -384,13 +384,13 @@ The scoping is not in the key. It is in the **address**. A scope --- an instrume
 
 | pool | scan | per note | reached | exactly its scope | serials recovered |
 | ---: | ---: | ---: | ---: | :---: | ---: |
-| 64 | 3.8 ± 0.1 (n=5) | 0.0576 ms | 13 of 64 (20.3%) | yes | 0 |
-| 256 | 15.4 ± 0.2 (n=5) | 0.0591 ms | 52 of 256 (20.3%) | yes | 0 |
-| 1,024 | 60.8 ± 0.7 (n=5) | 0.0585 ms | 205 of 1,024 (20.0%) | yes | 0 |
+| 64 | 3.2 ± 0.0 (n=5) | 0.0505 ms | 13 of 64 (20.3%) | yes | 0 |
+| 256 | 13.0 ± 0.0 (n=5) | 0.0507 ms | 52 of 256 (20.3%) | yes | 0 |
+| 1,024 | 51.8 ± 0.1 (n=5) | 0.0505 ms | 205 of 1,024 (20.0%) | yes | 0 |
 
-The scan is one scalar multiplication a note, the same as a wallet scanning for itself, at 0.0585 ms. With 4 scopes in the pool plus a stranger's notes the holder reaches about a fifth of it, which is the fifth it was granted --- and **no serial numbers at all**, because a serial needs the spend key and the grant does not carry one.
+The scan is one scalar multiplication a note, the same as a wallet scanning for itself, at 0.0505 ms. With 4 scopes in the pool plus a stranger's notes the holder reaches about a fifth of it, which is the fifth it was granted --- and **no serial numbers at all**, because a serial needs the spend key and the grant does not carry one.
 
-A grant is 0.04 ± 0.00 (n=15) to issue and 0.05 ± 0.00 (n=15) to check. It names the grantee and is signed by the wallet, so a key found somewhere it should not be traces to the grant that produced it --- attribution rather than prevention, the same trade `rust/qomm-transport/src/roles.rs` makes about a dealt share.
+A grant is 0.08 ± 0.00 (n=15) to issue and 0.07 ± 0.01 (n=15) to check. It names the grantee and is signed by the wallet, so a key found somewhere it should not be traces to the grant that produced it --- attribution rather than prevention, the same trade `rust/qomm-transport/src/roles.rs` makes about a dealt share.
 
 ### 6.6.1 Three limits that do not go away
 
@@ -435,13 +435,13 @@ Measured on `host-c`, 200 repeats, medians.
 
 The size was predicted exactly: 1004 bytes at a crowd of 16, of which 928 is the ring, 64 the control proof and 12 the group and epoch. Every doubling adds exactly 224 --- one point in each of the ring's four vectors and one scalar in each of its three.
 
-**Two predictions missed, and the second changed a design choice.** Verifying was predicted under 1 ms in Rust against Python's 1.81 ms at a crowd of 16; it came in at 1.33 ± 0.07 (n=200), a factor of 1.4. The reason is the one `BINDING.md` gives about VOLEitH: the Python side already runs its group arithmetic in C through PyNaCl, so Rust wins the glue and not the arithmetic. The Rust figure also does strictly more --- it verifies the control proof and shifts every envelope.
+**Two predictions missed, and the second changed a design choice.** Verifying was predicted under 1 ms at a crowd of 16; it came in at 1.33 ± 0.07 (n=200). The measured verifier also checks the control proof and shifts every envelope, so this is the complete verifier cost rather than a group-arithmetic microbenchmark.
 
 The consequential miss is the second. **Verification was predicted to double with the crowd and grows about 1.4x instead**: 32x the crowd costs 5.8x the work, which is the batched multi-scalar multiplication showing through. The crowd had been capped at 16 on a belief about linearity the measurement does not support. At 128 the check is 3.84 ± 0.39 (n=200) against the 51.9 ms a note settlement already costs, and the wire grows by 672 bytes. **128 is the default the code carries** (`vetting::CROWD`).
 
 What stays out of reach is a crowd of thousands. That needs a Merkle tree checked inside a circuit --- a different proof system from the sigma protocols and Bulletproofs this stack is built on, with a compiler and a setup behind it.
 
-**Where the check runs.** The node committee verifies the complete proof before it signs. The dedicated Avalanche VM verifies the 3-of-7 approval and binds it to the proof digest, chain, rail, deadline, sequence and previous state root. Validators do not yet re-run every Bulletproof; that remaining trust boundary is explicit in `ZKPI_WIRE.md`.
+**Where the check runs.** The node committee verifies the complete proof before it signs. The product transaction carries the submitted evidence, and every dedicated Avalanche VM validator independently verifies the 3-of-7 approval, typed zkPI, complete quote proof, joint ranges, taker price limit, asset link, DvP relation and state transition. Validators do not re-run the private MP-SPDZ transcript or prove the node-local share-to-proof handoff; that remaining trust boundary is explicit in `ZKPI_WIRE.md`.
 
 ### 6.8 Native Avalanche L1 acceptance
 
@@ -451,9 +451,9 @@ The deployed execution path is a dedicated non-EVM Avalanche custom VM in `avala
 | --- | ---: |
 | local AvalancheGo processes | 5 |
 | accepted heights | 1, 2, 3, 4, 5 |
-| settlement acceptance | 218.2 ms |
-| two account openings | 426.2 ms |
-| node restart and state recovery | 648.6 ms |
+| settlement acceptance | 207.3 ms |
+| two account openings | 424.6 ms |
+| node restart and state recovery | 1454.7 ms |
 | one state root before restart | yes |
 | same state root after restart | yes |
 
@@ -465,34 +465,34 @@ Verification only --- proving is the counterparty's work and the clock is stoppe
 
 | workers | settlements/s | vs one worker |
 | ---: | ---: | ---: |
-| 1 | 21.0 ± 0.0 (n=7) | 1.00x |
-| 2 | 41.8 ± 0.1 (n=7) | 1.99x |
-| 4 | 81.9 ± 1.3 (n=7) | 3.91x |
-| 8 | 157.0 ± 3.6 (n=7) | 7.49x |
+| 1 | 29.3 ± 0.3 (n=7) | 1.00x |
+| 2 | 57.1 ± 4.6 (n=7) | 1.95x |
+| 4 | 113.3 ± 8.1 (n=7) | 3.87x |
+| 8 | 216.6 ± 2.8 (n=7) | 7.40x |
 
-Verifications of independent packages share nothing, so they parallelise completely: **157 per second** on 8 workers. A settlement node's capacity is a procurement question, not a design one.
+Verifications of independent packages share nothing, so they parallelise completely: **217 per second** on 8 workers. A settlement node's capacity is a procurement question, not a design one.
 
-## 8. The Rust port
+## 8. Native Rust proof backends
 
-Measured on the same machine (`host-c` / rustc 1.97.1 (8bab26f4f 2026-07-14) / group ristretto255). The scalar-multiplication calibration is 35.8 us in Rust against 37.3 us in Python, and **this one figure is the only thing that compares across the two languages** --- Python goes through libsodium and Rust through dalek, different implementations of the same thing: a scalar multiplication on a native-code 255-bit curve. That they agree says the two are equally fast and, more usefully, that **the machine was in the same state**, which is what stops the ratios below being explained by the machine.
+The optimized backend was measured on `host-a` and the baseline on `host-c` with rustc 1.97.1 (8bab26f4f 2026-07-14). Scalar-multiplication calibration was 38.4 us for the baseline and 25.8 us for the optimized backend. Host differences are included in the following ratios; rerun both artifacts on one host before using them as promotion evidence.
 
-What is being compared is not only the language. The port also replaced a hand-rolled bit-decomposition range proof with the audited `bulletproofs` crate, so **the ratios below are 'became Rust' and 'became Bulletproofs' added together**. The order-of-magnitude change on the wire is the second of those: linear became logarithmic.
+The baseline uses a linear bit-decomposition range proof. The optimized backend uses the audited `bulletproofs` crate, changing proof size from linear to logarithmic. Both implementations, the benchmark driver and the document generator are native Rust.
 
-| balance width | Python settle | Rust settle | ratio | Python package | Rust package | ratio |
+| balance width | linear settle | Bulletproof settle | speedup | linear package | Bulletproof package | reduction |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 8 bit | 30.4 ± 0.4 (n=15) ms | 2.16 ms | 14.1x | 15,187 B | 2,240 B | 6.8x |
-| 16 bit | 34.8 ± 1.2 (n=15) ms | 3.04 ms | 11.5x | 18,771 B | 2,432 B | 7.7x |
-| 32 bit | 47.5 ± 4.9 (n=15) ms | 4.85 ms | 9.8x | 25,939 B | 2,624 B | 9.9x |
+| 8 bit | 8.5 ± 0.1 (n=15) ms | 2.09 ms | 4.1x | 29,267 B | 2,656 B | 11.0x |
+| 16 bit | 14.8 ± 0.4 (n=15) ms | 2.78 ms | 5.3x | 36,435 B | 2,912 B | 12.5x |
+| 32 bit | 27.6 ± 0.3 (n=15) ms | 4.26 ms | 6.5x | 50,771 B | 3,168 B | 16.0x |
 
-Bulletproofs only comes in powers of two, so a 40-bit rail **rounds up to 64**. Comparing against the rounded-up side is the honest comparison: 48.8 ± 2.0 (n=15) ms for Python at 40 bits against 7.79 ms for Rust at 64, **6.3x**. The package goes from 29,523 to 2,816 B, **10.5x**.
+Bulletproofs uses power-of-two widths, so a 40-bit rail rounds up to 64 bits. The honest cross-width comparison is 34.0 ± 0.7 (n=15) ms for the 40-bit linear backend against 7.02 ms for the 64-bit Bulletproof backend, **4.8x**. The package falls from 57,939 B to 3,424 B, **16.9x**.
 
-Per core that is 20.5 to 128.5 settlements per second. Parallelism is independent, so multiply by cores.
+Per core, that is 29.4 to 142.5 settlements per second.
 
-**Losing the fine grain of the width is a real cost.** A bit decomposition could prove 24 or 40 bits directly, which is what made the per-rail width optimisation of section 2.1 work. With only powers of two, securities at 24 bits round up to 32 and cash at 40 to 64. The conclusion here is that the table above is still a large enough difference to swallow that.
+The optimized backend loses fine-grained proof widths: securities at 24 bits round to 32, and cash at 40 bits rounds to 64. The table measures whether the logarithmic proof still wins after paying that rounding cost.
 
 ## 9. What is still missing
 
-- Avalanche validators verify the committee approval and proof digest, not the complete zero-knowledge proof. Removing that committee trust requires a consensus-safe verifier inside the VM and a separate audit.
+- Avalanche validators independently verify the complete submitted product proof suite, but they do not re-run the private MP-SPDZ transcript or prove the node-local share-to-proof handoff. Removing that remaining committee trust requires a proof of the whole private computation and a separate consensus benchmark.
 - A tagged cash leg needs cash accounts opened under that currency's tag; the remainder proof opens against the balance the payer already has, so a leg cannot claim a currency the account is not denominated in. That is the property doing the work, and it means adding a second settlement currency is an account-opening decision rather than a code change.
 - Whoever sent a note can tell that it was spent, because they know the `g^S` they built. That is unavoidable in this construction. To a third party the ring size is the limit of what is learned.
 - The note rail's decoy selection is uniform over the pool, and a real spend is of a recently received note. Section 5's finding stands: an anonymity set is other people's traffic, and the decoy rule only decides whether the ring can use it.

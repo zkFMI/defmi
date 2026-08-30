@@ -2,89 +2,93 @@
   "accepted_transitions": {
     "bootstrap_asset": {
       "height": 1,
-      "tx_id": "2HRvkt4G217tQYjzMChaUgnnUdfWkA49Qa5y3QH5H6hhnNTXvg"
+      "tx_id": "bpivjnq9bNyR9EpLxjW9SgXZdTEcmBMxdnebG8KSaWipGYHwq"
     },
     "instrument_asset": {
       "height": 2,
-      "tx_id": "2XbwNATCeLAnAk3HAah5bMmKFhFbVHbVyqdeLk8LUbChY7sScY"
+      "tx_id": "2E3dE1nd9GqRq3FeVzcCyvzQ3uL6Mg3UmSUeCPd8QpkCBYXV3r"
     },
     "left_account": {
       "height": 3,
-      "tx_id": "VwXcXd2jUPQqgAZwvowNx9w1gdp4qCTczyUUj45es7gbQKqNW"
+      "tx_id": "26PRH6mnsY9LudE8816geRp7b288TKFyTNjK81oBSp44617XfS"
     },
     "right_account": {
       "height": 4,
-      "tx_id": "snaEdf57iX8UpcdXT4tHz4pyVsCCTEQZYonFG7S1ppxpTZyiB"
+      "tx_id": "2wGr7Zbx1Z2tNvjCStEBmT1Rrgr7ajQe1juxKQ1q2xxP5kSwqo"
     },
     "settlement": {
       "height": 5,
-      "tx_id": "2C1KP5biKV9KhUH92o6boecCnYhvCnbYAhfWS24sGpHnCTYARF"
+      "tx_id": "yHo4DTdLmtcPgfQiZsEws8iohC8rEPb1yoSGvVT4vqvnBR7bc"
     }
   },
-  "chain_id": "xTqnS9sudzodVpxzbE7F1Vkogv7GAeGAiQgBZvV9E98u61pBs",
+  "chain_id": "2W841Gz9qHcyyTLSGW3E7Yqya8gVaA37VP2fN9dekShMZaRDvX",
   "crash_recovery": {
     "accepted_height": 2,
     "same_transaction": true,
-    "transaction_id": "2XbwNATCeLAnAk3HAah5bMmKFhFbVHbVyqdeLk8LUbChY7sScY"
+    "transaction_id": "2E3dE1nd9GqRq3FeVzcCyvzQ3uL6Mg3UmSUeCPd8QpkCBYXV3r"
   },
-  "elapsed_seconds": 2.7433073749998584,
+  "elapsed_seconds": 3.185300541,
   "environment": "5 local AvalancheGo processes on one host; not geographically separate validators",
   "evm_used": false,
   "external_binaries": {
     "avalanche_network_runner": {
-      "sha256": "a20d3bc533afb3e1c3aafbc980194a15b71de97f8a4eba92153456e263aececb",
-      "version": "avalanche-network-runner version 1.8.3"
+      "sha256": "9571e452f1065fc9f3bf04d7311de8931c37034f06a65b1fb66b59144db95ee7",
+      "version": null,
+      "version_probe_exit_code": 1,
+      "version_probe_supported": false
     },
     "avalanchego": {
-      "sha256": "33cffd0d95accb6adffdaf163ac06a747877accbc273925cd37b1624d00a30ca",
-      "version": "avalanchego/1.14.2 [database=v1.4.5, rpcchainvm=45, commit=6e5acf909c7a16b991142d6b3979bac5699bdb68, go=1.25.8]"
+      "sha256": "7d3d5e02eceda24baf37c0007dc6b68a4e9eaca31c42990d27035f7d95ad46bc",
+      "version": "avalanchego/1.14.2 [database=v1.4.5, rpcchainvm=45, go=1.25.8]",
+      "version_probe_exit_code": 0,
+      "version_probe_supported": true
     }
   },
-  "final_root": "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
+  "final_root": "7f0e90899907adb8614550b9b959b153e0da41c1439201d24e162de091646c7a",
   "initial_roots": [
-    "9aec52fd1daadc2090f8c5bb3b26234b9f50343c6caf1c3244d53e4592a43d14",
-    "9aec52fd1daadc2090f8c5bb3b26234b9f50343c6caf1c3244d53e4592a43d14",
-    "9aec52fd1daadc2090f8c5bb3b26234b9f50343c6caf1c3244d53e4592a43d14",
-    "9aec52fd1daadc2090f8c5bb3b26234b9f50343c6caf1c3244d53e4592a43d14",
-    "9aec52fd1daadc2090f8c5bb3b26234b9f50343c6caf1c3244d53e4592a43d14"
+    "361f5b27cf3f654532bd2260787d6b8318d5928089f662992be9028be6d95f40",
+    "361f5b27cf3f654532bd2260787d6b8318d5928089f662992be9028be6d95f40",
+    "361f5b27cf3f654532bd2260787d6b8318d5928089f662992be9028be6d95f40",
+    "361f5b27cf3f654532bd2260787d6b8318d5928089f662992be9028be6d95f40",
+    "361f5b27cf3f654532bd2260787d6b8318d5928089f662992be9028be6d95f40"
   ],
-  "last_accepted_block_id": "goQBuTbZtguijYViiuRVbJJJFXgzSdDzqmEwRNmD9S7ob2bfu",
+  "last_accepted_block_id": "2RqZWaEivfUf1znidDau3AZuDESkwXCKXm9cq7jGu5qdqv98qv",
   "local_receipt": {
-    "after_root": "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
-    "before_root": "385b15e88e9e0c7a106ab0340e7880a185ef9879f284a736cfd7349d366e948d",
-    "digest": "521bf447d8585cf7e7fa4c63e3f9ad7d11ea9428c04e86c3612ce0e0f3fc0847",
+    "after_root": "7f0e90899907adb8614550b9b959b153e0da41c1439201d24e162de091646c7a",
+    "before_root": "601c4844be9c5220e07cc5cce26285b342eb67d4a0e81e250cbedc9080115433",
+    "digest": "cd73ab3ceb12cfd121480d971a7f395f3f0c0e89c9da18eb4863a65ae9ba9b20",
     "verified_chain": true
   },
   "network": {
-    "chainID": "xTqnS9sudzodVpxzbE7F1Vkogv7GAeGAiQgBZvV9E98u61pBs",
+    "chainID": "2W841Gz9qHcyyTLSGW3E7Yqya8gVaA37VP2fN9dekShMZaRDvX",
     "networkID": 1337,
-    "subnetID": "99qx6GvmNDqvtLVdVkzBJs2qrjVJ94gZKmauAUWJGJDMdHA41"
+    "subnetID": "GEieSy2doZ96bpMo5CuHPaX1LvaxpKZ9C72L22j94t6YyUb6X"
   },
   "nodes": 5,
   "operation_timings_ms": {
-    "bootstrap_or_recovery_ms": 213.4424999821931,
-    "crash_window_recovery_ms": 2.628208021633327,
-    "settlement_ms": 218.19933300139382,
-    "two_accounts_ms": 426.24870798317716
+    "bootstrap_or_recovery_ms": 211.71,
+    "crash_window_recovery_ms": 3.264958,
+    "settlement_ms": 207.328625,
+    "two_accounts_ms": 424.573708
   },
   "passed": true,
   "restart": {
-    "elapsed_ms": 648.6071249819361,
+    "elapsed_ms": 1454.693292,
     "node": "node3",
     "root_recovered": true
   },
   "roots_after_restart": [
-    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
-    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
-    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
-    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
-    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83"
+    "7f0e90899907adb8614550b9b959b153e0da41c1439201d24e162de091646c7a",
+    "7f0e90899907adb8614550b9b959b153e0da41c1439201d24e162de091646c7a",
+    "7f0e90899907adb8614550b9b959b153e0da41c1439201d24e162de091646c7a",
+    "7f0e90899907adb8614550b9b959b153e0da41c1439201d24e162de091646c7a",
+    "7f0e90899907adb8614550b9b959b153e0da41c1439201d24e162de091646c7a"
   ],
   "roots_before_restart": [
-    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
-    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
-    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
-    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83",
-    "57ee1e693567f310928385b02932a36838c4ce9d08954fd8d612b9f765459b83"
+    "7f0e90899907adb8614550b9b959b153e0da41c1439201d24e162de091646c7a",
+    "7f0e90899907adb8614550b9b959b153e0da41c1439201d24e162de091646c7a",
+    "7f0e90899907adb8614550b9b959b153e0da41c1439201d24e162de091646c7a",
+    "7f0e90899907adb8614550b9b959b153e0da41c1439201d24e162de091646c7a",
+    "7f0e90899907adb8614550b9b959b153e0da41c1439201d24e162de091646c7a"
   ]
 }

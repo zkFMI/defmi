@@ -1,4 +1,4 @@
-//! CPython's numerics, kept where anything can reach them.
+//! Incomplete-beta numerics shared by audit and measurement code.
 //!
 //! `beta_ppf` and the Lanczos `lgamma` behind it are not simulation: they are the
 //! inverse incomplete beta a Clopper--Pearson bound needs, and they were living
@@ -12,11 +12,11 @@ extern "C" {
     fn c_log(x: f64) -> f64;
     #[link_name = "exp"]
     fn c_exp(x: f64) -> f64;
+    #[link_name = "lgamma"]
+    fn c_lgamma(x: f64) -> f64;
 }
 
-/// The platform `log`, which is the one CPython's `math.log` calls. Public
-/// because the DP audit takes a logarithm of a ratio of these bounds and has to
-/// take the same one.
+/// Platform logarithm shared by every audit calculation.
 pub fn ln(x: f64) -> f64 {
     // SAFETY: `log` has no pointer or ownership preconditions.
     unsafe { c_log(x) }
@@ -52,79 +52,13 @@ pub fn beta_ppf(alpha: f64, a: f64, b: f64) -> f64 {
     0.5 * (lo + hi)
 }
 
-// Adapted from CPython 3.13.5 `Modules/mathmodule.c` under the PSF License 2.0:
-// https://github.com/python/cpython/blob/v3.13.5/Modules/mathmodule.c
-//
-// CPython deliberately does not use platform `lgamma` on macOS. Matching this
-// rational Lanczos form is necessary for value-identical audit JSON.
-const LANCZOS_G: f64 = 6.024_680_040_776_729_583_740_234_375;
-const LANCZOS_NUM: [f64; 13] = [
-    23_531_376_880.410_759_688_572_007_674_451_636_754_734_846_804_940,
-    42_919_803_642.649_098_768_957_899_047_001_988_850_926_355_848_959,
-    35_711_959_237.355_668_049_440_185_451_547_166_705_960_488_635_843,
-    17_921_034_426.037_209_699_919_755_754_458_931_112_671_403_265_390,
-    6_039_542_586.352_028_005_064_291_644_307_297_921_069_938_842_070_8,
-    1_439_720_407.311_721_673_663_223_072_794_912_393_971_548_578_677_2,
-    248_874_557.862_054_156_511_460_386_413_229_423_216_321_251_278_01,
-    31_426_415.585_400_194_380_614_231_628_318_205_362_874_684_987_640,
-    2_876_370.628_935_372_441_225_409_051_620_849_613_599_114_537_876_8,
-    186_056.265_395_223_495_040_294_989_716_045_699_282_207_842_363_28,
-    8_071.672_002_365_816_210_638_002_902_272_250_613_821_851_632_502_4,
-    210.824_277_751_579_345_872_509_733_920_713_362_711_669_695_802_91,
-    2.506_628_274_631_000_270_164_908_177_133_837_338_626_431_079_340_8,
-];
-const LANCZOS_DEN: [f64; 13] = [
-    0.0,
-    39_916_800.0,
-    120_543_840.0,
-    150_917_976.0,
-    105_258_076.0,
-    45_995_730.0,
-    13_339_535.0,
-    2_637_558.0,
-    357_423.0,
-    32_670.0,
-    1_925.0,
-    66.0,
-    1.0,
-];
-
-fn lanczos_sum(x: f64) -> f64 {
-    let (mut numerator, mut denominator) = (0.0, 0.0);
-    if x < 5.0 {
-        for index in (0..LANCZOS_NUM.len()).rev() {
-            numerator = numerator * x + LANCZOS_NUM[index];
-            denominator = denominator * x + LANCZOS_DEN[index];
-        }
-    } else {
-        for index in 0..LANCZOS_NUM.len() {
-            numerator = numerator / x + LANCZOS_NUM[index];
-            denominator = denominator / x + LANCZOS_DEN[index];
-        }
-    }
-    numerator / denominator
-}
-
 fn ln_gamma(x: f64) -> f64 {
-    debug_assert!(
-        x > 0.0,
-        "the incomplete beta function requires positive shapes"
-    );
-    if x == x.floor() && x <= 2.0 {
-        return 0.0;
-    }
-    if x < 1e-20 {
-        return -ln(x);
-    }
-    let mut result = ln(lanczos_sum(x)) - LANCZOS_G;
-    // CPython's C build contracts this multiply-add; spelling it explicitly
-    // preserves the installed interpreter's last bit in release and debug.
-    result = (x - 0.5).mul_add(ln(x + LANCZOS_G - 0.5) - 1.0, result);
-    result
+    debug_assert!(x > 0.0, "beta shapes must be positive");
+    // SAFETY: `lgamma` has no pointer or ownership preconditions.
+    unsafe { c_lgamma(x) }
 }
 
 /// Regularised incomplete beta via the continued fraction.
-/// Exposed so the port can be diffed against the Python it replaces.
 pub fn betainc_public(a: f64, b: f64, x: f64) -> f64 {
     betainc(a, b, x)
 }
@@ -189,4 +123,3 @@ fn betacf(a: f64, b: f64, x: f64) -> f64 {
     }
     h
 }
-

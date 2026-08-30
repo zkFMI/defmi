@@ -24,11 +24,8 @@ fn whole_party_aggregate_entry_points_are_not_public() {
     ];
     let violations = public_aggregates
         .into_iter()
-        .filter_map(|(module, source, signature)| {
-            source
-                .contains(signature)
-                .then(|| format!("{module}: {signature}"))
-        })
+        .filter(|(_, source, signature)| source.contains(signature))
+        .map(|(module, _, signature)| format!("{module}: {signature}"))
         .collect::<Vec<_>>();
 
     assert!(

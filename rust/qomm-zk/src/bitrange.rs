@@ -1,16 +1,9 @@
 //! Bit-decomposition range proofs for widths the `bulletproofs` crate does not
 //! accept.
 //!
-//! This is the Rust composition of `zk/commit.py`'s range and bounded proofs:
-//! one bit proof per little-endian bit, followed by an opening proof linking
-//! their weighted sum to the original commitment.  The component contexts are
-//! kept byte-for-byte with Python (`:bit:` plus a two-byte big-endian index,
-//! `:link`, `|above`, and `|below`).
-//!
-//! The leaf proofs intentionally remain the native `qomm-zk` primitives.  They
-//! use Ristretto255 and Merlin, while Python uses Ed25519 and a SHA-512
-//! transcript, so the two proof objects are not wire-compatible even though
-//! this composition and its public inputs have the same semantics.
+//! The construction uses one proof per little-endian bit, followed by an
+//! opening proof linking their weighted sum to the original commitment. The
+//! component transcript contexts are `:link`, `|above`, and `|below`.
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
@@ -75,7 +68,6 @@ fn value_fits(value: u64, bits: usize) -> bool {
 /// Prove that `commitment` opens to `value` in `[0, 2^bits)`.
 ///
 /// Unlike `range::RangeCtx`, `bits` need not be 8, 16, 32, or 64.  Widths
-/// through 65,536 use the exact two-byte component index used by Python.
 pub fn prove_range<R: RngCore + CryptoRng>(
     key: &Pedersen,
     commitment: &RistrettoPoint,
@@ -258,7 +250,6 @@ pub fn prove_bounded<R: RngCore + CryptoRng>(
     Ok((commitment, BoundedProof { above, below, bits }, bits))
 }
 
-/// Verify the same inclusive two-sided bound as Python's `verify_bounded`.
 pub fn verify_bounded(
     key: &Pedersen,
     commitment: &RistrettoPoint,

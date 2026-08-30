@@ -125,7 +125,8 @@ fn a_tampered_field_breaks_the_signature() {
     let mut rng = OsRng;
     let q = quorum(&mut rng);
     let (mut instruction, _) = issue(&mut rng, &q, 100, 99_990, 1_500);
-    instruction.quote_key += 1;
+    let quote_key = instruction.legacy_quote_key().unwrap();
+    instruction.quote_binding = qomm_zkpi::QuoteBinding::LegacyPackedKey(quote_key + 1);
     assert_eq!(
         venue(&q).verify(&instruction, 1_000),
         Err("the quorum signature does not verify")
@@ -148,9 +149,7 @@ fn a_range_proof_from_elsewhere_does_not_cover_this_instruction() {
     let q = quorum(&mut rng);
     let (mut instruction, _) = issue(&mut rng, &q, 100, 99_990, 1_500);
     let (other, _) = issue(&mut rng, &q, 5, 7, 1_500);
-    instruction.amount_range = other.amount_range;
-    instruction.price_range = other.price_range;
-    instruction.range_commitments = other.range_commitments;
+    instruction.ranges = other.ranges;
     assert!(venue(&q).verify(&instruction, 1_000).is_err());
 }
 

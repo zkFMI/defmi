@@ -14,10 +14,10 @@
 //! window, so the claim binding it is the per-field share of the budget rather
 //! than the whole thing.
 
+use crate::deterministic_random::DeterministicRng;
 use crate::disclosure::{DpDisclosure, WindowObservation};
-use crate::pyrandom::PyRandom;
-pub use qomm_measure::beta::{beta_ppf, betainc_public};
 use qomm_measure::beta::ln;
+pub use qomm_measure::beta::{beta_ppf, betainc_public};
 
 pub fn clopper_pearson(k: usize, n: usize, alpha: f64) -> (f64, f64) {
     let lower = if k == 0 {
@@ -122,10 +122,10 @@ impl Default for AuditSettings {
 
 /// Distinguish "entity present" from "entity absent" using one released field.
 pub fn audit_window(obs: &WindowObservation, entity: usize, s: &AuditSettings) -> AuditResult {
-    let mut rng = PyRandom::new(s.seed);
+    let mut rng = DeterministicRng::new(s.seed);
     let world_out = drop_entity(obs, entity);
 
-    let sample = |world: &WindowObservation, rng: &mut PyRandom| -> Vec<f64> {
+    let sample = |world: &WindowObservation, rng: &mut DeterministicRng| -> Vec<f64> {
         (0..s.trials)
             .map(|_| {
                 let mut mech = DpDisclosure::new(
@@ -148,7 +148,7 @@ pub fn audit_window(obs: &WindowObservation, entity: usize, s: &AuditSettings) -
     let mut candidates: Vec<i64> = samples_in
         .iter()
         .chain(&samples_out)
-        .map(|v| crate::market::py_round(*v))
+        .map(|v| crate::market::round_half_even(*v))
         .collect();
     candidates.sort_unstable();
     candidates.dedup();

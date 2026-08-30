@@ -4,7 +4,6 @@
 //! that matter are the slope and the point at which a settlement operator would
 //! stop wanting to run it in one go.
 //!
-//! The Python version of this was 30 ms at 4,096 positions --- after a fix, and
 //! 175 ms before it, because it was asking a multiscalar routine to multiply by
 //! one. The prediction here is that Rust makes the aggregate a few hundred
 //! microseconds and the sigma proof becomes the whole cost.

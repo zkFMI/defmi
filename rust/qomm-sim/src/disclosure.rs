@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::pyrandom::PyRandom;
+use crate::deterministic_random::DeterministicRng;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PrivacyBudgetExceeded {
@@ -128,7 +128,7 @@ fn float_ratio(value: f64) -> (u128, u128) {
     (numerator, 1u128 << denominator_exponent)
 }
 
-/// CPython `Fraction(value).limit_denominator(max_denominator)`.
+/// Best bounded-denominator rational approximation using continued fractions.
 fn limit_denominator(value: f64, max_denominator: u64) -> (u64, u64) {
     let (mut numerator, mut denominator) = float_ratio(value);
     if denominator <= max_denominator as u128 {
@@ -159,7 +159,7 @@ fn limit_denominator(value: f64, max_denominator: u64) -> (u64, u64) {
 }
 
 /// A fair-coin construction for a Bernoulli with probability `exp(-n/d)`.
-fn bernoulli_exp_minus(numerator: u64, denominator: u64, rng: &mut PyRandom) -> bool {
+fn bernoulli_exp_minus(numerator: u64, denominator: u64, rng: &mut DeterministicRng) -> bool {
     assert!(denominator > 0);
     if numerator > denominator {
         let whole = numerator / denominator;
@@ -185,7 +185,7 @@ fn bernoulli_exp_minus(numerator: u64, denominator: u64, rng: &mut PyRandom) -> 
     k % 2 == 1
 }
 
-fn geometric_exact(numerator: u64, denominator: u64, rng: &mut PyRandom) -> i64 {
+fn geometric_exact(numerator: u64, denominator: u64, rng: &mut DeterministicRng) -> i64 {
     let mut count = 0i64;
     while bernoulli_exp_minus(numerator, denominator, rng) {
         count += 1;
@@ -195,10 +195,9 @@ fn geometric_exact(numerator: u64, denominator: u64, rng: &mut PyRandom) -> i64 
 
 /// Two-sided geometric noise sampled with integer comparisons only.
 ///
-/// This is the ideal mechanism used by the Python implementation and its
 /// privacy proof, rather than the distinguishable floating-point inverse-CDF
 /// approximation.
-pub fn discrete_laplace(epsilon: f64, sensitivity: f64, rng: &mut PyRandom) -> i64 {
+pub fn discrete_laplace(epsilon: f64, sensitivity: f64, rng: &mut DeterministicRng) -> i64 {
     assert!(
         sensitivity > 0.0 && epsilon > 0.0,
         "sensitivity and epsilon must be positive"
@@ -218,7 +217,11 @@ pub fn discrete_laplace(epsilon: f64, sensitivity: f64, rng: &mut PyRandom) -> i
 /// The former floating-point inverse-CDF sampler, kept only so old experiment
 /// results can be reproduced explicitly. New privacy releases use
 /// [`discrete_laplace`].
-pub fn discrete_laplace_approximate(epsilon: f64, sensitivity: f64, rng: &mut PyRandom) -> i64 {
+pub fn discrete_laplace_approximate(
+    epsilon: f64,
+    sensitivity: f64,
+    rng: &mut DeterministicRng,
+) -> i64 {
     assert!(
         sensitivity > 0.0 && epsilon > 0.0,
         "sensitivity and epsilon must be positive"
@@ -227,7 +230,8 @@ pub fn discrete_laplace_approximate(epsilon: f64, sensitivity: f64, rng: &mut Py
     if alpha <= 0.0 {
         return 0;
     }
-    let geometric = |rng: &mut PyRandom| ((-rng.random()).ln_1p() / alpha.ln()).floor() as i64;
+    let geometric =
+        |rng: &mut DeterministicRng| ((-rng.random()).ln_1p() / alpha.ln()).floor() as i64;
     geometric(rng) - geometric(rng)
 }
 
@@ -348,7 +352,7 @@ impl Disclosure {
         }
     }
 
-    pub fn release(&mut self, obs: &WindowObservation, rng: &mut PyRandom) -> Release {
+    pub fn release(&mut self, obs: &WindowObservation, rng: &mut DeterministicRng) -> Release {
         match self {
             Disclosure::None => Release {
                 window: obs.window,
@@ -469,7 +473,7 @@ impl DpDisclosure {
         }
     }
 
-    pub fn release(&mut self, obs: &WindowObservation, rng: &mut PyRandom) -> Release {
+    pub fn release(&mut self, obs: &WindowObservation, rng: &mut DeterministicRng) -> Release {
         // Whether a scheduled window is published must not reveal which
         // entities contributed to it.  Budget-checking only active entities
         // made the published/withheld bit distinguish presence with

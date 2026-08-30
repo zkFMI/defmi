@@ -1,6 +1,5 @@
 //! What novation costs once it cannot be lied about.
 //!
-//! The Python version measured novation at 16 us an edge and left two holes:
 //! a house could novate trades nobody made, and a member cleared at two houses
 //! was not modelled. Closing the first one puts two Ed25519 verifications on
 //! every edge, and the prediction written before this ran was that they would
@@ -106,7 +105,6 @@ fn main() {
         });
         let attestation = house.attest(&novation, b"cycle-1");
 
-        // the arithmetic alone, which is what the Python version measured
         let arithmetic = time_us(repeats, || {
             check_novation(&house.handle, &novation).unwrap();
         });

@@ -32,7 +32,7 @@ fn full_linkage_means_every_wallet() {
 fn realised_fraction_matches_the_request() {
     for rho in [0.05, 0.1, 0.12, 0.25, 0.33, 0.5, 0.66, 0.75, 0.9] {
         let linked = linked_wallets(&config(), rho, 7);
-        let expected = qomm_sim::market::py_round(rho * wallet_count() as f64) as usize;
+        let expected = qomm_sim::market::round_half_even(rho * wallet_count() as f64) as usize;
         assert_eq!(linked.len(), expected, "rho {rho}");
         assert!(
             (linked.len() as f64 / wallet_count() as f64 - rho).abs()

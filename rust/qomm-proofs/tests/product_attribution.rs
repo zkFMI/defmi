@@ -1,4 +1,4 @@
-//! Rust mirror of `tests/test_product_attribution.py`.
+//! Product-attribution proof contract tests.
 
 use std::collections::BTreeMap;
 

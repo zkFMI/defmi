@@ -15,9 +15,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::deterministic_random::DeterministicRng;
 use crate::engine::{ArmResult, ProbeResult};
 use crate::market::{size_bucket, PricePath, SimConfig};
-use crate::pyrandom::PyRandom;
 
 /// Rank-based AUC with ties averaged.
 ///
@@ -216,8 +216,8 @@ pub fn linked_wallets(cfg: &SimConfig, rho: f64, seed: u64) -> BTreeSet<usize> {
     if rho >= 1.0 {
         return (0..n_wallets).collect();
     }
-    let take = crate::market::py_round(rho * n_wallets as f64) as usize;
-    PyRandom::new(seed)
+    let take = crate::market::round_half_even(rho * n_wallets as f64) as usize;
+    DeterministicRng::new(seed)
         .sample(n_wallets, take)
         .into_iter()
         .collect()
@@ -718,7 +718,6 @@ fn pearson(a: &[f64], b: &[f64]) -> Option<f64> {
         crate::fsum::fsum(a.iter().copied()) / n as f64,
         crate::fsum::fsum(b.iter().copied()) / n as f64,
     );
-    // The three sums are Python's builtin `sum`, which compensates; the two
     // means above are `statistics.fmean`, which is `fsum`. Routing all five
     // through the more accurate of the two would be a different function from
     // the one being ported.

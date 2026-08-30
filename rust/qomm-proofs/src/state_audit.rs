@@ -292,8 +292,8 @@ impl StateAuditor {
     /// The same, and the state has to be the one the circuit computed on.
     ///
     /// `dealt[i]` is the commitment the input dealer published for this maker's
-    /// inventory at step `i` --- the same object `qomm_transport/binding.py`
-    /// produces for every value it deals. Without this the chain proves that
+    /// inventory at step `i` --- the same object the transport binding produces
+    /// for every value it deals. Without this the chain proves that
     /// *some* inventory moved correctly; with it, that the one the quote was
     /// priced from did.
     pub fn verify_update_bound(

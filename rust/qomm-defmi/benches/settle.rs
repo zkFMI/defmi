@@ -1,6 +1,4 @@
-//! What the port bought, measured on the same machine as the Python it
 //! replaces. No criterion: the numbers here are medians of plain wall-clock
-//! timings so they line up with how the Python side was measured.
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
@@ -179,8 +177,7 @@ fn run(bits: usize, repeats: usize) -> Row {
         build_ms.push(t.elapsed().as_secs_f64() * 1e3);
         bytes = pkg.securities_leg.remainder_range.to_bytes().len()
             + pkg.cash_leg.remainder_range.to_bytes().len()
-            + pkg.instruction.amount_range.to_bytes().len()
-            + pkg.instruction.price_range.to_bytes().len()
+            + pkg.instruction.range_proof_bytes_len()
             + 32 * (3 + 2 + 3 + 2 + 2 + 2 + 3 + 3)
             + 64
             + 32;
@@ -205,12 +202,9 @@ fn run(bits: usize, repeats: usize) -> Row {
 
 /// The yardstick recorded beside every result.
 ///
-/// Two Python runs hours apart once disagreed by a factor of 1.5 on the same
 /// machine and nothing in the artifact said so. The scalar multiplication is
-/// the useful one across languages: the Python side reaches the same primitive
 /// through libsodium, so if the two agree the machine was in the same state and
 /// the comparison means something. The range proof is not comparable --- the
-/// Python calibration proves 40 bits by bit decomposition and bulletproofs
 /// only takes powers of two --- so it is recorded under its own name.
 fn calibration(repeats: usize) -> (f64, f64) {
     let mut rng = OsRng;
@@ -258,8 +252,6 @@ fn main() {
     );
     println!("delivery versus payment, Rust");
 
-    // 8/16/32 overlap with the Python widths so the two can be compared
-    // directly; 64 is where a 40-bit Python rail lands once bulletproofs
     // rounds it up, which is the honest comparison for the deployed width.
     let rows: Vec<Row> = [8usize, 16, 32, 64]
         .iter()

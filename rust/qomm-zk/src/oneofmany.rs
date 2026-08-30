@@ -6,7 +6,6 @@
 //! when a balance is issued, and proving that a spend consumes one of the notes
 //! in a ring without naming it.
 //!
-//! The verifier is where the port pays. In Python it was O(N) separate scalar
 //! multiplications; here the whole O(N) term is one multiscalar multiplication,
 //! and the per-bit checks join the same batch as everything else.
 

@@ -1,4 +1,3 @@
-//! Same shape as the Python tape dump, for diffing.
 use qomm_sim::market::SimConfig;
 use qomm_sim::tapes::*;
 

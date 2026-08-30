@@ -6,7 +6,7 @@
 //! and fail the first, and it is the first that decides whether two venues can
 //! settle the same instruction.
 
-use qomm_zkpi::wire::{decode, encode, fingerprint, WireError, MAGIC, VERSION};
+use qomm_zkpi::wire::{decode, encode, fingerprint, spec, WireError, MAGIC, VERSION};
 use qomm_zkpi::wire_vectors;
 
 #[test]
@@ -16,13 +16,37 @@ fn an_instruction_survives_the_wire_unchanged() {
     let back = decode(&bytes).expect("it decodes");
     assert_eq!(encode(&back), bytes, "the codec has to be a fixed point");
     assert_eq!(back.deadline, instruction.deadline);
-    assert_eq!(back.quote_key, instruction.quote_key);
+    assert_eq!(back.quote_binding, instruction.quote_binding);
     assert_eq!(back.nonce, instruction.nonce);
     assert_eq!(back.amount_commitment, instruction.amount_commitment);
     assert_eq!(
-        back.range_commitments.len(),
-        instruction.range_commitments.len()
+        back.range_commitment_count(),
+        instruction.range_commitment_count()
     );
+}
+
+#[test]
+fn generated_spec_names_version_two_as_the_product_format() {
+    let rendered = spec();
+    assert!(rendered.starts_with("# zkPI on the wire, version 2"));
+    assert!(rendered.contains("quote proof digest"));
+    assert!(rendered.contains("jointly assembled threshold range proof"));
+    assert!(rendered.contains("Version 1 compatibility format"));
+    assert!(!rendered.contains("currently 1"));
+}
+
+#[test]
+fn checked_in_document_contains_the_exact_generated_section_and_reviewed_tail() {
+    const BEGIN: &str = "<!-- BEGIN GENERATED WIRE SPEC -->";
+    const END: &str = "<!-- END GENERATED WIRE SPEC -->";
+    let document = include_str!("../../../ZKPI_WIRE.md");
+    let generated = document
+        .split_once(BEGIN)
+        .and_then(|(_, tail)| tail.split_once(END).map(|(body, _)| body.trim()))
+        .expect("the checked-in document has one generated section");
+    assert_eq!(generated, spec().trim());
+    assert!(document.contains("## Checking an implementation against this"));
+    assert!(document.contains("## Where this runs now"));
 }
 
 #[test]
@@ -61,7 +85,7 @@ fn a_version_this_build_does_not_know_is_refused_and_not_guessed_at() {
     );
     // and the message says why, because guessing at a layout is the failure
     // that settles a different payment rather than none
-    assert!(WireError::UnknownVersion(2)
+    assert!(WireError::UnknownVersion(VERSION + 1)
         .to_string()
         .contains("valid point"));
 }
@@ -144,8 +168,7 @@ fn the_wire_is_the_size_the_table_says() {
     let bytes = encode(&wire_vectors::sample());
     let instruction = decode(&bytes).unwrap();
     let fixed = 8 + 2 + 5 * 32 + 8 + 32 + 8 + 64 + 2;
-    let commitments = instruction.range_commitments.len() * 32;
-    let proofs =
-        instruction.amount_range.to_bytes().len() + instruction.price_range.to_bytes().len() + 8;
+    let commitments = instruction.range_commitment_count() * 32;
+    let proofs = instruction.range_proof_bytes_len() + 8;
     assert_eq!(bytes.len(), fixed + commitments + proofs);
 }

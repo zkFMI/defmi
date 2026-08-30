@@ -1,4 +1,4 @@
-//! Rust port of `scripts/run_avalanche_l1_acceptance.py`.
+//! End-to-end acceptance for the QOMM Rust VM under AvalancheGo consensus.
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use qomm_defmi::avalanche::{AvalancheClient, AvalancheRpcClient, FacilityAvalancheBridge};
@@ -222,8 +222,6 @@ fn run(options: &Options) -> HarnessResult<Value> {
     );
     let final_root = facility.state_root().map_err(string_error)?;
     let roots_before_restart = wait_for_roots(&rpc_clients, final_root, 30.0)?;
-    drop(bridge);
-
     let mut restart_ms = None;
     let mut roots_after_restart = roots_before_restart.clone();
     if let Some(runner) = options.runner.as_deref() {
@@ -255,8 +253,8 @@ fn run(options: &Options) -> HarnessResult<Value> {
         "network": network,
         "chain_id": options.chain_id,
         "external_binaries": {
-            "avalanchego": tool_record(options.avalanchego.as_deref())?,
-            "avalanche_network_runner": tool_record(options.runner.as_deref())?,
+            "avalanchego": tool_record(options.avalanchego.as_deref(), true)?,
+            "avalanche_network_runner": tool_record(options.runner.as_deref(), false)?,
         },
         "nodes": rpc_clients.len(),
         "initial_roots": initial_roots.iter().map(hex::encode).collect::<Vec<_>>(),
@@ -424,7 +422,7 @@ fn restart_node(
     Ok(started.elapsed().as_secs_f64() * 1000.0)
 }
 
-fn tool_record(path: Option<&Path>) -> HarnessResult<Value> {
+fn tool_record(path: Option<&Path>, require_version: bool) -> HarnessResult<Value> {
     let Some(path) = path else {
         return Ok(Value::Null);
     };
@@ -435,13 +433,18 @@ fn tool_record(path: Option<&Path>) -> HarnessResult<Value> {
     let mut version = Command::new(&resolved);
     version.arg("--version");
     let completed = output_with_timeout(version, Duration::from_secs(20))?;
-    if !completed.status.success() {
+    if require_version && !completed.status.success() {
         return Err("acceptance tool did not report its version".into());
     }
-    let displayed = if completed.stdout.is_empty() {
-        String::from_utf8_lossy(&completed.stderr)
+    let displayed = if completed.status.success() {
+        let bytes = if completed.stdout.is_empty() {
+            &completed.stderr
+        } else {
+            &completed.stdout
+        };
+        Some(String::from_utf8_lossy(bytes).trim().to_string())
     } else {
-        String::from_utf8_lossy(&completed.stdout)
+        None
     };
     let mut file = File::open(&resolved)?;
     let mut hash = Sha256::new();
@@ -454,7 +457,9 @@ fn tool_record(path: Option<&Path>) -> HarnessResult<Value> {
         hash.update(&buffer[..read]);
     }
     Ok(json!({
-        "version": displayed.trim(),
+        "version": displayed,
+        "version_probe_supported": completed.status.success(),
+        "version_probe_exit_code": completed.status.code(),
         "sha256": hex::encode(hash.finalize()),
     }))
 }

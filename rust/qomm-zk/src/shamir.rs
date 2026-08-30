@@ -1,7 +1,7 @@
 //! Shamir sharing, and naming the party whose share does not lie on the polynomial.
 //!
-//! `qomm_audit/locate.py` is the reference and this is the port. The reason it
-//! belongs beside the commitments rather than beside the MPC runner is that the
+//! The decoder belongs beside the commitments rather than beside the MPC runner
+//! because the
 //! binding chain now deals over the group's scalar field: a share the circuit
 //! reads and a scalar a commitment opens to are the same kind of thing, so the
 //! decoder is field arithmetic in the field everything else here already uses.
@@ -23,8 +23,8 @@
 //!
 //! A party that feeds a *different value* rather than a wrong share of the right
 //! one. That is a valid sharing of something else, so nothing is inconsistent
-//! and there is nothing to decode. `qomm_transport/binding.py` and the circuit's
-//! input check are what answer that, and they answer a different question.
+//! and there is nothing to decode. The transport binding and circuit input check
+//! answer that different question.
 
 use curve25519_dalek::scalar::Scalar;
 use rand_core::{CryptoRng, RngCore};

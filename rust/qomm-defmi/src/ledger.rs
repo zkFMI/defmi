@@ -319,12 +319,39 @@ impl Ledger {
         amount_bounded: bool,
         rng: &mut R,
     ) -> Result<(Transfer, TransferSecrets), &'static str> {
+        let amount_blinding = Scalar::random(rng);
+        self.build_transfer_with_amount_blinding(
+            payer_balance,
+            payer_blinding,
+            amount,
+            &amount_blinding,
+            context,
+            tag,
+            gamma,
+            amount_bounded,
+        )
+    }
+
+    /// Build a transfer whose amount commitment is already named by a zkPI.
+    /// The party supplies that commitment's blinding so the account proof and
+    /// the threshold-signed instruction refer to exactly the same hidden value.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_transfer_with_amount_blinding(
+        &self,
+        payer_balance: u64,
+        payer_blinding: &Scalar,
+        amount: u64,
+        amount_blinding: &Scalar,
+        context: &[u8],
+        tag: Option<&BlindedTag>,
+        gamma: &Scalar,
+        amount_bounded: bool,
+    ) -> Result<(Transfer, TransferSecrets), &'static str> {
         if payer_balance < amount {
             return Err("balance cannot cover the amount");
         }
         let gens = self.gens(tag);
         let ctx = self.context(context, tag);
-        let amount_blinding = Scalar::random(rng);
 
         let amount_range = if amount_bounded {
             None
@@ -336,13 +363,13 @@ impl Ledger {
                 &gens,
                 &mut t,
                 &[amount],
-                &[amount_blinding],
+                &[*amount_blinding],
                 self.bits,
             )
             .map_err(|_| "amount range proof failed")?;
             Some((proof, commitments[0]))
         };
-        let amount_commitment = gens.commit(Scalar::from(amount), amount_blinding);
+        let amount_commitment = gens.commit(Scalar::from(amount), *amount_blinding);
 
         // H^(v-q) h^t has to land on balance / amount, which costs gamma*v
         let remainder = payer_balance - amount;
@@ -371,7 +398,7 @@ impl Ledger {
                 tag: tag.cloned(),
             },
             TransferSecrets {
-                amount_blinding,
+                amount_blinding: *amount_blinding,
                 payee_delta: gamma * Scalar::from(amount) + amount_blinding,
                 remainder_blinding,
             },
@@ -482,5 +509,42 @@ impl Ledger {
             hasher.update(balance.compress().as_bytes());
         }
         hasher.finalize().into()
+    }
+}
+
+impl Transfer {
+    /// Stable identifier for the complete confidential transfer evidence.
+    ///
+    /// DeFMI validators receive the proof bytes at the Rust admission boundary,
+    /// while the Avalanche state machine stores only this digest.  Hashing every
+    /// proof component prevents a committee approval for one reserve from being
+    /// replayed with another payer remainder or asset tag.
+    pub fn digest(&self) -> [u8; 32] {
+        fn bytes(hash: &mut Sha256, value: &[u8]) {
+            hash.update((value.len() as u64).to_be_bytes());
+            hash.update(value);
+        }
+
+        let mut hash = Sha256::new();
+        hash.update(b"QOMM:DEFMI:TRANSFER-PROOF:v1");
+        hash.update(self.amount_commitment.compress().as_bytes());
+        match &self.amount_range {
+            Some((proof, commitment)) => {
+                hash.update([1]);
+                hash.update(commitment.as_bytes());
+                bytes(&mut hash, &proof.to_bytes());
+            }
+            None => hash.update([0]),
+        }
+        hash.update(self.remainder_commitment.compress().as_bytes());
+        bytes(&mut hash, &self.remainder_range.to_bytes());
+        match &self.tag {
+            Some(tag) => {
+                hash.update([1]);
+                hash.update(tag.point.compress().as_bytes());
+            }
+            None => hash.update([0]),
+        }
+        hash.finalize().into()
     }
 }

@@ -1,5 +1,5 @@
+use qomm_sim::deterministic_random::DeterministicRng;
 use qomm_sim::disclosure::{EntityAccountant, WindowObservation};
-use qomm_sim::pyrandom::PyRandom;
 use qomm_sim::queries::{
     answer_block_range_query, answer_block_range_query_at, event_count_sensitivity,
     expected_distinct, informative_span, noise_scale, windows_in_range, BlockRangeQuery,
@@ -25,7 +25,7 @@ fn asker(total: f64) -> EntityAccountant {
 }
 
 fn exact_block_count(windows: &[WindowObservation], query: &BlockRangeQuery) -> i64 {
-    let mut rng = PyRandom::new(7);
+    let mut rng = DeterministicRng::new(7);
     answer_block_range_query(windows, query, 64.0, &mut asker(1_000.0), &mut rng)
         .count
         .unwrap()
@@ -54,7 +54,7 @@ fn an_event_count_would_grow_with_the_range() {
 #[test]
 fn the_answer_names_the_windows_it_covered() {
     let windows = ledger(&[vec![1], vec![2], vec![3], vec![4]], 100);
-    let mut rng = PyRandom::new(0);
+    let mut rng = DeterministicRng::new(0);
     let answer = answer_block_range_query(
         &windows,
         &BlockRangeQuery::new(150, 349).unwrap(),
@@ -79,7 +79,7 @@ fn a_partly_covered_window_is_not_counted() {
 fn a_range_with_no_whole_window_is_refused_and_free() {
     let windows = ledger(&[vec![1, 2]], 100);
     let mut account = asker(100.0);
-    let mut rng = PyRandom::new(0);
+    let mut rng = DeterministicRng::new(0);
     let answer = answer_block_range_query(
         &windows,
         &BlockRangeQuery::new(0, 10).unwrap(),
@@ -108,7 +108,7 @@ fn the_live_range_is_refused() {
             Some(DEFAULT_SETTLEMENT_LAG - 1),
         ),
     ] {
-        let mut rng = PyRandom::new(0);
+        let mut rng = DeterministicRng::new(0);
         let mut account = asker(100.0);
         let answer = answer_block_range_query_at(
             &windows,
@@ -129,7 +129,7 @@ fn the_live_range_is_refused() {
 #[test]
 fn refusing_on_budget_is_a_fact_about_the_asker() {
     let windows = ledger(&[vec![1, 2]], 100);
-    let mut rng = PyRandom::new(0);
+    let mut rng = DeterministicRng::new(0);
     let answer = answer_block_range_query(
         &windows,
         &BlockRangeQuery::new(0, 99).unwrap(),
@@ -146,7 +146,7 @@ fn the_market_never_changes_whether_it_answers() {
     for entities in [0usize, 1, 50, 51, 64, 128, 1_000] {
         let market: Vec<usize> = (0..entities).collect();
         let windows = ledger(&vec![market; 4], 100);
-        let mut rng = PyRandom::new(0);
+        let mut rng = DeterministicRng::new(0);
         let answer = answer_block_range_query(
             &windows,
             &BlockRangeQuery::new(0, 399).unwrap(),
@@ -167,7 +167,7 @@ fn the_noise_matches_the_sensitivity_one_scale() {
     for width in [1usize, 5, 10, 40] {
         let windows = ledger(&vec![entities.clone(); width], 100);
         let query = BlockRangeQuery::new(0, width * 100 - 1).unwrap();
-        let mut rng = PyRandom::new(20_260_824);
+        let mut rng = DeterministicRng::new(20_260_824);
         let mut account = asker(1e9);
         let draws: Vec<f64> = (0..4_000)
             .map(|_| {
