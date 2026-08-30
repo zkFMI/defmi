@@ -42,7 +42,7 @@ and would probably prefer a registered callback over a weak symbol.
 @@ -182,6 +182,16 @@
      }
  }
- 
+
 +// Null unless an embedder registers it, which no stock build does. Offered the
 +// machine while it is still alive, so a caller can read what the run cost
 +// without parsing what the run printed. A callback avoids platform-specific
@@ -67,6 +67,6 @@ and would probably prefer a registered callback over a weak symbol.
 +        machine.run(online_opts.progname);
 +        if (qomm_after_run_callback())
 +            qomm_after_run_callback()(&machine);
- 
+
          if (online_opts.verbose)
            {

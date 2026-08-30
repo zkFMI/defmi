@@ -319,17 +319,17 @@ in the QOMM audit tests.
 +++ Protocols/Atlas.h	2026-08-22 03:39:41.552591270 +0000
 @@ -7,6 +7,8 @@
  #define PROTOCOLS_ATLAS_H_
- 
+
  #include "Replicated.h"
 +#include "RobustDecode.h"
 +#include "Processor/OnlineOptions.h"
- 
+
  #include "Tools/Bundle.h"
- 
+
 @@ -26,6 +28,18 @@
- 
+
      vector<typename T::open_type> reconstruction;
- 
+
 +    /// --options robust. No king: the masked product goes to everybody and
 +    /// every party decodes it for itself, so nobody has to be believed.
 +    bool robust;
@@ -343,7 +343,7 @@ in the QOMM audit tests.
 +    bool corrupt_me;
 +
      int next_king, base_king;
- 
+
      ShamirInput<T> resharing;
 @@ -44,6 +58,34 @@
              oss2(P), next_king(0), base_king(0), resharing(0, P), P(P)
@@ -378,7 +378,7 @@ in the QOMM audit tests.
 +                        to_string((n - 2 * t - 1) / 2));
 +        }
      }
- 
+
      ~Atlas();
 --- /tmp/atlas.hpp.bak	2026-08-22 03:36:30.118485999 +0000
 +++ Protocols/Atlas.hpp	2026-08-22 03:38:10.690591435 +0000
@@ -417,10 +417,10 @@ in the QOMM audit tests.
 +    }
      masks.push_back(r[1]);
  }
- 
+
 @@ -74,6 +92,34 @@
      oss.mine = oss2.mine;
- 
+
      int t = ShamirMachine::s().threshold;
 +
 +    if (robust)

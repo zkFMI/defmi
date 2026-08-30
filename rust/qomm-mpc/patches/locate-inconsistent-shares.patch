@@ -86,18 +86,18 @@ in the QOMM audit tests.
 +++ Protocols/MaliciousShamirMC.h	2026-08-22 00:07:30.147604393 +0000
 @@ -38,9 +38,14 @@
      { (void)_; (void)__; (void)___; (void)____; }
- 
+
      void init_open(const Player& P, int n = 0);
 +    void exchange(const Player& P);
      typename T::open_type finalize_raw();
- 
+
      typename T::open_type reconstruct(const vector<open_type>& shares);
 +
 +    /// Which parties sent shares that do not lie on a degree-t polynomial.
 +    /// Empty when there is no such polynomial within the decoding capacity.
 +    static vector<int> locate(const vector<open_type>& shares, int degree);
  };
- 
+
  #endif /* PROTOCOLS_MALICIOUSSHAMIRMC_H_ */
 --- /tmp/msmc.hpp.bak	2026-08-22 00:04:19.428078243 +0000
 +++ Protocols/MaliciousShamirMC.hpp	2026-08-22 00:07:30.147604393 +0000
@@ -117,7 +117,7 @@ in the QOMM audit tests.
          }
 @@ -37,10 +43,31 @@
  }
- 
+
  template<class T>
 +void MaliciousShamirMC<T>::exchange(const Player& P)
 +{
@@ -173,7 +173,7 @@ in the QOMM audit tests.
      }
      return value;
  }
- 
+
 +template<class T>
 +vector<int> MaliciousShamirMC<T>::locate(const vector<open_type>& shares,
 +        int degree)
