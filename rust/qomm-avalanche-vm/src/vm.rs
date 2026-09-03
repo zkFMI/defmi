@@ -43,6 +43,7 @@ use avalanche_rpcchainvm_qomm::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use prost_types::Timestamp;
 use qomm_defmi::facility::QuorumAuthorizer;
+use qomm_defmi::settlement_verifier::settlement_verifier_key;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, Notify, RwLock};
@@ -52,7 +53,7 @@ use crate::{
     block::{Block, MAX_BLOCK_BYTES, MAX_TRANSACTIONS, MAX_TRANSACTION_BYTES},
     genesis::Genesis,
     id::Id,
-    state::{State, TransitionReceipt},
+    state::{id_key, State, TransitionReceipt},
     state_sync::{build_summary, decode_snapshot, ChunkRequest, ChunkResponse, StateSummary},
     transaction::TransactionEnvelope,
     VERSION,
@@ -876,21 +877,73 @@ impl QommVm {
             query
                 if matches!(
                     query,
-                    "defmivm.creditFacility"
+                    "defmivm.asset"
+                        | "defmivm.guarantor"
+                        | "defmivm.creditFacility"
                         | "defmivm.cSDIssuer"
                         | "defmivm.csdIssuer"
                         | "defmivm.creditHold"
                         | "defmivm.note"
+                        | "defmivm.noteSerial"
                         | "defmivm.listNotes"
                         | "defmivm.noteReservation"
+                        | "defmivm.standingNotePool"
                         | "defmivm.noteClaim"
+                        | "defmivm.listNoteClaims"
+                        | "defmivm.settlementVerifier"
+                        | "defmivm.admissionCursor"
+                        | "defmivm.crossDomain"
+                        | "defmivm.crossDomainLeg"
+                        | "defmivm.crossDomainCommittee"
+                        | "defmivm.bojLiquidity"
+                        | "defmivm.bojParticipant"
+                        | "defmivm.bojCollateral"
+                        | "defmivm.bojReservation"
+                        | "defmivm.participantRegistry"
+                        | "defmivm.participant"
+                        | "defmivm.mpcService"
+                        | "defmivm.participantAccountBinding"
+                        | "defmivm.participantServiceBinding"
+                        | "defmivm.standingMandate"
+                        | "defmivm.mandateReservation"
                 ) =>
             {
                 let guard = self.inner.read().await;
                 let runtime = guard
                     .as_ref()
                     .ok_or_else(|| RpcFailure::Application("VM is not initialized".into()))?;
-                canonical_state_snapshot(&runtime.last_accepted.state, query, &params)
+                canonical_state_snapshot(
+                    &runtime.last_accepted.state,
+                    query,
+                    &params,
+                    runtime.last_accepted.block.height,
+                    u64::try_from(runtime.last_accepted.block.timestamp).map_err(|_| {
+                        RpcFailure::Application("accepted block timestamp is negative".into())
+                    })?,
+                    runtime.last_accepted.id,
+                )
+            }
+            "defmivm.previewStandingNotePoolAllocation" => {
+                let guard = self.inner.read().await;
+                let runtime = guard
+                    .as_ref()
+                    .ok_or_else(|| RpcFailure::Application("VM is not initialized".into()))?;
+                let params = params.as_object().ok_or_else(|| {
+                    RpcFailure::InvalidParams(
+                        "standing-pool allocation preview params must be an object".into(),
+                    )
+                })?;
+                let accepted_at =
+                    u64::try_from(runtime.last_accepted.block.timestamp).map_err(|_| {
+                        RpcFailure::Application("accepted block timestamp is negative".into())
+                    })?;
+                crate::execution::preview_standing_note_pool_allocation(
+                    &runtime.last_accepted.state,
+                    params,
+                    &runtime.authorizer,
+                    accepted_at,
+                )
+                .map_err(RpcFailure::Application)
             }
             "defmivm.txStatus" => self.transaction_status(&params).await,
             issue if issue.starts_with("defmivm.issue") => {
@@ -964,9 +1017,44 @@ fn canonical_state_snapshot(
     state: &State,
     method: &str,
     params: &Value,
+    accepted_height: u64,
+    accepted_at: u64,
+    accepted_block_id: Id,
 ) -> Result<Value, RpcFailure> {
     let state_root = hex::encode(state.root());
     match method {
+        "defmivm.asset" => {
+            let (asset_id, key) = snapshot_id(params, "assetID")?;
+            let record = state
+                .assets
+                .get(&key)
+                .ok_or_else(|| RpcFailure::Application("asset was not found".into()))?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "assetID": hex::encode(asset_id),
+                "code": record.code,
+                "kind": record.kind,
+                "decimals": record.decimals,
+                "termsDigest": hex::encode(record.terms_digest),
+                "active": record.active,
+            }))
+        }
+        "defmivm.guarantor" => {
+            let (guarantor_id, key) = snapshot_id(params, "guarantorID")?;
+            let record = state
+                .guarantors
+                .get(&key)
+                .ok_or_else(|| RpcFailure::Application("guarantor was not found".into()))?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "guarantorID": hex::encode(guarantor_id),
+                "kind": record.kind,
+                "name": record.name,
+                "publicKey": hex::encode(record.public_key),
+                "riskPolicyDigest": hex::encode(record.risk_policy_digest),
+                "active": record.active,
+            }))
+        }
         "defmivm.creditFacility" => {
             let (facility_id, key) = snapshot_id(params, "facilityID")?;
             let record = state
@@ -990,6 +1078,61 @@ fn canonical_state_snapshot(
                 "validUntil": record.valid_until,
                 "status": record.status,
                 "sequence": record.sequence,
+            }))
+        }
+        "defmivm.settlementVerifier" => {
+            let venue_id = snapshot_hex32(params, "venueID")?;
+            let epoch = snapshot_u64(params, "epoch")?;
+            let key = id_key(&settlement_verifier_key(venue_id, epoch));
+            let record = state.settlement_verifiers.get(&key).ok_or_else(|| {
+                RpcFailure::Application("settlement verifier was not found".into())
+            })?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "venueID": hex::encode(record.venue_id),
+                "defmiID": hex::encode(record.defmi_id),
+                "epoch": record.epoch,
+                "quoteRegistryDigest": hex::encode(record.quote_registry_digest),
+                "quoteEligibilityBits": record.quote_eligibility_bits,
+                "quoteSpanBits": record.quote_span_bits,
+                "amountBits": record.amount_bits,
+                "priceBits": record.price_bits,
+                "maxHorizon": record.max_horizon,
+                "frostPublicPackage": BASE64.encode(&record.frost_public_package),
+                "validFrom": record.valid_from,
+                "validUntil": record.valid_until,
+                "statement": hex::encode(record.statement),
+            }))
+        }
+        "defmivm.admissionCursor" => {
+            let venue_id = snapshot_hex32(params, "venueID")?;
+            let epoch = snapshot_u64(params, "epoch")?;
+            if epoch == 0 {
+                return Err(RpcFailure::InvalidParams(
+                    "admission cursor epoch must be greater than zero".into(),
+                ));
+            }
+            let last_sequence = state
+                .admission_entries
+                .values()
+                .filter(|entry| {
+                    state
+                        .admission_batches
+                        .get(&id_key(&entry.batch_id))
+                        .is_some_and(|batch| batch.venue_id == venue_id && batch.epoch == epoch)
+                })
+                .map(|entry| entry.sequence)
+                .max()
+                .unwrap_or(0);
+            let next_sequence = last_sequence
+                .checked_add(1)
+                .ok_or_else(|| RpcFailure::Application("admission sequence is exhausted".into()))?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "venueID": hex::encode(venue_id),
+                "epoch": epoch,
+                "lastSequence": last_sequence,
+                "nextSequence": next_sequence,
             }))
         }
         "defmivm.cSDIssuer" | "defmivm.csdIssuer" => {
@@ -1025,6 +1168,7 @@ fn canonical_state_snapshot(
                 .ok_or_else(|| RpcFailure::Application("credit hold was not found".into()))?;
             Ok(json!({
                 "stateRoot": state_root,
+                "acceptedHeight": accepted_height,
                 "holdID": hex::encode(hold_id),
                 "facilityID": hex::encode(record.facility_id),
                 "queryCommitment": hex::encode(record.query_commitment),
@@ -1044,6 +1188,14 @@ fn canonical_state_snapshot(
                 .ok_or_else(|| RpcFailure::Application("note was not found".into()))?;
             Ok(note_snapshot(&state_root, note_id, record))
         }
+        "defmivm.noteSerial" => {
+            let (serial_point, key) = snapshot_id(params, "serialPoint")?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "serialPoint": hex::encode(serial_point),
+                "spent": state.note_serials.contains_key(&key),
+            }))
+        }
         "defmivm.listNotes" => note_page_snapshot(state, params, &state_root),
         "defmivm.noteReservation" => {
             let (hold_id, key) = snapshot_id(params, "holdID")?;
@@ -1051,16 +1203,46 @@ fn canonical_state_snapshot(
                 .note_reservations
                 .get(&key)
                 .ok_or_else(|| RpcFailure::Application("note reservation was not found".into()))?;
+            let binding = state.reservation_bindings.get(&key).ok_or_else(|| {
+                RpcFailure::Application("note reservation binding was not found".into())
+            })?;
             Ok(json!({
                 "stateRoot": state_root,
+                "acceptedHeight": accepted_height,
                 "holdID": hex::encode(hold_id),
                 "escrowNoteID": hex::encode(record.escrow_note_id),
                 "assetID": hex::encode(record.asset_id),
                 "amountCommitment": hex::encode(record.amount_commitment),
                 "proofDigest": hex::encode(record.proof_digest),
                 "delegationDigest": hex::encode(record.delegation_digest),
+                "reserveReceiptDigest": hex::encode(binding.receipt_digest),
                 "status": record.status,
                 "settlementDigest": hex::encode(record.settlement_digest),
+            }))
+        }
+        "defmivm.standingNotePool" => {
+            let (pool_id, key) = snapshot_id(params, "poolID")?;
+            let record = state.standing_note_pools.get(&key).ok_or_else(|| {
+                RpcFailure::Application("standing note pool was not found".into())
+            })?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "poolID": hex::encode(pool_id),
+                "venueID": hex::encode(record.venue_id),
+                "defmiID": hex::encode(record.defmi_id),
+                "entityCommitment": hex::encode(record.entity_commitment),
+                "policyDigest": hex::encode(record.policy_digest),
+                "mandateDigest": hex::encode(record.mandate_digest),
+                "assetID": hex::encode(record.asset_id),
+                "direction": record.direction,
+                "maximumAmountCommitment": hex::encode(record.maximum_amount_commitment),
+                "currentPoolNoteID": hex::encode(record.current_pool_note_id),
+                "delegationDigest": hex::encode(record.delegation_digest),
+                "committeeEpoch": record.committee_epoch,
+                "validUntil": record.valid_until,
+                "sequence": record.sequence,
+                "status": record.status,
+                "statement": hex::encode(record.statement),
             }))
         }
         "defmivm.noteClaim" => {
@@ -1069,28 +1251,481 @@ fn canonical_state_snapshot(
                 .note_claims
                 .get(&key)
                 .ok_or_else(|| RpcFailure::Application("note claim was not found".into()))?;
+            Ok(note_claim_snapshot(&state_root, claim_id, record))
+        }
+        "defmivm.listNoteClaims" => note_claim_page_snapshot(state, params, &state_root),
+        "defmivm.crossDomain" => {
+            if params.as_object().is_none_or(|object| !object.is_empty()) {
+                return Err(RpcFailure::InvalidParams(
+                    "crossDomain takes an empty object".into(),
+                ));
+            }
+            let domain = state.cross_domain_local_domain.as_ref().map(|domain| {
+                json!({
+                    "networkID": domain.network_id,
+                    "chainID": hex::encode(domain.chain_id),
+                    "defmiID": hex::encode(domain.defmi_id),
+                    "domainID": hex::encode(domain.id()),
+                })
+            });
+            let mut prepared = 0u64;
+            let mut armed = 0u64;
+            let mut claimed = 0u64;
+            let mut refunded = 0u64;
+            for record in state.cross_domain.legs.values() {
+                match record.status {
+                    qomm_defmi::cross_domain::LegStatus::Prepared => prepared += 1,
+                    qomm_defmi::cross_domain::LegStatus::Armed => armed += 1,
+                    qomm_defmi::cross_domain::LegStatus::Claimed => claimed += 1,
+                    qomm_defmi::cross_domain::LegStatus::Refunded => refunded += 1,
+                }
+            }
             Ok(json!({
                 "stateRoot": state_root,
-                "claimID": hex::encode(claim_id),
-                "assetID": hex::encode(record.asset_id),
-                "valueCommitment": hex::encode(record.value_commitment),
-                "recipientCommitment": hex::encode(record.recipient_commitment),
-                "sourceHoldID": hex::encode(record.source_hold_id),
-                "kind": record.kind,
-                "status": record.status,
-                "settlementDigest": hex::encode(record.settlement_digest),
-                "materialization": hex::encode(record.materialization),
-                "openingEnvelope": {
-                    "context": hex::encode(record.opening_envelope.context),
-                    "threshold": record.opening_envelope.threshold,
-                    "recipientView": hex::encode(record.opening_envelope.recipient_view),
-                    "shares": record.opening_envelope.shares.iter().map(|share| json!({
-                        "party": share.party,
-                        "ephemeral": hex::encode(share.ephemeral),
-                        "maskedValue": hex::encode(share.masked_value),
-                        "maskedBlinding": hex::encode(share.masked_blinding),
-                    })).collect::<Vec<_>>(),
+                "localDomain": domain,
+                "legCount": state.cross_domain.legs.len(),
+                "consumedReceiptCount": state.cross_domain.consumed_receipts.len(),
+                "committeeCount": state.cross_domain_committees.len(),
+                "status": {
+                    "prepared": prepared,
+                    "armed": armed,
+                    "claimed": claimed,
+                    "refunded": refunded,
+                }
+            }))
+        }
+        "defmivm.crossDomainLeg" => {
+            let (leg_id, _) = snapshot_id(params, "localLegID")?;
+            let record =
+                state.cross_domain.legs.get(&leg_id).ok_or_else(|| {
+                    RpcFailure::Application("cross-domain leg was not found".into())
+                })?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "acceptedHeight": accepted_height,
+                "acceptedAt": accepted_at,
+                "blockID": accepted_block_id.to_string(),
+                "blockIDHex": hex::encode(accepted_block_id.0),
+                "localLegID": hex::encode(leg_id),
+                "localDomain": {
+                    "networkID": record.prepare.local_domain.network_id,
+                    "chainID": hex::encode(record.prepare.local_domain.chain_id),
+                    "defmiID": hex::encode(record.prepare.local_domain.defmi_id),
                 },
+                "remoteDomain": {
+                    "networkID": record.prepare.remote_domain.network_id,
+                    "chainID": hex::encode(record.prepare.remote_domain.chain_id),
+                    "defmiID": hex::encode(record.prepare.remote_domain.defmi_id),
+                },
+                "expectedRemotePrepareBinding": hex::encode(record.prepare.expected_remote_prepare_binding),
+                "expectedRemoteClaimBinding": hex::encode(record.prepare.expected_remote_claim_binding),
+                "ownerCommitment": hex::encode(record.prepare.owner_commitment),
+                "escrowCommitment": hex::encode(record.prepare.escrow_commitment),
+                "destinationCommitment": hex::encode(record.prepare.destination_commitment),
+                "assetCommitment": hex::encode(record.prepare.asset_commitment),
+                "amountCommitment": hex::encode(record.prepare.amount_commitment),
+                "localInstructionDigest": hex::encode(record.prepare.local_instruction_digest),
+                "localRelationProofDigest": hex::encode(record.prepare.local_relation_proof_digest),
+                "reserveTransferDigest": hex::encode(record.prepare.reserve_transfer_digest),
+                "claimTransferDigest": hex::encode(record.prepare.claim_transfer_digest),
+                "refundTransferDigest": hex::encode(record.prepare.refund_transfer_digest),
+                "armDeadline": record.prepare.arm_deadline,
+                "claimDeadline": record.prepare.claim_deadline,
+                "refundAfter": record.prepare.refund_after,
+                "releaseCondition": hex::encode(record.prepare.release_condition),
+                "status": match record.status {
+                    qomm_defmi::cross_domain::LegStatus::Prepared => "prepared",
+                    qomm_defmi::cross_domain::LegStatus::Armed => "armed",
+                    qomm_defmi::cross_domain::LegStatus::Claimed => "claimed",
+                    qomm_defmi::cross_domain::LegStatus::Refunded => "refunded",
+                },
+                "preparedAt": record.prepared_at,
+                "armedAt": record.armed_at,
+                "claimedAt": record.claimed_at,
+                "refundedAt": record.refunded_at,
+                "remotePrepareReceipt": record.remote_prepare_receipt.map(hex::encode),
+                "remoteClaimReceipt": record.remote_claim_receipt.map(hex::encode),
+            }))
+        }
+        "defmivm.crossDomainCommittee" => {
+            let object = params.as_object().ok_or_else(|| {
+                RpcFailure::InvalidParams("crossDomainCommittee params must be an object".into())
+            })?;
+            if object.len() != 2 {
+                return Err(RpcFailure::InvalidParams(
+                    "crossDomainCommittee needs domainID and epoch".into(),
+                ));
+            }
+            let domain_id = object
+                .get("domainID")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RpcFailure::InvalidParams("domainID must be hex".into()))?;
+            let domain_id: [u8; 32] = hex::decode(domain_id)
+                .map_err(|_| RpcFailure::InvalidParams("domainID must be hex".into()))?
+                .try_into()
+                .map_err(|_| RpcFailure::InvalidParams("domainID must be 32 bytes".into()))?;
+            let epoch = object
+                .get("epoch")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| RpcFailure::InvalidParams("epoch must be an integer".into()))?;
+            let key = crate::state::cross_domain_committee_key(&domain_id, epoch);
+            let committee = state.cross_domain_committees.get(&key).ok_or_else(|| {
+                RpcFailure::Application("cross-domain committee was not found".into())
+            })?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "domain": {
+                    "networkID": committee.domain.network_id,
+                    "chainID": hex::encode(committee.domain.chain_id),
+                    "defmiID": hex::encode(committee.domain.defmi_id),
+                    "domainID": hex::encode(committee.domain.id()),
+                },
+                "epoch": committee.epoch,
+                "quorumWeight": committee.quorum_weight,
+                "members": committee.members.iter().map(|member| json!({
+                    "memberID": hex::encode(member.member_id),
+                    "publicKey": hex::encode(member.public_key),
+                    "weight": member.weight,
+                })).collect::<Vec<_>>(),
+            }))
+        }
+        "defmivm.bojLiquidity" => {
+            if params.as_object().is_none_or(|object| !object.is_empty()) {
+                return Err(RpcFailure::InvalidParams(
+                    "bojLiquidity takes an empty object".into(),
+                ));
+            }
+            let mut active = 0u64;
+            let mut shortfall = 0u64;
+            let mut overdue = 0u64;
+            let mut suspended = 0u64;
+            for participant in state.boj_liquidity.participants.values() {
+                match participant.status {
+                    qomm_defmi::central_bank_liquidity::ParticipantStatus::Active => active += 1,
+                    qomm_defmi::central_bank_liquidity::ParticipantStatus::CollateralShortfall => {
+                        shortfall += 1
+                    }
+                    qomm_defmi::central_bank_liquidity::ParticipantStatus::Overdue => overdue += 1,
+                    qomm_defmi::central_bank_liquidity::ParticipantStatus::Suspended => {
+                        suspended += 1
+                    }
+                }
+            }
+            Ok(json!({
+                "stateRoot": state_root,
+                "acceptedHeight": accepted_height,
+                "acceptedAt": accepted_at,
+                "blockID": accepted_block_id.to_string(),
+                "participantCount": state.boj_liquidity.participants.len(),
+                "collateralLotCount": state.boj_liquidity.collateral_lots.len(),
+                "reservationCount": state.boj_liquidity.reservations.len(),
+                "settlementCount": state.boj_liquidity.completed_settlements.len(),
+                "fundsReceiptCount": state.boj_liquidity.applied_funds_receipts.len(),
+                "status": {
+                    "active": active,
+                    "collateralShortfall": shortfall,
+                    "overdue": overdue,
+                    "suspended": suspended,
+                },
+            }))
+        }
+        "defmivm.bojParticipant" => {
+            let (entity_id, key) = snapshot_id(params, "legalEntityID")?;
+            let participant =
+                state.boj_liquidity.participants.get(&key).ok_or_else(|| {
+                    RpcFailure::Application("BOJ participant was not found".into())
+                })?;
+            let collateral_value = state
+                .boj_liquidity
+                .collateral_value(&entity_id)
+                .map_err(|error| RpcFailure::Application(error.to_string()))?;
+            let live_reserved = state
+                .boj_liquidity
+                .live_reserved(&entity_id, accepted_at)
+                .map_err(|error| RpcFailure::Application(error.to_string()))?;
+            let available_headroom = state
+                .boj_liquidity
+                .available_headroom(&entity_id, accepted_at)
+                .map_err(|error| RpcFailure::Application(error.to_string()))?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "acceptedHeight": accepted_height,
+                "acceptedAt": accepted_at,
+                "blockID": accepted_block_id.to_string(),
+                "legalEntityID": hex::encode(entity_id),
+                "fundsAccountID": hex::encode(participant.funds_account_id),
+                "jgbAccountID": hex::encode(participant.jgb_account_id),
+                "currentAccountBalanceYen": participant.current_account_balance_yen,
+                "otherSecuredExposureYen": participant.other_secured_exposure_yen,
+                "intradayOverdraftYen": participant.intraday_overdraft_yen,
+                "liveReservedYen": live_reserved,
+                "collateralValueYen": collateral_value,
+                "availableHeadroomYen": available_headroom,
+                "businessDay": participant.business_day,
+                "repaymentDeadline": participant.repayment_deadline,
+                "businessDayClosed": participant.business_day_closed,
+                "sequence": participant.sequence,
+                "status": match participant.status {
+                    qomm_defmi::central_bank_liquidity::ParticipantStatus::Active => "active",
+                    qomm_defmi::central_bank_liquidity::ParticipantStatus::CollateralShortfall => "collateral_shortfall",
+                    qomm_defmi::central_bank_liquidity::ParticipantStatus::Overdue => "overdue",
+                    qomm_defmi::central_bank_liquidity::ParticipantStatus::Suspended => "suspended",
+                },
+            }))
+        }
+        "defmivm.bojCollateral" => {
+            let (lot_id, key) = snapshot_id(params, "lotID")?;
+            let lot = state
+                .boj_liquidity
+                .collateral_lots
+                .get(&key)
+                .ok_or_else(|| {
+                    RpcFailure::Application("JGB collateral lot was not found".into())
+                })?;
+            let collateral_value = lot
+                .collateral_value_yen()
+                .map_err(|error| RpcFailure::Application(error.to_string()))?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "acceptedHeight": accepted_height,
+                "acceptedAt": accepted_at,
+                "blockID": accepted_block_id.to_string(),
+                "lotID": hex::encode(lot_id),
+                "assetID": hex::encode(lot.asset_id),
+                "ownerLegalEntityID": hex::encode(lot.owner_legal_entity_id),
+                "faceValueYen": lot.face_value_yen,
+                "marketPricePer100Micros": lot.market_price_per_100_micros,
+                "indexRatioPpm": lot.index_ratio_ppm,
+                "valuationRateBps": lot.valuation_rate_bps,
+                "valuationEpoch": lot.valuation_epoch,
+                "collateralValueYen": collateral_value,
+                "pledged": lot.pledged,
+                "sequence": lot.sequence,
+            }))
+        }
+        "defmivm.participantRegistry" => {
+            if params.as_object().is_none_or(|object| !object.is_empty()) {
+                return Err(RpcFailure::InvalidParams(
+                    "participantRegistry takes an empty object".into(),
+                ));
+            }
+            let registry = &state.participant_registry;
+            let mut active = 0u64;
+            let mut suspended = 0u64;
+            let mut revoked = 0u64;
+            for participant in registry.participants.values() {
+                match participant.status {
+                    qomm_defmi::participant::ParticipantStatus::Active => active += 1,
+                    qomm_defmi::participant::ParticipantStatus::Suspended => suspended += 1,
+                    qomm_defmi::participant::ParticipantStatus::Revoked => revoked += 1,
+                }
+            }
+            Ok(json!({
+                "stateRoot": state_root,
+                "acceptedHeight": accepted_height,
+                "acceptedAt": accepted_at,
+                "blockID": accepted_block_id.to_string(),
+                "configuration": registry.configuration.as_ref().map(|configuration| json!({
+                    "domainID": hex::encode(configuration.domain_id),
+                    "templateDigest": hex::encode(configuration.template_digest),
+                    "schemaDigest": hex::encode(configuration.schema_digest),
+                    "templateVersion": configuration.template_version,
+                })),
+                "participantCount": registry.participants.len(),
+                "accountBindingCount": registry.account_bindings.len(),
+                "serviceCount": registry.services.len(),
+                "serviceBindingCount": registry.service_bindings.len(),
+                "mandateCount": registry.mandates.len(),
+                "reservationCount": registry.reservations.len(),
+                "status": {
+                    "active": active,
+                    "suspended": suspended,
+                    "revoked": revoked,
+                },
+            }))
+        }
+        "defmivm.participant" => {
+            let (participant_id, key) = snapshot_id(params, "participantID")?;
+            let record = state
+                .participant_registry
+                .participants
+                .get(&key)
+                .ok_or_else(|| RpcFailure::Application("participant was not found".into()))?;
+            let purpose_key = |key: &qomm_defmi::participant::PurposeKey| {
+                json!({
+                    "publicKey": hex::encode(key.public_key),
+                    "epoch": key.epoch,
+                })
+            };
+            Ok(json!({
+                "stateRoot": state_root,
+                "participantID": hex::encode(participant_id),
+                "legalEntityCredentialCommitment": hex::encode(record.legal_entity_credential_commitment),
+                "credentialIssuerID": hex::encode(record.credential_issuer_id),
+                "credentialSchemeDigest": hex::encode(record.credential_scheme_digest),
+                "jurisdiction": record.jurisdiction,
+                "roles": record.roles,
+                "keys": {
+                    "admin": purpose_key(&record.keys.admin),
+                    "settlement": purpose_key(&record.keys.settlement),
+                    "quote": purpose_key(&record.keys.quote),
+                    "mpcInput": purpose_key(&record.keys.mpc_input),
+                    "emergency": purpose_key(&record.keys.emergency),
+                },
+                "policyDigest": hex::encode(record.policy_digest),
+                "validFrom": record.valid_from,
+                "validUntil": record.valid_until,
+                "sequence": record.sequence,
+                "status": record.status,
+            }))
+        }
+        "defmivm.mpcService" => {
+            let (service_id, key) = snapshot_id(params, "serviceID")?;
+            let service = state
+                .participant_registry
+                .services
+                .get(&key)
+                .ok_or_else(|| RpcFailure::Application("MPC service was not found".into()))?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "serviceID": hex::encode(service_id),
+                "kind": service.kind,
+                "programDigest": hex::encode(service.program_digest),
+                "schemaDigest": hex::encode(service.schema_digest),
+                "committeeEpoch": service.committee_epoch,
+                "threshold": service.threshold,
+                "members": service.members.iter().map(|member| json!({
+                    "nodeID": hex::encode(member.node_id),
+                    "operatorParticipantID": hex::encode(member.operator_participant_id),
+                    "publicKey": hex::encode(member.public_key),
+                })).collect::<Vec<_>>(),
+                "validFrom": service.valid_from,
+                "validUntil": service.valid_until,
+                "sequence": service.sequence,
+                "status": service.status,
+            }))
+        }
+        "defmivm.participantAccountBinding" => {
+            let (binding_id, key) = snapshot_id(params, "bindingID")?;
+            let binding = state
+                .participant_registry
+                .account_bindings
+                .get(&key)
+                .ok_or_else(|| RpcFailure::Application("account binding was not found".into()))?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "bindingID": hex::encode(binding_id),
+                "participantID": hex::encode(binding.participant_id),
+                "accountCommitment": hex::encode(binding.account_commitment),
+                "assetID": hex::encode(binding.asset_id),
+                "kind": binding.kind,
+                "controlProofDigest": hex::encode(binding.control_proof_digest),
+                "validFrom": binding.valid_from,
+                "validUntil": binding.valid_until,
+                "sequence": binding.sequence,
+                "active": binding.active,
+            }))
+        }
+        "defmivm.participantServiceBinding" => {
+            let (binding_id, key) = snapshot_id(params, "bindingID")?;
+            let binding = state
+                .participant_registry
+                .service_bindings
+                .get(&key)
+                .ok_or_else(|| RpcFailure::Application("service binding was not found".into()))?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "bindingID": hex::encode(binding_id),
+                "participantID": hex::encode(binding.participant_id),
+                "serviceID": hex::encode(binding.service_id),
+                "serviceEpoch": binding.service_epoch,
+                "inputPublicKey": hex::encode(binding.input_public_key),
+                "capabilityDigest": hex::encode(binding.capability_digest),
+                "validFrom": binding.valid_from,
+                "validUntil": binding.valid_until,
+                "sequence": binding.sequence,
+                "active": binding.active,
+            }))
+        }
+        "defmivm.standingMandate" => {
+            let (mandate_id, key) = snapshot_id(params, "mandateID")?;
+            let mandate = state
+                .participant_registry
+                .mandates
+                .get(&key)
+                .ok_or_else(|| RpcFailure::Application("standing mandate was not found".into()))?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "mandateID": hex::encode(mandate_id),
+                "participantID": hex::encode(mandate.participant_id),
+                "serviceID": hex::encode(mandate.service_id),
+                "serviceBindingID": hex::encode(mandate.service_binding_id),
+                "role": mandate.role,
+                "accountBindingIDs": mandate.account_binding_ids.iter().map(hex::encode).collect::<Vec<_>>(),
+                "permittedAssetIDs": mandate.permitted_asset_ids.iter().map(hex::encode).collect::<Vec<_>>(),
+                "permittedDestinationDomains": mandate.permitted_destination_domains.iter().map(hex::encode).collect::<Vec<_>>(),
+                "limitCommitment": hex::encode(mandate.limit_commitment),
+                "limitPolicyDigest": hex::encode(mandate.limit_policy_digest),
+                "settlementPolicyDigest": hex::encode(mandate.settlement_policy_digest),
+                "maxActiveReservations": mandate.max_active_reservations,
+                "activeReservations": mandate.active_reservations,
+                "validFrom": mandate.valid_from,
+                "validUntil": mandate.valid_until,
+                "sequence": mandate.sequence,
+                "automaticSettlement": mandate.automatic_settlement,
+                "status": mandate.status,
+            }))
+        }
+        "defmivm.mandateReservation" => {
+            let (reservation_id, key) = snapshot_id(params, "reservationID")?;
+            let reservation = state
+                .participant_registry
+                .reservations
+                .get(&key)
+                .ok_or_else(|| {
+                    RpcFailure::Application("mandate reservation was not found".into())
+                })?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "reservationID": hex::encode(reservation_id),
+                "mandateID": hex::encode(reservation.mandate_id),
+                "serviceID": hex::encode(reservation.service_id),
+                "serviceEpoch": reservation.service_epoch,
+                "accountBindingID": hex::encode(reservation.account_binding_id),
+                "assetID": hex::encode(reservation.asset_id),
+                "amountCommitment": hex::encode(reservation.amount_commitment),
+                "underlyingReservationDigest": hex::encode(reservation.underlying_reservation_digest),
+                "admissionReceiptDigest": hex::encode(reservation.admission_receipt_digest),
+                "limitProofDigest": hex::encode(reservation.limit_proof_digest),
+                "zkpiDigest": hex::encode(reservation.zkpi_digest),
+                "expiresAt": reservation.expires_at,
+                "status": reservation.status,
+                "settlementDigest": hex::encode(reservation.settlement_digest),
+            }))
+        }
+        "defmivm.bojReservation" => {
+            let (reservation_id, key) = snapshot_id(params, "reservationID")?;
+            let reservation = state.boj_liquidity.reservations.get(&key).ok_or_else(|| {
+                RpcFailure::Application("intraday reservation was not found".into())
+            })?;
+            Ok(json!({
+                "stateRoot": state_root,
+                "acceptedHeight": accepted_height,
+                "acceptedAt": accepted_at,
+                "blockID": accepted_block_id.to_string(),
+                "reservationID": hex::encode(reservation_id),
+                "legalEntityID": hex::encode(reservation.legal_entity_id),
+                "instructionCommitment": hex::encode(reservation.instruction_commitment),
+                "amountYen": reservation.amount_yen,
+                "expiresAt": reservation.expires_at,
+                "live": reservation.status == qomm_defmi::central_bank_liquidity::ReservationStatus::Active
+                    && accepted_at < reservation.expires_at,
+                "status": match reservation.status {
+                    qomm_defmi::central_bank_liquidity::ReservationStatus::Active => "active",
+                    qomm_defmi::central_bank_liquidity::ReservationStatus::Consumed => "consumed",
+                    qomm_defmi::central_bank_liquidity::ReservationStatus::Released => "released",
+                },
+                "consumedYen": reservation.consumed_yen,
             }))
         }
         _ => Err(RpcFailure::MethodNotFound),
@@ -1108,6 +1743,18 @@ fn snapshot_id(params: &Value, name: &str) -> Result<([u8; 32], String), RpcFail
         .try_into()
         .map_err(|_| RpcFailure::InvalidParams(format!("{name} must contain 32 bytes")))?;
     Ok((value, hex::encode(value)))
+}
+
+fn snapshot_hex32(params: &Value, name: &str) -> Result<[u8; 32], RpcFailure> {
+    snapshot_id(params, name).map(|(value, _)| value)
+}
+
+fn snapshot_u64(params: &Value, name: &str) -> Result<u64, RpcFailure> {
+    params
+        .as_object()
+        .and_then(|object| object.get(name))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| RpcFailure::InvalidParams(format!("{name} must be an unsigned integer")))
 }
 
 fn note_snapshot(state_root: &str, note_id: [u8; 32], record: &crate::state::NoteRecord) -> Value {
@@ -1169,6 +1816,104 @@ fn note_page_snapshot(
     Ok(json!({
         "stateRoot": state_root,
         "notes": page,
+        "next": last.filter(|_| page.len() == limit).map(hex::encode).unwrap_or_default(),
+    }))
+}
+
+fn note_claim_snapshot(
+    state_root: &str,
+    claim_id: [u8; 32],
+    record: &crate::state::NoteClaimRecord,
+) -> Value {
+    json!({
+        "stateRoot": state_root,
+        "claimID": hex::encode(claim_id),
+        "assetID": hex::encode(record.asset_id),
+        "valueCommitment": hex::encode(record.value_commitment),
+        "recipientCommitment": hex::encode(record.recipient_commitment),
+        "sourceHoldID": hex::encode(record.source_hold_id),
+        "kind": record.kind,
+        "status": record.status,
+        "settlementDigest": hex::encode(record.settlement_digest),
+        "materialization": hex::encode(record.materialization),
+        "openingEnvelope": {
+            "context": hex::encode(record.opening_envelope.context),
+            "threshold": record.opening_envelope.threshold,
+            "recipientView": hex::encode(record.opening_envelope.recipient_view),
+            "shares": record.opening_envelope.shares.iter().map(|share| json!({
+                "party": share.party,
+                "ephemeral": hex::encode(share.ephemeral),
+                "maskedValue": hex::encode(share.masked_value),
+                "maskedBlinding": hex::encode(share.masked_blinding),
+            })).collect::<Vec<_>>(),
+        },
+    })
+}
+
+fn note_claim_page_snapshot(
+    state: &State,
+    params: &Value,
+    state_root: &str,
+) -> Result<Value, RpcFailure> {
+    let object = params
+        .as_object()
+        .ok_or_else(|| RpcFailure::InvalidParams("params must be an object".into()))?;
+    let source_hold_id = object
+        .get("sourceHoldID")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(|_| snapshot_id(params, "sourceHoldID").map(|value| value.0))
+        .transpose()?;
+    let recipient_view = object
+        .get("recipientView")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(|_| snapshot_id(params, "recipientView").map(|value| value.0))
+        .transpose()?;
+    if source_hold_id.is_some() == recipient_view.is_some() {
+        return Err(RpcFailure::InvalidParams(
+            "exactly one of sourceHoldID or recipientView is required".into(),
+        ));
+    }
+    let after = match object.get("after").and_then(Value::as_str) {
+        None | Some("") => None,
+        Some(_) => Some(snapshot_id(params, "after")?.0),
+    };
+    let limit = match object.get("limit") {
+        None => 64_usize,
+        Some(value) => value
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| (1..=256).contains(value))
+            .ok_or_else(|| {
+                RpcFailure::InvalidParams("limit must be an integer between 1 and 256".into())
+            })?,
+    };
+    let mut page = Vec::with_capacity(limit);
+    let mut last = None;
+    for (key, record) in &state.note_claims {
+        if source_hold_id.is_some_and(|source| record.source_hold_id != source)
+            || recipient_view
+                .is_some_and(|recipient| record.opening_envelope.recipient_view != recipient)
+        {
+            continue;
+        }
+        let claim_id: [u8; 32] = hex::decode(key)
+            .expect("validated canonical note-claim key")
+            .try_into()
+            .expect("validated 32-byte note-claim key");
+        if after.is_some_and(|cursor| claim_id <= cursor) {
+            continue;
+        }
+        page.push(note_claim_snapshot(state_root, claim_id, record));
+        last = Some(claim_id);
+        if page.len() == limit {
+            break;
+        }
+    }
+    Ok(json!({
+        "stateRoot": state_root,
+        "claims": page,
         "next": last.filter(|_| page.len() == limit).map(hex::encode).unwrap_or_default(),
     }))
 }
@@ -1653,6 +2398,13 @@ impl Vm for QommVm {
                         runtime.processing.insert(id, bytes.clone());
                         transactions.push(bytes);
                         receipts.push(receipt);
+                    }
+                    Err(reason) if reason.contains("already applied") => {
+                        // A peer may win consensus with this gossiped
+                        // transaction before the local proposer drains its
+                        // copy. It is an accepted duplicate, not an application
+                        // rejection; the persisted receipt is authoritative.
+                        runtime.rejected.remove(&id);
                     }
                     Err(reason) => {
                         runtime.rejected.insert(id, reason);
@@ -2182,6 +2934,16 @@ impl Vm for QommVm {
             .await
             .map_err(db_error)?;
         runtime.verified.remove(&id);
+        let accepted_transactions = block
+            .receipts
+            .iter()
+            .map(|receipt| receipt.transaction_id)
+            .collect::<BTreeSet<_>>();
+        runtime.mempool.retain(|bytes| {
+            TransactionEnvelope::decode(bytes)
+                .and_then(|transaction| transaction.id())
+                .is_ok_and(|transaction_id| !accepted_transactions.contains(&transaction_id))
+        });
         for receipt in &block.receipts {
             runtime.pending.remove(&receipt.transaction_id);
             runtime.processing.remove(&receipt.transaction_id);
@@ -2311,5 +3073,299 @@ mod tests {
         let id = Id([9; 32]);
         assert_eq!(parse_text_id(&id.to_string(), "id").expect("CB58"), id);
         assert_eq!(parse_text_id(&hex::encode(id.0), "id").expect("hex"), id);
+    }
+
+    #[test]
+    fn settlement_verifier_snapshot_returns_the_canonical_restart_anchor() {
+        use qomm_defmi::settlement_verifier::SettlementVerifierConfig;
+        use qomm_zkpi::deal_quorum;
+        use rand_core::OsRng;
+
+        let (_, public) = deal_quorum(7, 3, &mut OsRng).expect("FROST group");
+        let config = SettlementVerifierConfig {
+            venue_id: [41; 32],
+            defmi_id: [42; 32],
+            epoch: 43,
+            quote_registry_digest: [44; 32],
+            quote_eligibility_bits: 46,
+            quote_span_bits: 48,
+            amount_bits: 16,
+            price_bits: 32,
+            max_horizon: 3_600,
+            frost_public_package: public.serialize().expect("public package"),
+            valid_from: 1,
+            valid_until: 4_102_444_800,
+        };
+        let statement = config.statement().expect("verifier statement");
+        let mut state = State::default();
+        state.settlement_verifiers.insert(
+            id_key(&config.key()),
+            crate::state::SettlementVerifierRecord {
+                venue_id: config.venue_id,
+                defmi_id: config.defmi_id,
+                epoch: config.epoch,
+                quote_registry_digest: config.quote_registry_digest,
+                quote_eligibility_bits: config.quote_eligibility_bits,
+                quote_span_bits: config.quote_span_bits,
+                amount_bits: config.amount_bits,
+                price_bits: config.price_bits,
+                max_horizon: config.max_horizon,
+                frost_public_package: config.frost_public_package.clone(),
+                valid_from: config.valid_from,
+                valid_until: config.valid_until,
+                statement,
+            },
+        );
+
+        let snapshot = canonical_state_snapshot(
+            &state,
+            "defmivm.settlementVerifier",
+            &json!({"venueID": hex::encode(config.venue_id), "epoch": config.epoch}),
+            9,
+            10,
+            Id([45; 32]),
+        )
+        .unwrap_or_else(|_| panic!("settlement verifier snapshot failed"));
+        assert_eq!(snapshot["stateRoot"], hex::encode(state.root()));
+        assert_eq!(snapshot["statement"], hex::encode(statement));
+        assert_eq!(snapshot["quoteRegistryDigest"], hex::encode([44; 32]));
+        assert_eq!(snapshot["epoch"], 43);
+    }
+
+    #[test]
+    fn admission_cursor_returns_the_next_canonical_venue_epoch_sequence() {
+        use crate::state::{admission_entry_key, AdmissionBatchRecord, AdmissionEntryRecord};
+
+        let venue_id = [46; 32];
+        let epoch = 47;
+        let batch_id = [48; 32];
+        let mut state = State::default();
+        state.admission_batches.insert(
+            id_key(&batch_id),
+            AdmissionBatchRecord {
+                venue_id,
+                epoch,
+                slot: 99,
+                batch_digest: [49; 32],
+                order_digest: [50; 32],
+                population: 1,
+                consumed: 0,
+                expires_at: 4_102_444_800,
+                statement: [51; 32],
+            },
+        );
+        state.admission_entries.insert(
+            admission_entry_key(&batch_id, 7),
+            AdmissionEntryRecord {
+                batch_id,
+                sequence: 7,
+                admission_digest: [52; 32],
+                consumed_by: [0; 32],
+            },
+        );
+
+        let snapshot = canonical_state_snapshot(
+            &state,
+            "defmivm.admissionCursor",
+            &json!({"venueID": hex::encode(venue_id), "epoch": epoch}),
+            9,
+            10,
+            Id([53; 32]),
+        )
+        .unwrap_or_else(|_| panic!("admission cursor snapshot failed"));
+        assert_eq!(snapshot["stateRoot"], hex::encode(state.root()));
+        assert_eq!(snapshot["venueID"], hex::encode(venue_id));
+        assert_eq!(snapshot["epoch"], epoch);
+        assert_eq!(snapshot["lastSequence"], 7);
+        assert_eq!(snapshot["nextSequence"], 8);
+    }
+
+    #[test]
+    fn note_claim_pages_filter_by_source_or_recipient_and_advance_the_cursor() {
+        use crate::state::{EncryptedOpeningShareRecord, NoteClaimRecord, OpeningEnvelopeRecord};
+        use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
+        use curve25519_dalek::scalar::Scalar;
+
+        let source_a = [61; 32];
+        let source_b = [62; 32];
+        let recipient_a = (G * Scalar::from(71_u64)).compress().to_bytes();
+        let recipient_b = (G * Scalar::from(72_u64)).compress().to_bytes();
+        let opening = |recipient_view| OpeningEnvelopeRecord {
+            context: [63; 32],
+            threshold: 1,
+            recipient_view,
+            shares: vec![EncryptedOpeningShareRecord {
+                party: 1,
+                ephemeral: (G * Scalar::from(73_u64)).compress().to_bytes(),
+                masked_value: Scalar::from(74_u64).to_bytes(),
+                masked_blinding: Scalar::from(75_u64).to_bytes(),
+            }],
+        };
+        let record = |source_hold_id, recipient_view| NoteClaimRecord {
+            asset_id: [64; 32],
+            value_commitment: (G * Scalar::from(76_u64)).compress().to_bytes(),
+            recipient_commitment: [65; 32],
+            source_hold_id,
+            kind: "refund".into(),
+            opening_envelope: opening(recipient_view),
+            status: "active".into(),
+            settlement_digest: [66; 32],
+            materialization: [0; 32],
+        };
+        let mut state = State::default();
+        state
+            .note_claims
+            .insert(id_key(&[1; 32]), record(source_a, recipient_a));
+        state
+            .note_claims
+            .insert(id_key(&[2; 32]), record(source_a, recipient_b));
+        state
+            .note_claims
+            .insert(id_key(&[3; 32]), record(source_b, recipient_a));
+
+        let first = canonical_state_snapshot(
+            &state,
+            "defmivm.listNoteClaims",
+            &json!({
+                "sourceHoldID": hex::encode(source_a),
+                "after": "",
+                "limit": 1,
+            }),
+            4,
+            5,
+            Id([67; 32]),
+        )
+        .unwrap_or_else(|_| panic!("first source page failed"));
+        assert_eq!(first["claims"].as_array().unwrap().len(), 1);
+        assert_eq!(first["next"], hex::encode([1; 32]));
+        let second = canonical_state_snapshot(
+            &state,
+            "defmivm.listNoteClaims",
+            &json!({
+                "sourceHoldID": hex::encode(source_a),
+                "after": first["next"],
+                "limit": 2,
+            }),
+            4,
+            5,
+            Id([67; 32]),
+        )
+        .unwrap_or_else(|_| panic!("second source page failed"));
+        assert_eq!(second["claims"].as_array().unwrap().len(), 1);
+        assert_eq!(second["claims"][0]["claimID"], hex::encode([2; 32]));
+
+        let recipient = canonical_state_snapshot(
+            &state,
+            "defmivm.listNoteClaims",
+            &json!({
+                "recipientView": hex::encode(recipient_a),
+                "after": "",
+                "limit": 8,
+            }),
+            4,
+            5,
+            Id([67; 32]),
+        )
+        .unwrap_or_else(|_| panic!("recipient page failed"));
+        assert_eq!(recipient["claims"].as_array().unwrap().len(), 2);
+        assert!(canonical_state_snapshot(
+            &state,
+            "defmivm.listNoteClaims",
+            &json!({
+                "sourceHoldID": hex::encode(source_a),
+                "recipientView": hex::encode(recipient_a),
+            }),
+            4,
+            5,
+            Id([67; 32]),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn participant_snapshots_expose_capabilities_but_not_canonical_balances() {
+        use std::collections::BTreeSet;
+
+        use ed25519_dalek::SigningKey;
+        use qomm_defmi::participant::{
+            ParticipantKeys, ParticipantRecord, ParticipantRole, ParticipantStatus, PurposeKey,
+            RegisterParticipant, RegistryConfiguration,
+        };
+
+        let key = |value: u8| PurposeKey {
+            public_key: SigningKey::from_bytes(&[value; 32])
+                .verifying_key()
+                .to_bytes(),
+            epoch: 1,
+        };
+        let participant_id = [20; 32];
+        let mut state = State::default();
+        state
+            .participant_registry
+            .configure(RegistryConfiguration {
+                operation_id: [1; 32],
+                domain_id: [2; 32],
+                template_digest: [3; 32],
+                schema_digest: [4; 32],
+                template_version: 1,
+            })
+            .expect("configuration");
+        state
+            .participant_registry
+            .register_participant(
+                RegisterParticipant {
+                    operation_id: [5; 32],
+                    participant: ParticipantRecord {
+                        participant_id,
+                        legal_entity_credential_commitment: [6; 32],
+                        credential_issuer_id: [7; 32],
+                        credential_scheme_digest: [8; 32],
+                        jurisdiction: "JP".into(),
+                        roles: [ParticipantRole::BrokerDealer, ParticipantRole::Maker]
+                            .into_iter()
+                            .collect::<BTreeSet<_>>(),
+                        keys: ParticipantKeys {
+                            admin: key(10),
+                            settlement: key(11),
+                            quote: key(12),
+                            mpc_input: key(13),
+                            emergency: key(14),
+                        },
+                        policy_digest: [9; 32],
+                        valid_from: 10,
+                        valid_until: 100,
+                        sequence: 0,
+                        status: ParticipantStatus::Active,
+                    },
+                },
+                20,
+            )
+            .expect("participant");
+
+        let summary = canonical_state_snapshot(
+            &state,
+            "defmivm.participantRegistry",
+            &json!({}),
+            3,
+            20,
+            Id([15; 32]),
+        )
+        .unwrap_or_else(|_| panic!("participant registry summary failed"));
+        assert_eq!(summary["participantCount"], 1);
+        assert_eq!(summary["status"]["active"], 1);
+
+        let detail = canonical_state_snapshot(
+            &state,
+            "defmivm.participant",
+            &json!({"participantID": hex::encode(participant_id)}),
+            3,
+            20,
+            Id([15; 32]),
+        )
+        .unwrap_or_else(|_| panic!("participant detail failed"));
+        assert_eq!(detail["status"], "active");
+        assert_eq!(detail["keys"]["settlement"]["epoch"], 1);
+        assert!(detail.get("balance").is_none());
+        assert!(detail.get("accountNumber").is_none());
     }
 }

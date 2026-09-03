@@ -5,11 +5,17 @@
 //! neither has a request/response representation. Each process opens only its
 //! own MP-SPDZ persistence file below a configured root.
 
+use crate::mpc_result::NodePublicResultAttestation;
+use crate::order::{
+    admission_principal_digest, encode_node_execution_attestation, principal_ticket_id,
+    NodeAdmissionAttestation, NodeExecutionAttestation,
+};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use merlin::Transcript;
 use qomm_audit::distributed_dp::DpMechanism;
 use qomm_audit::publication::{NodePublicationEvidence, PublicationStatement};
 use qomm_mpc::persistence::{
@@ -27,7 +33,9 @@ use qomm_proofs::threshold_quote::{
     quote_statement_from_evaluations, QuoteNodeContribution, QuoteNodeStatement,
     QuoteRelationStatements, QuoteRound1Secrets,
 };
+use qomm_proofs::threshold_range::verify_threshold_range;
 use qomm_zk::pedersen::Pedersen;
+use qomm_zk::sigma::verify_product;
 use qomm_zkpi::{
     frost, typed, typed_wire, wire as payment_wire, Bounds, PartialInstruction, QuoteBinding,
     Venue, DEFAULT_DOMAIN,
@@ -46,6 +54,7 @@ use sha2::{Digest, Sha256};
 
 use crate::dvp_issuer::{
     statements_from_evaluations as dvp_statements, BoundMpcDvpNode, DvpRound1Secrets, MpcDvpNode,
+    DVP_CASH_REMAINDER_CONTEXT, DVP_PRODUCT_CONTEXT, DVP_SECURITIES_REMAINDER_CONTEXT,
 };
 use crate::dvp_wire::{
     decode as decode_dvp, encode as encode_dvp, Envelope as DvpEnvelope, Message as DvpMessage,
@@ -62,6 +71,7 @@ use crate::limit_wire::{
 };
 use crate::mandate::{MakerPolicyMandate, TakerExecutionMandate};
 use crate::pretrade_authority::{decode_ack, ReservationParty};
+use crate::proof_codec::decode_dvp_proofs;
 use crate::proof_codec::decode_threshold_range;
 use crate::quote_issuer::MpcQuoteNode;
 use crate::quote_wire::{
@@ -71,6 +81,11 @@ use crate::quote_wire::{
 use crate::selective_disclosure::{
     decrypt as decrypt_exchange, encrypt as encrypt_exchange, shared as exchange_shared,
     X25519PrivateKey, X25519PublicKey,
+};
+use crate::standing_pool::{
+    standing_note_pool_delegation_digest, standing_note_pool_id, threshold_dvp_package_digest,
+    threshold_dvp_sides, threshold_range_proof_digest, StandingPoolAllocationBinding,
+    STANDING_POOL_REMAINDER_CONTEXT,
 };
 use crate::zkpi_issuer::{
     field_scalar, statements_from_evaluations as zkpi_statements, BoundMpcZkpiNode, MpcZkpiNode,
@@ -573,6 +588,7 @@ impl ProofStateStore {
 
 struct ProofJob {
     expected_quote_digest: [u8; 32],
+    persistence_digest: [u8; 32],
     authorized_payment_digest: Option<[u8; 64]>,
     authorized_taker_handle: Option<RistrettoPoint>,
     maker_is_payer: Option<bool>,
@@ -594,12 +610,24 @@ struct ProofJob {
     limit: Option<MpcLimitNode>,
     limit_bound: Option<BoundMpcLimitNode>,
     limit_round1: Option<qomm_proofs::threshold_range::RangeRound1Secret>,
+    pool_remainder: Option<MpcLimitNode>,
+    pool_remainder_bound: Option<BoundMpcLimitNode>,
+    pool_remainder_round1: Option<qomm_proofs::threshold_range::RangeRound1Secret>,
+    pool_remainder_commitment: Option<RistrettoPoint>,
+    pool_remainder_response_issued: bool,
     dvp: Option<MpcDvpNode>,
     dvp_bound: Option<BoundMpcDvpNode>,
     dvp_round1: Option<DvpRound1Secrets>,
     quantity_commitment: Option<RistrettoPoint>,
+    cash_commitment: Option<RistrettoPoint>,
+    securities_remainder: Option<RistrettoPoint>,
+    cash_remainder: Option<RistrettoPoint>,
     securities_reserve: Option<RistrettoPoint>,
     cash_reserve: Option<RistrettoPoint>,
+    /// Set only after this node has consumed its one-use DvP nonce and issued
+    /// the public response. A standing-pool allocation cannot be authorized
+    /// from evaluations alone.
+    dvp_response_issued: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1086,6 +1114,68 @@ impl ProofParty {
             .chain_update(self.identity.verifying_key().to_bytes())
             .finalize()
             .into()
+    }
+
+    /// Sign the exact legal-entity claim and node-local share batch admitted at
+    /// the MP-SPDZ execution boundary.  The principal is authenticated by the
+    /// node's transport in production; the public Docker network passes its
+    /// pinned participant identifier explicitly because it has no TLS proxy.
+    ///
+    /// The Taker signs `claim_digest` before submitting the RFQ.  Every node
+    /// recomputes the slot-bound ticket and principal digest, and binds its own
+    /// distinct input batch.  The coordinator therefore cannot replace the
+    /// Taker mandate or manufacture an order after observing the quote.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sign_admission_attestation(
+        &self,
+        slot: u64,
+        sequence: u64,
+        principal: &str,
+        ticket_id: [u8; 32],
+        claim_digest: [u8; 32],
+        batch_digest: [u8; 32],
+        order_digest: [u8; 32],
+    ) -> Result<(NodeAdmissionAttestation, [u8; 32]), String> {
+        if !self.state_healthy {
+            return Err("proof-party durable state is unavailable; node is fail-closed".into());
+        }
+        let slot_u32 = u32::try_from(slot)
+            .map_err(|_| "admission slot is outside the resident-node range".to_string())?;
+        if principal_ticket_id(slot_u32, principal)? != ticket_id {
+            return Err(
+                "admission ticket does not match the authenticated principal and slot".into(),
+            );
+        }
+        let attestation = NodeAdmissionAttestation {
+            node: self.config.node,
+            slot,
+            sequence,
+            principal_digest: admission_principal_digest(principal)?,
+            ticket_id,
+            claim_digest,
+            batch_digest,
+            order_digest,
+            signature: Signature::from_bytes(&[0_u8; 64]),
+        }
+        .sign(&self.identity)?;
+        Ok((attestation, self.identity.verifying_key().to_bytes()))
+    }
+
+    /// Sign the Taker-masked public result emitted by this node's completed
+    /// MP-SPDZ process. The caller supplies only public digests and outputs;
+    /// no persistence share or unmasked quote crosses this boundary.
+    pub fn sign_public_result_attestation(
+        &self,
+        attestation: NodePublicResultAttestation,
+    ) -> Result<(NodePublicResultAttestation, [u8; 32]), String> {
+        if !self.state_healthy {
+            return Err("proof-party durable state is unavailable; node is fail-closed".into());
+        }
+        if attestation.node != self.config.node {
+            return Err("public MPC result was routed to another resident node".into());
+        }
+        let signed = attestation.sign(&self.identity)?;
+        Ok((signed, self.identity.verifying_key().to_bytes()))
     }
 
     fn durable_state(&self, generation: u64) -> Result<DurableProofState, String> {
@@ -2176,6 +2266,224 @@ impl ProofParty {
                 self.authorize_frost(signing_job, &message)?;
                 Ok(json!({"authorized": true, "kind": "pretrade-reserve-context"}))
             }
+            "authorize_standing_pool_allocation" => {
+                let proof_job = Self::job_id(params)?;
+                let signing_job = Self::hex32(params.get("signing_job_id"), "signing_job_id")?;
+                let message = Self::one_wire(params, "message")?;
+                if message.len() != 64 {
+                    return Err("standing pool signing message must be one SHA-512 digest".into());
+                }
+                let binding = StandingPoolAllocationBinding::from_body(
+                    params
+                        .get("allocation_binding")
+                        .ok_or_else(|| "standing pool allocation binding is absent".to_string())?,
+                )?;
+                if binding.proof_job_id != proof_job
+                    || binding.signing_message()?.as_slice() != message.as_slice()
+                {
+                    return Err(
+                        "standing pool signing request changed its canonical allocation".into(),
+                    );
+                }
+                let maker = match ReserveMandate::from_params(params)? {
+                    ReserveMandate::Maker(value) => value,
+                    ReserveMandate::Taker(_) => {
+                        return Err("a Taker mandate cannot allocate a Maker standing pool".into())
+                    }
+                };
+                let instruction = payment_wire::decode(&Self::one_wire(params, "payment")?)
+                    .map_err(|_| "standing pool payment wire is invalid".to_string())?;
+                let dvp_proofs = decode_dvp_proofs(&Self::one_wire(params, "dvp_proofs")?)?;
+                let pool_remainder_proof =
+                    decode_threshold_range(&Self::one_wire(params, "pool_remainder_range")?)?;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| "system clock is before the Unix epoch")?
+                    .as_secs();
+                maker.verify_signature_at(now)?;
+                let maker_mandate_digest = maker.digest()?;
+                if binding.authorization.entity_commitment != maker.entity_commitment
+                    || binding.authorization.asset_id != maker.asset_id
+                    || binding.authorization.direction != maker.direction as u8
+                    || binding.authorization.policy_digest != maker.policy_digest
+                    || binding.authorization.mandate_digest != maker_mandate_digest
+                    || binding.authorization.policy_version != maker.policy_version
+                    || binding.pool_id
+                        != standing_note_pool_id(
+                            maker.entity_commitment,
+                            maker.policy_digest,
+                            maker_mandate_digest,
+                            maker.asset_id,
+                            maker.direction as u8,
+                        )?
+                    || binding.delegation_digest
+                        != standing_note_pool_delegation_digest(
+                            binding.pool_id,
+                            maker.venue_id,
+                            maker.defmi_id,
+                            binding.committee_epoch,
+                            maker.valid_until,
+                        )?
+                    || (binding.expected_pool_sequence == 0
+                        && binding.previous_amount_commitment != maker.maximum_amount_commitment)
+                {
+                    return Err(
+                        "standing pool allocation differs from the signed Maker mandate".into(),
+                    );
+                }
+                let public = self
+                    .frost_public
+                    .as_ref()
+                    .ok_or_else(|| "FROST key generation is incomplete".to_string())?;
+                public
+                    .verifying_key()
+                    .verify(&instruction.digest(), &instruction.signature)
+                    .map_err(|_| {
+                        "standing pool payment lacks this committee's signature".to_string()
+                    })?;
+                let (
+                    expected_quote_digest,
+                    winning_policy_digest,
+                    selected_maker_handle,
+                    authorized_payment_digest,
+                    maker_is_payer,
+                    quantity_commitment,
+                    cash_commitment,
+                    securities_remainder,
+                    cash_remainder,
+                    securities_reserve,
+                    cash_reserve,
+                    pool_remainder_commitment,
+                ) = {
+                    let job = self.jobs.get(&proof_job).ok_or_else(|| {
+                        "standing pool authorization proof job is not active".to_string()
+                    })?;
+                    if !job.quote_verified
+                        || !job.dvp_response_issued
+                        || !job.pool_remainder_response_issued
+                    {
+                        return Err(
+                            "standing pool cannot be allocated before quote, DvP, and pool-remainder proofs"
+                                .into(),
+                        );
+                    }
+                    (
+                        job.expected_quote_digest,
+                        job.winning_policy_digest.ok_or_else(|| {
+                            "standing pool proof has no winning policy".to_string()
+                        })?,
+                        job.selected_maker_handle.ok_or_else(|| {
+                            "standing pool proof has no winning Maker".to_string()
+                        })?,
+                        job.authorized_payment_digest.ok_or_else(|| {
+                            "standing pool proof has no authorized zkPI".to_string()
+                        })?,
+                        job.maker_is_payer.ok_or_else(|| {
+                            "standing pool proof has no Maker payment side".to_string()
+                        })?,
+                        job.quantity_commitment.ok_or_else(|| {
+                            "standing pool proof has no quantity commitment".to_string()
+                        })?,
+                        job.cash_commitment.ok_or_else(|| {
+                            "standing pool proof has no cash commitment".to_string()
+                        })?,
+                        job.securities_remainder.ok_or_else(|| {
+                            "standing pool proof has no securities remainder".to_string()
+                        })?,
+                        job.cash_remainder.ok_or_else(|| {
+                            "standing pool proof has no cash remainder".to_string()
+                        })?,
+                        job.securities_reserve.ok_or_else(|| {
+                            "standing pool proof has no securities reserve".to_string()
+                        })?,
+                        job.cash_reserve
+                            .ok_or_else(|| "standing pool proof has no cash reserve".to_string())?,
+                        job.pool_remainder_commitment.ok_or_else(|| {
+                            "standing pool proof has no parent-pool remainder commitment"
+                                .to_string()
+                        })?,
+                    )
+                };
+                let maker_handle = CompressedRistretto(maker.maker_handle)
+                    .decompress()
+                    .ok_or_else(|| "Maker mandate handle is not canonical".to_string())?;
+                let expected_direction = if maker_is_payer { 2 } else { 1 };
+                if maker.policy_digest != winning_policy_digest
+                    || maker_handle.compress() != selected_maker_handle.compress()
+                    || binding.authorization.direction != expected_direction
+                    || instruction.digest() != authorized_payment_digest
+                    || instruction.quote_proof_digest() != Some(expected_quote_digest)
+                    || binding.quote_proof_digest != expected_quote_digest
+                    || instruction.amount_commitment.compress() != quantity_commitment.compress()
+                    || (maker_is_payer
+                        && instruction.payer_handle.compress() != selected_maker_handle.compress())
+                    || (!maker_is_payer
+                        && instruction.payee_handle.compress() != selected_maker_handle.compress())
+                {
+                    return Err(
+                        "standing pool allocation differs from the MPC-selected Maker quote".into(),
+                    );
+                }
+                if !verify_product(
+                    &self.key,
+                    &mut Transcript::new(DVP_PRODUCT_CONTEXT),
+                    &quantity_commitment,
+                    &instruction.price_commitment,
+                    &cash_commitment,
+                    &dvp_proofs.product,
+                ) || !verify_threshold_range(
+                    &self.key,
+                    &securities_remainder,
+                    &dvp_proofs.securities_remainder,
+                    DVP_SECURITIES_REMAINDER_CONTEXT,
+                ) || !verify_threshold_range(
+                    &self.key,
+                    &cash_remainder,
+                    &dvp_proofs.cash_remainder,
+                    DVP_CASH_REMAINDER_CONTEXT,
+                ) {
+                    return Err("standing pool received an invalid public DvP proof".into());
+                }
+                let sides = threshold_dvp_sides(&instruction);
+                if binding.dvp_proof_digest
+                    != threshold_dvp_package_digest(
+                        &instruction,
+                        &sides,
+                        &cash_commitment,
+                        &securities_remainder,
+                        &cash_remainder,
+                        &dvp_proofs,
+                    )
+                {
+                    return Err("standing pool names another DvP proof package".into());
+                }
+                let expected_child = if maker_is_payer {
+                    cash_reserve
+                } else {
+                    securities_reserve
+                };
+                let pool_remainder = CompressedRistretto(binding.remainder_note.value_commitment)
+                    .decompress()
+                    .ok_or_else(|| "standing pool remainder is not canonical".to_string())?;
+                if binding.escrow_note.value_commitment != expected_child.compress().to_bytes()
+                    || pool_remainder.compress() != pool_remainder_commitment.compress()
+                    || binding.remainder_range_proof_digest
+                        != threshold_range_proof_digest(&pool_remainder_proof)
+                    || !verify_threshold_range(
+                        &self.key,
+                        &pool_remainder,
+                        &pool_remainder_proof,
+                        STANDING_POOL_REMAINDER_CONTEXT,
+                    )
+                {
+                    return Err(
+                        "standing pool split differs from the proved Maker reserve or remainder"
+                            .into(),
+                    );
+                }
+                self.authorize_frost(signing_job, &message)?;
+                Ok(json!({"authorized": true, "kind": "standing-pool-allocation"}))
+            }
             "authorize_zkpi" => {
                 let proof_job = Self::job_id(params)?;
                 let signing_job = Self::hex32(params.get("signing_job_id"), "signing_job_id")?;
@@ -2649,6 +2957,12 @@ impl ProofParty {
                     .and_then(Value::as_str)
                     .ok_or_else(|| "persistence must be a relative path".to_string())?;
                 let path = self.safe_persistence(relative)?;
+                let persistence = fs::read(&path)
+                    .map_err(|error| format!("node-local persistence cannot be hashed: {error}"))?;
+                if persistence.len() > 64 << 20 {
+                    return Err("node-local persistence exceeds its proof bound".into());
+                }
+                let persistence_digest: [u8; 32] = Sha256::digest(&persistence).into();
                 let (zkpi, dvp) = if self.config.complete_quote_proof {
                     (
                         read_local_zkpi_handoff_from_quote(
@@ -2719,6 +3033,8 @@ impl ProofParty {
                 let maker_handle_share = field_scalar(&zkpi.maker_handle_share)?;
                 let limit = MpcLimitNode::from_handoff(zkpi.clone(), self.config.threshold)?;
                 let zkpi = MpcZkpiNode::from_handoff(zkpi, self.config.threshold)?;
+                let pool_remainder =
+                    MpcLimitNode::from_pool_handoff(dvp.clone(), self.config.threshold)?;
                 let dvp = MpcDvpNode::from_handoff(dvp, self.config.threshold)?;
                 let quote = quote
                     .map(|handoff| {
@@ -2731,6 +3047,7 @@ impl ProofParty {
                     .transpose()?;
                 if zkpi.party() != self.config.node as usize + 1
                     || limit.party() != self.config.node as usize + 1
+                    || pool_remainder.party() != self.config.node as usize + 1
                     || dvp.party() != self.config.node as usize + 1
                     || quote
                         .as_ref()
@@ -2742,6 +3059,7 @@ impl ProofParty {
                     job_id,
                     ProofJob {
                         expected_quote_digest,
+                        persistence_digest,
                         authorized_payment_digest: None,
                         authorized_taker_handle: None,
                         maker_is_payer: None,
@@ -2763,12 +3081,21 @@ impl ProofParty {
                         limit: Some(limit),
                         limit_bound: None,
                         limit_round1: None,
+                        pool_remainder: Some(pool_remainder),
+                        pool_remainder_bound: None,
+                        pool_remainder_round1: None,
+                        pool_remainder_commitment: None,
+                        pool_remainder_response_issued: false,
                         dvp: Some(dvp),
                         dvp_bound: None,
                         dvp_round1: None,
                         quantity_commitment: None,
+                        cash_commitment: None,
+                        securities_remainder: None,
+                        cash_remainder: None,
                         securities_reserve: None,
                         cash_reserve: None,
+                        dvp_response_issued: false,
                     },
                 );
                 self.reserved.insert(job_id);
@@ -3253,6 +3580,94 @@ impl ProofParty {
                     .answer(secret, &challenge)?;
                 Self::encoded_limit(job_id, LimitMessage::Round2(response))
             }
+            "pool_remainder_evaluations" => {
+                let job_id = Self::job_id(params)?;
+                let key = self.key.clone();
+                let job = self.job_mut(&job_id)?;
+                let node = job.pool_remainder.as_ref().ok_or_else(|| {
+                    "standing-pool remainder evaluation phase is closed".to_string()
+                })?;
+                Self::encoded_limit(job_id, LimitMessage::Evaluations(node.evaluations(&key)))
+            }
+            "pool_remainder_bind" => {
+                let job_id = Self::job_id(params)?;
+                let evaluations = Self::decode_wires(params, "evaluations")?
+                    .into_iter()
+                    .map(|raw| match decode_limit(&raw)? {
+                        LimitEnvelope {
+                            job_id: wire_job,
+                            message: LimitMessage::Evaluations(value),
+                        } if wire_job == job_id => Ok(value),
+                        _ => Err(
+                            "standing-pool remainder bind received another job or message type"
+                                .into(),
+                        ),
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                let statement = limit_statement(&evaluations, self.config.threshold)?;
+                let key = self.key.clone();
+                let job = self.job_mut(&job_id)?;
+                let node = job
+                    .pool_remainder
+                    .take()
+                    .ok_or_else(|| "standing-pool remainder node was already bound".to_string())?
+                    .bind(&key, &statement)?;
+                let relation = node.relation_evaluations(&key);
+                job.pool_remainder_commitment = Some(statement.commitment);
+                job.pool_remainder_bound = Some(node);
+                Self::encoded_limit(job_id, LimitMessage::RelationEvaluations(relation))
+            }
+            "pool_remainder_round1" => {
+                let job_id = Self::job_id(params)?;
+                let key = self.key.clone();
+                let job = self.job_mut(&job_id)?;
+                if job.pool_remainder_round1.is_some() {
+                    return Err(
+                        "standing-pool remainder round one was already issued for this job".into(),
+                    );
+                }
+                let node = job
+                    .pool_remainder_bound
+                    .as_ref()
+                    .ok_or_else(|| "standing-pool remainder node is not bound".to_string())?;
+                let (seal, secret, round) = node.prepare_round1(
+                    &key,
+                    STANDING_POOL_REMAINDER_CONTEXT,
+                    &mut rand_core::OsRng,
+                );
+                job.pool_remainder_round1 = Some(secret);
+                Ok(json!({
+                    "seal": Self::encoded_limit(job_id, LimitMessage::Round1Seal(seal))?,
+                    "round": Self::encoded_limit(job_id, LimitMessage::Round1(round))?,
+                }))
+            }
+            "pool_remainder_round2" => {
+                let job_id = Self::job_id(params)?;
+                let raw = Self::one_wire(params, "challenge")?;
+                let challenge =
+                    match decode_limit(&raw)? {
+                        LimitEnvelope {
+                            job_id: wire_job,
+                            message: LimitMessage::Challenge(value),
+                        } if wire_job == job_id => value,
+                        _ => return Err(
+                            "standing-pool remainder response received another job or message type"
+                                .into(),
+                        ),
+                    };
+                let job = self.job_mut(&job_id)?;
+                let secret = job.pool_remainder_round1.take().ok_or_else(|| {
+                    "standing-pool remainder first-round secret is absent or already consumed"
+                        .to_string()
+                })?;
+                let response = job
+                    .pool_remainder_bound
+                    .as_ref()
+                    .ok_or_else(|| "standing-pool remainder node is not bound".to_string())?
+                    .answer(secret, &challenge)?;
+                job.pool_remainder_response_issued = true;
+                Self::encoded_limit(job_id, LimitMessage::Round2(response))
+            }
             "dvp_evaluations" => {
                 let job_id = Self::job_id(params)?;
                 let key = self.key.clone();
@@ -3334,6 +3749,9 @@ impl ProofParty {
                     .bind(&key, &statements)?;
                 let relation = node.relation_evaluations(&key);
                 job.quantity_commitment = Some(zkpi.amount.commitment);
+                job.cash_commitment = Some(cash);
+                job.securities_remainder = Some(securities_remainder);
+                job.cash_remainder = Some(cash_remainder);
                 job.securities_reserve = Some(zkpi.amount.commitment + securities_remainder);
                 job.cash_reserve = Some(cash + cash_remainder);
                 job.dvp_bound = Some(node);
@@ -3381,6 +3799,7 @@ impl ProofParty {
                     .as_ref()
                     .ok_or_else(|| "DvP node is not bound".to_string())?
                     .answer(secret, &challenge)?;
+                job.dvp_response_issued = true;
                 Self::encoded_dvp(job_id, DvpMessage::Round2(response))
             }
             "claim_opening_share" => {
@@ -3395,8 +3814,11 @@ impl ProofParty {
                     .get(&job_id)
                     .ok_or_else(|| "claim opening proof job is not active".to_string())?;
                 if job.authorized_payment_digest.is_none()
+                    || !job.dvp_response_issued
+                    || !job.pool_remainder_response_issued
                     || job.zkpi_round1.is_some()
                     || job.limit_round1.is_some()
+                    || job.pool_remainder_round1.is_some()
                     || job.dvp_round1.is_some()
                     || job.quote_round1.is_some()
                 {
@@ -3467,6 +3889,99 @@ impl ProofParty {
                     "masked_blinding": hex::encode(encrypted.masked_blinding.to_bytes()),
                 }))
             }
+            "sign_admission_attestation" => {
+                let slot = params
+                    .get("slot")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| "admission slot must be an unsigned integer".to_string())?;
+                let sequence = params
+                    .get("sequence")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| "admission sequence must be an unsigned integer".to_string())?;
+                let principal = params
+                    .get("principal")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "admission principal must be a string".to_string())?;
+                let ticket_id = Self::hex32(params.get("ticket_id"), "ticket_id")?;
+                let claim_digest = Self::hex32(params.get("claim_digest"), "claim_digest")?;
+                let batch_digest = Self::hex32(params.get("batch_digest"), "batch_digest")?;
+                let order_digest = Self::hex32(params.get("order_digest"), "order_digest")?;
+                let (attestation, identity_public) = self.sign_admission_attestation(
+                    slot,
+                    sequence,
+                    principal,
+                    ticket_id,
+                    claim_digest,
+                    batch_digest,
+                    order_digest,
+                )?;
+                Ok(json!({
+                    "node": attestation.node,
+                    "slot": attestation.slot,
+                    "sequence": attestation.sequence,
+                    "principal_digest": hex::encode(attestation.principal_digest),
+                    "ticket_id": hex::encode(attestation.ticket_id),
+                    "claim_digest": hex::encode(attestation.claim_digest),
+                    "batch_digest": hex::encode(attestation.batch_digest),
+                    "order_digest": hex::encode(attestation.order_digest),
+                    "identity_public": hex::encode(identity_public),
+                    "signature": hex::encode(attestation.signature.to_bytes()),
+                }))
+            }
+            "sign_execution_attestation" => {
+                let job_id = Self::job_id(params)?;
+                let batch_digest = Self::hex32(params.get("batch_digest"), "batch_digest")?;
+                let source_digest = Self::hex32(params.get("source_digest"), "source_digest")?;
+                let stdout_digest = Self::hex32(params.get("stdout_digest"), "stdout_digest")?;
+                let stderr_digest = Self::hex32(params.get("stderr_digest"), "stderr_digest")?;
+                let slot = params
+                    .get("slot")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| "execution slot must be an unsigned integer".to_string())?;
+                let lane = params
+                    .get("lane")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| "execution lane must be an unsigned integer".to_string())?;
+                let state_generation = params
+                    .get("state_generation")
+                    .and_then(Value::as_u64)
+                    .filter(|value| *value != 0)
+                    .ok_or_else(|| "execution generation must be positive".to_string())?;
+                let frame_count = params
+                    .get("frame_count")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| "execution frame count must be unsigned".to_string())?;
+                let input_count = params
+                    .get("input_count")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| "execution input count must be unsigned".to_string())?;
+                let persistence_digest = self
+                    .jobs
+                    .get(&job_id)
+                    .ok_or_else(|| "execution attestation proof job is not active".to_string())?
+                    .persistence_digest;
+                let mut attestation = NodeExecutionAttestation {
+                    node: self.config.node,
+                    slot,
+                    lane,
+                    batch_digest,
+                    source_digest,
+                    state_generation,
+                    frame_count,
+                    input_count,
+                    stdout_digest,
+                    stderr_digest,
+                    persistence_digest,
+                    receipt_digest: [0_u8; 32],
+                    signature: Signature::from_bytes(&[0_u8; 64]),
+                };
+                attestation.receipt_digest = attestation.recompute_receipt_digest()?;
+                let attestation = attestation.sign(&self.identity)?;
+                Ok(json!({
+                    "identity_public": hex::encode(self.identity.verifying_key().to_bytes()),
+                    "wire": BASE64.encode(encode_node_execution_attestation(&attestation)?),
+                }))
+            }
             "complete" => {
                 let job_id = Self::job_id(params)?;
                 if self.completed_evidence.len() >= MAX_COMPLETED_EVIDENCE
@@ -3480,11 +3995,22 @@ impl ProofParty {
                     .ok_or_else(|| "proof job is not active".to_string())?;
                 if job.zkpi_round1.is_some()
                     || job.limit_round1.is_some()
+                    || job.pool_remainder_round1.is_some()
                     || job.dvp_round1.is_some()
                     || job.quote_round1.is_some()
                 {
                     self.jobs.insert(job_id, job);
                     return Err("proof job still has an unanswered first round".into());
+                }
+                if job.authorized_payment_digest.is_none()
+                    || !job.dvp_response_issued
+                    || !job.pool_remainder_response_issued
+                {
+                    self.jobs.insert(job_id, job);
+                    return Err(
+                        "proof job cannot complete before zkPI, DvP, and standing-pool remainder proofs"
+                            .into(),
+                    );
                 }
                 self.reserved.remove(&job_id);
                 self.completed.insert(job_id);
@@ -3512,6 +4038,61 @@ impl ProofParty {
                 }
                 self.persist()?;
                 Ok(json!({"completed": true}))
+            }
+            // Four nodes contribute VSS evaluations and verify the complete
+            // quote but deliberately do not consume one-use proof/FROST
+            // nonces. Only the configured 3-of-7 signing quorum can satisfy
+            // `complete`; observers close through this separate fail-closed
+            // operation so their durable job identifiers cannot be reused.
+            "complete_observer" => {
+                let job_id = Self::job_id(params)?;
+                if self.completed.contains(&job_id) {
+                    return Ok(json!({
+                        "observer_completed": true,
+                        "already_completed": true,
+                    }));
+                }
+                let job = self
+                    .jobs
+                    .remove(&job_id)
+                    .ok_or_else(|| "observer proof job is not active".to_string())?;
+                if job.zkpi_round1.is_some()
+                    || job.limit_round1.is_some()
+                    || job.pool_remainder_round1.is_some()
+                    || job.dvp_round1.is_some()
+                    || job.quote_round1.is_some()
+                {
+                    self.jobs.insert(job_id, job);
+                    return Err("observer proof job still has an unanswered first round".into());
+                }
+                if job.authorized_payment_digest.is_some()
+                    || job.dvp_response_issued
+                    || job.pool_remainder_response_issued
+                {
+                    self.jobs.insert(job_id, job);
+                    return Err(
+                        "a signing proof job cannot be closed through the observer path".into(),
+                    );
+                }
+                if !job.quote_verified
+                    || job.zkpi_bound.is_none()
+                    || job.zkpi_statements.is_none()
+                    || job.limit_bound.is_none()
+                    || job.dvp_bound.is_none()
+                    || job.pool_remainder_bound.is_none()
+                {
+                    self.jobs.insert(job_id, job);
+                    return Err(
+                        "observer proof job did not participate in every public proof phase".into(),
+                    );
+                }
+                self.reserved.remove(&job_id);
+                self.completed.insert(job_id);
+                self.persist()?;
+                Ok(json!({
+                    "observer_completed": true,
+                    "already_completed": false,
+                }))
             }
             "health" => {
                 let frost_public_package_sha256 = self

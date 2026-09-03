@@ -56,6 +56,9 @@ pub struct Relay {
     pub key: Option<Vec<u8>>,
     pending: Arc<Mutex<BTreeMap<u32, Vec<Frame>>>>,
     refused: Arc<AtomicU64>,
+    /// Connections this relay accepted: one per client for the first hop,
+    /// one per closed slot from the upstream relay for every later hop.
+    accepted: Arc<AtomicU64>,
     bytes_in: Arc<AtomicU64>,
     bytes_out: AtomicU64,
     stop: Arc<AtomicBool>,
@@ -79,6 +82,7 @@ impl Relay {
             key,
             pending: Arc::new(Mutex::new(BTreeMap::new())),
             refused: Arc::new(AtomicU64::new(0)),
+            accepted: Arc::new(AtomicU64::new(0)),
             bytes_in: Arc::new(AtomicU64::new(0)),
             bytes_out: AtomicU64::new(0),
             stop: Arc::new(AtomicBool::new(false)),
@@ -96,6 +100,7 @@ impl Relay {
         self.port = listener.local_addr()?.port();
         let pending = Arc::clone(&self.pending);
         let refused = Arc::clone(&self.refused);
+        let accepted = Arc::clone(&self.accepted);
         let bytes_in = Arc::clone(&self.bytes_in);
         let stop = Arc::clone(&self.stop);
         let key = self.key.clone();
@@ -113,6 +118,7 @@ impl Relay {
                         if stream.set_nonblocking(false).is_err() {
                             continue;
                         }
+                        accepted.fetch_add(1, Ordering::Relaxed);
                         let pending = Arc::clone(&pending);
                         let refused = Arc::clone(&refused);
                         let bytes_in = Arc::clone(&bytes_in);
@@ -160,6 +166,21 @@ impl Relay {
 
     pub fn refused(&self) -> u64 {
         self.refused.load(Ordering::Relaxed)
+    }
+
+    /// Connections accepted so far (the stop signal's own connection included
+    /// once `stop` has run).
+    pub fn accepted(&self) -> u64 {
+        self.accepted.load(Ordering::Relaxed)
+    }
+
+    /// Frames received for `slot` and not yet forwarded by `close_slot`.
+    pub fn pending_frames(&self, slot: u32) -> usize {
+        self.pending
+            .lock()
+            .expect("relay pending lock")
+            .get(&slot)
+            .map_or(0, Vec::len)
     }
 
     pub fn bytes_in(&self) -> u64 {

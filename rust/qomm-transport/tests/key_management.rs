@@ -57,6 +57,35 @@ fn private_material_is_encrypted_atomic_and_mode_0600() {
 }
 
 #[test]
+fn anonymous_kyb_scalar_is_encrypted_and_only_its_ristretto_point_is_public() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault = store(&directory);
+    let key_id = vault
+        .generate(
+            "kyb_entity",
+            KeyKind::Ristretto,
+            100,
+            365 * 24 * 3600,
+            BTreeMap::new(),
+        )
+        .unwrap();
+    let stored = vault.private_key(&key_id, 101, false).unwrap();
+    let secret = stored.ristretto_scalar().unwrap();
+    assert_ne!(*secret, curve25519_dalek::scalar::Scalar::ZERO);
+    let public = vault
+        .snapshot()
+        .unwrap()
+        .keys
+        .into_iter()
+        .find(|record| record.key_id == key_id)
+        .unwrap();
+    assert_eq!(public.kind, KeyKind::Ristretto);
+    assert!(!serde_json::to_string(&public).unwrap().contains("private"));
+    let raw = fs::read(directory.path().join("keys.qks")).unwrap();
+    assert!(!raw.windows(32).any(|window| window == secret.as_bytes()));
+}
+
+#[test]
 fn rotation_overlap_is_explicit_and_revocation_is_final() {
     let directory = tempfile::tempdir().unwrap();
     let vault = store(&directory);

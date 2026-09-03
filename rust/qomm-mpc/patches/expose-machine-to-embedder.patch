@@ -37,9 +37,11 @@ smallest thing that turns MP-SPDZ into something an embedder can measure. A
 general version would name the hook for MP-SPDZ rather than for this project,
 and would probably prefer a registered callback over a weak symbol.
 
+diff --git a/Processor/OnlineMachine.hpp b/Processor/OnlineMachine.hpp
+index 03cb30f..5ebdcf8 100644
 --- a/Processor/OnlineMachine.hpp
 +++ b/Processor/OnlineMachine.hpp
-@@ -182,6 +182,16 @@
+@@ -182,6 +182,17 @@ int OnlineMachine::run()
      }
  }
 
@@ -57,7 +59,7 @@ and would probably prefer a registered callback over a weak symbol.
  template<class T, class U>
  int OnlineMachine::run_with_error()
  {
-@@ -189,8 +194,10 @@
+@@ -189,8 +200,10 @@ int OnlineMachine::run_with_error()
      try
  #endif
      {

@@ -284,6 +284,9 @@ pub struct LocalDvpHandoff {
     pub product_cross_share: FieldElement,
     pub securities_remainder: LocalRangeHandoff,
     pub cash_remainder: LocalRangeHandoff,
+    /// Selected Maker policy pool after subtracting the exact delivery leg.
+    /// This range is distinct from both DvP payer refunds.
+    pub maker_pool_remainder: LocalRangeHandoff,
     pub runs_in_file: usize,
 }
 
@@ -381,6 +384,7 @@ fn dvp_values_per_run(
         .checked_add(3)
         .and_then(|values| values.checked_add(2 + 3 * remainder_bits))
         .and_then(|values| values.checked_add(2 + 3 * remainder_bits))
+        .and_then(|values| values.checked_add(2 + 3 * remainder_bits))
         .ok_or_else(|| Error::Invalid("DvP persistence wire count overflow".into()))
 }
 
@@ -424,7 +428,7 @@ fn selected_run_offset(
 ) -> Result<usize, Error> {
     if !total.is_multiple_of(per_run) {
         return Err(Error::Invalid(format!(
-            "{} contains {total} values, which is not a whole number of {per_run}-value zkPI runs",
+            "{} contains {total} values, which is not a whole number of {per_run}-value persistence runs",
             path.display()
         )));
     }
@@ -717,6 +721,7 @@ fn read_local_dvp_handoff_with_stride(
     };
     let securities_remainder = read_range(&mut cursor)?;
     let cash_remainder = read_range(&mut cursor)?;
+    let maker_pool_remainder = read_range(&mut cursor)?;
     // `per_run` is the stride of the containing persistence ABI.  For the
     // product+quote ABI it also includes the quote-proof suffix, so comparing
     // the DvP prefix cursor with the full stride incorrectly rejects every
@@ -739,6 +744,7 @@ fn read_local_dvp_handoff_with_stride(
         product_cross_share,
         securities_remainder,
         cash_remainder,
+        maker_pool_remainder,
         runs_in_file: file.shares.len() / per_run,
     })
 }
@@ -1247,7 +1253,8 @@ mod tests {
     fn reads_one_nodes_dvp_handoff_without_materializing_other_parties() {
         let directory = TestDir::new();
         let path = directory.0.join("Transactions-P0.data");
-        let values = (1_u64..=68).collect::<Vec<_>>();
+        let per_run = dvp_values_per_run(1, 2, 2, 2).unwrap();
+        let values = (1_u64..=per_run as u64).collect::<Vec<_>>();
         fs::write(&path, encode_file(false, &values)).unwrap();
 
         let handoff = read_local_dvp_handoff(&path, 0, 1, 2, 2, 2, -1).unwrap();
@@ -1288,6 +1295,22 @@ mod tests {
                 FieldElement::from_u64(66),
                 FieldElement::from_u64(67),
                 FieldElement::from_u64(68)
+            )
+        );
+        assert_eq!(
+            handoff.maker_pool_remainder.value_share,
+            FieldElement::from_u64(69)
+        );
+        assert_eq!(
+            handoff.maker_pool_remainder.blinding_share,
+            FieldElement::from_u64(70)
+        );
+        assert_eq!(
+            handoff.maker_pool_remainder.bits[1],
+            (
+                FieldElement::from_u64(74),
+                FieldElement::from_u64(75),
+                FieldElement::from_u64(76)
             )
         );
     }

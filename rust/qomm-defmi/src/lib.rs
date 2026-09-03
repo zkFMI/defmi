@@ -8,8 +8,11 @@ pub mod assets;
 #[cfg(feature = "avalanche")]
 pub mod avalanche;
 pub mod ccp;
+pub mod central_bank_liquidity;
 pub mod chain;
 pub mod credit;
+pub mod cross_domain;
+pub mod cross_domain_finality;
 #[cfg(feature = "avalanche")]
 pub mod facility;
 pub mod ledger;
@@ -18,6 +21,7 @@ pub mod netting;
 pub mod note_chain;
 pub mod note_settlement;
 pub mod notes;
+pub mod participant;
 #[cfg(feature = "avalanche")]
 pub mod product;
 pub mod product_evidence;

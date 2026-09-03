@@ -96,6 +96,7 @@ Rust crates:
 - `rust/qomm-transport`
 - `rust/qomm-audit`
 - `rust/qomm-avalanche-vm`
+- `rust/zkpi-defmi-sdk`
 - `rust/qomm-harness`
 
 Measurement binaries carried by `qomm-harness`:
@@ -125,6 +126,13 @@ to real machines is not published.
 - [`REVIEW.md`](REVIEW.md) --- what two rounds of review found, including what was checked and found sound
 - [`ZKPI_WIRE.md`](ZKPI_WIRE.md) --- the bytes an instruction travels as, the vectors to check an implementation against, and where it can run
 - [`doc/ja/DEFMI_ZKPI_USE_CASES.md`](doc/ja/DEFMI_ZKPI_USE_CASES.md) --- non-QOMM uses for proof-carrying instructions and decentralized settlement, with prior art and an implementation order
+
+## Depends on
+
+- [aethel](https://github.com/shukob/aethel)
+- [deccp](https://github.com/shukob/deccp)
+
+Cargo resolves these repositories from the checked-in lock file.
 
 ## Running it
 

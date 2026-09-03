@@ -1653,6 +1653,7 @@ pub fn initialize_node_mpc_state(
         dvp_input_shares: bundle.dvp_input_shares,
         policy_input_shares: bundle.policy_input_shares,
         quote_policy_blinding_input_shares: bundle.quote_policy_blinding_input_shares,
+        standing_pool_bindings: Vec::new(),
     };
     state.verify(node, &source_sha256, spec.n_mm)?;
     if state.generation == 0 {

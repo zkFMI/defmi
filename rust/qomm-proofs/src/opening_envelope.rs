@@ -182,14 +182,25 @@ impl OpeningEnvelope {
         quorum: &[PartyId],
         bits: usize,
     ) -> Result<(u64, Scalar), String> {
-        if bits == 0 || bits > 32 {
+        if bits == 0 || bits > 64 {
             return Err("claim opening amount range is outside the supported bound".into());
         }
         let (value, blinding) = self.decrypt(recipient_view_secret, quorum)?;
-        let limit = 1_u64 << bits;
-        let amount = (0..limit)
-            .find(|candidate| Scalar::from(*candidate) == value)
-            .ok_or_else(|| "claim opening is outside its declared amount range".to_string())?;
+        // Scalars created from a u64 use the canonical little-endian encoding.
+        // Recover that encoding directly instead of performing an O(2^bits)
+        // search, which made a 32-bit settlement claim unusable in practice.
+        let encoded = value.to_bytes();
+        if encoded[8..].iter().any(|byte| *byte != 0) {
+            return Err("claim opening is outside the u64 amount range".into());
+        }
+        let amount = u64::from_le_bytes(
+            encoded[..8]
+                .try_into()
+                .expect("checked eight-byte scalar prefix"),
+        );
+        if bits < 64 && amount >= (1_u64 << bits) {
+            return Err("claim opening is outside its declared amount range".into());
+        }
         Ok((amount, blinding))
     }
 
@@ -222,7 +233,8 @@ mod tests {
     fn recipient_recovers_any_threshold_subset_but_another_key_cannot() {
         let recipient = Scalar::from(77_u64);
         let other = Scalar::from(78_u64);
-        let value = Scalar::from(41_u64);
+        let amount = 4_300_000_000_u64;
+        let value = Scalar::from(amount);
         let blinding = Scalar::from(91_u64);
         let parties = (1..=7).collect::<Vec<_>>();
         let shares = deal(
@@ -250,10 +262,12 @@ mod tests {
             })
             .collect();
         let envelope = OpeningEnvelope::new(context, 3, G * recipient, encrypted).unwrap();
+        assert!(envelope.decrypt_u64(&recipient, &[1, 4, 7], 32).is_err());
         assert_eq!(
-            envelope.decrypt_u64(&recipient, &[1, 4, 7], 8).unwrap(),
-            (41, blinding)
+            envelope.decrypt_u64(&recipient, &[1, 4, 7], 64).unwrap(),
+            (amount, blinding)
         );
+        assert!(envelope.decrypt_u64(&recipient, &[1, 4, 7], 65).is_err());
         assert!(envelope.decrypt(&other, &[1, 4, 7]).is_err());
         assert!(envelope.decrypt(&recipient, &[1, 4]).is_err());
     }

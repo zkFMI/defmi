@@ -8,6 +8,7 @@
 
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
+use curve25519_dalek::traits::Identity;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::{CryptoRng, RngCore};
 use serde_json::{json, Value};
@@ -24,8 +25,16 @@ use crate::settlement::ThresholdDvpPackage;
 use crate::MAX_UNIX_TIME;
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use qomm_proofs::opening_envelope::{opening_context, OpeningEnvelope};
+use qomm_transport::standing_pool::{
+    standing_note_pool_delegation_digest as shared_standing_note_pool_delegation_digest,
+    standing_note_pool_id as shared_standing_note_pool_id, StandingPoolAllocationBinding,
+    StandingPoolMakerAuthorization, StandingPoolNote,
+};
 use qomm_zk::pedersen::Pedersen;
-use qomm_zkpi::typed::{OperationKind, TradeDirection, TypedInstruction};
+use qomm_zkpi::{
+    frost,
+    typed::{OperationKind, TradeDirection, TypedInstruction},
+};
 
 const NOTE_OUTPUT_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-OUTPUT:v1";
 const NOTE_ISSUE_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-ISSUE:v1";
@@ -36,8 +45,13 @@ const DELEGATED_NOTE_SETTLEMENT_DOMAIN: &[u8] = b"QOMM:DEFMI:DELEGATED-NOTE-SETT
 const NOTE_CLAIM_MATERIALIZE_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-CLAIM-MATERIALIZE:v1";
 const NOTE_CLAIM_RECIPIENT_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-CLAIM-RECIPIENT:v1";
 const NOTE_RESERVATION_ESCROW_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-RESERVATION-ESCROW:v1";
+const STANDING_NOTE_POOL_DOMAIN: &[u8] = b"QOMM:DEFMI:STANDING-NOTE-POOL:v1";
+const STANDING_NOTE_POOL_ALLOCATION_DOMAIN: &[u8] = b"QOMM:DEFMI:STANDING-NOTE-POOL-ALLOCATION:v1";
 const PRODUCT_NOTE_RELEASE_DOMAIN: &[u8] = b"QOMM:DEFMI:PRODUCT-NOTE-RELEASE:v1";
+const PRODUCT_NOTE_NO_FILL_RELEASE_DOMAIN: &[u8] = b"QOMM:DEFMI:PRODUCT-NOTE-NO-FILL-RELEASE:v1";
 const PRODUCT_NOTE_SETTLEMENT_DOMAIN: &[u8] = b"QOMM:DEFMI:PRODUCT-NOTE-SETTLEMENT:v1";
+const STANDING_POOL_PRODUCT_SETTLEMENT_DOMAIN: &[u8] =
+    b"QOMM:DEFMI:STANDING-POOL-PRODUCT-SETTLEMENT:v1";
 const PRODUCT_SETTLEMENT_BATCH_DOMAIN: &[u8] = b"QOMM:DEFMI:PRODUCT-SETTLEMENT-BATCH:v1";
 const NOTE_CLAIM_OWNERSHIP_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-CLAIM-OWNERSHIP:v1";
 const CSD_ISSUER_DOMAIN: &[u8] = b"QOMM:DEFMI:CSD-ISSUER:v1";
@@ -237,6 +251,50 @@ impl NoteOutput {
             .ok_or_else(|| "note output body is not an object".to_string())?;
         body.insert("note_id".into(), Value::String(hex::encode(self.note_id)));
         Ok(Value::Object(body))
+    }
+
+    pub fn from_body(value: &Value) -> Result<Self, String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| "note output must be an object".to_string())?;
+        let expected = [
+            "note_id",
+            "asset_id",
+            "one_time",
+            "value_commitment",
+            "ephemeral",
+            "masked_value",
+            "masked_blinding",
+            "lock_id",
+        ];
+        if object.len() != expected.len()
+            || expected.iter().any(|field| !object.contains_key(*field))
+        {
+            return Err("note output has missing or unknown fields".into());
+        }
+        let field = |name: &str| -> Result<[u8; 32], String> {
+            hex::decode(
+                object
+                    .get(name)
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("note output {name} is not hexadecimal"))?,
+            )
+            .map_err(|_| format!("note output {name} is not hexadecimal"))?
+            .try_into()
+            .map_err(|_| format!("note output {name} is not 32 bytes"))
+        };
+        let output = Self {
+            note_id: field("note_id")?,
+            asset_id: field("asset_id")?,
+            one_time: field("one_time")?,
+            value_commitment: field("value_commitment")?,
+            ephemeral: field("ephemeral")?,
+            masked_value: field("masked_value")?,
+            masked_blinding: field("masked_blinding")?,
+            lock_id: field("lock_id")?,
+        };
+        output.validate()?;
+        Ok(output)
     }
 
     pub fn derived_id(&self) -> Result<[u8; 32], String> {
@@ -496,6 +554,10 @@ pub struct NoteSettlementOrder {
     pub market_statement_digest: [u8; 32],
     pub dvp_proof_digest: [u8; 32],
     pub spends: Vec<NoteSpend>,
+    /// When present, every same-asset input is proved independently but only
+    /// this commitment-sum output is inserted.  This lets a private wallet
+    /// defragment notes without exposing their values or minting supply.
+    pub consolidated_output: Option<NoteOutput>,
 }
 
 impl NoteSettlementOrder {
@@ -503,7 +565,12 @@ impl NoteSettlementOrder {
         if self.deadline == 0
             || self.deadline > MAX_UNIX_TIME
             || self.spends.is_empty()
-            || self.spends.len() > 2
+            || self.spends.len()
+                > if self.consolidated_output.is_some() {
+                    8
+                } else {
+                    2
+                }
         {
             return Err("note settlement has invalid dimensions".into());
         }
@@ -512,16 +579,47 @@ impl NoteSettlementOrder {
         let mut outputs = BTreeSet::new();
         for spend in &self.spends {
             spend.validate()?;
-            if !assets.insert(spend.asset_id) || !serials.insert(spend.serial_point) {
-                return Err("note settlement repeats an asset rail or serial".into());
+            if !serials.insert(spend.serial_point) {
+                return Err("note settlement repeats a serial".into());
             }
+            if self.consolidated_output.is_none() && !assets.insert(spend.asset_id) {
+                return Err("note settlement repeats an asset rail".into());
+            }
+            assets.insert(spend.asset_id);
             for output in &spend.outputs {
                 if !outputs.insert(output.note_id) {
                     return Err("note settlement repeats an output".into());
                 }
             }
         }
-        Ok(json!({
+        if let Some(consolidated) = &self.consolidated_output {
+            consolidated.validate()?;
+            if self.spends.len() < 2
+                || assets.len() != 1
+                || consolidated.asset_id != self.spends[0].asset_id
+                || consolidated.lock_id != ZERO
+                || self.spends.iter().any(|spend| {
+                    spend.input_lock_id != ZERO
+                        || spend.outputs.len() != 1
+                        || spend.outputs[0].lock_id != ZERO
+                })
+                || outputs.contains(&consolidated.note_id)
+            {
+                return Err("note consolidation has incompatible inputs or output".into());
+            }
+            let mut commitment = RistrettoPoint::identity();
+            for spend in &self.spends {
+                commitment += CompressedRistretto(spend.outputs[0].value_commitment)
+                    .decompress()
+                    .ok_or_else(|| {
+                        "note consolidation input commitment is not canonical".to_string()
+                    })?;
+            }
+            if commitment.compress().to_bytes() != consolidated.value_commitment {
+                return Err("note consolidation changes the committed value".into());
+            }
+        }
+        let mut body = json!({
             "operation_id": nonzero(&self.operation_id, "operation_id")?,
             "nullifier": nonzero(&self.nullifier, "nullifier")?,
             "deadline": self.deadline,
@@ -529,7 +627,13 @@ impl NoteSettlementOrder {
             "market_statement_digest": nonzero(&self.market_statement_digest, "market_statement_digest")?,
             "dvp_proof_digest": nonzero(&self.dvp_proof_digest, "dvp_proof_digest")?,
             "spends": self.spends.iter().map(NoteSpend::body).collect::<Result<Vec<_>, _>>()?,
-        }))
+        });
+        if let Some(consolidated) = &self.consolidated_output {
+            body.as_object_mut()
+                .expect("note settlement body is an object")
+                .insert("consolidated_output".into(), consolidated.body()?);
+        }
+        Ok(body)
     }
 
     pub fn statement(&self) -> Result<[u8; 32], String> {
@@ -597,11 +701,16 @@ impl NoteClaim {
         for (name, value) in [
             ("claim_id", self.claim_id),
             ("asset_id", self.asset_id),
-            ("value_commitment", self.value_commitment),
             ("recipient_commitment", self.recipient_commitment),
             ("source_hold_id", self.source_hold_id),
         ] {
             nonzero(&value, name)?;
+        }
+        // An exact reserve legitimately leaves a zero refund. The Ristretto
+        // identity is therefore valid for a refund commitment, but never for
+        // the delivery leg of a non-zero trade.
+        if self.value_commitment == ZERO && self.kind != NoteClaimKind::Refund {
+            return Err("note claim delivery commitment cannot be zero".into());
         }
         if self.claim_id != self.derived_id()? {
             return Err("note claim identifier differs from its contents".into());
@@ -990,6 +1099,364 @@ pub struct NoteReservationEscrow {
     pub delegation_digest: [u8; 32],
 }
 
+/// Stable identifier of a Maker-owned parent reserve.  It contains no account
+/// address: the public ledger links an anonymous entity commitment, one signed
+/// policy mandate, and a one-time locked note only.
+pub fn standing_note_pool_id(
+    entity_commitment: [u8; 32],
+    policy_digest: [u8; 32],
+    mandate_digest: [u8; 32],
+    asset_id: [u8; 32],
+    direction: u8,
+) -> Result<[u8; 32], String> {
+    shared_standing_note_pool_id(
+        entity_commitment,
+        policy_digest,
+        mandate_digest,
+        asset_id,
+        direction,
+    )
+}
+
+pub fn standing_note_pool_delegation_digest(
+    pool_id: [u8; 32],
+    venue_id: [u8; 32],
+    defmi_id: [u8; 32],
+    committee_epoch: u64,
+    valid_until: u64,
+) -> Result<[u8; 32], String> {
+    if valid_until > MAX_UNIX_TIME {
+        return Err("standing note pool delegation is incomplete".into());
+    }
+    shared_standing_note_pool_delegation_digest(
+        pool_id,
+        venue_id,
+        defmi_id,
+        committee_epoch,
+        valid_until,
+    )
+}
+
+/// Owner-signed creation of one anonymous parent reserve.  Later RFQs may
+/// split this covenant under the exact policy mandate without another Maker
+/// signature; every split still needs the resident k-of-n proof committee.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StandingNotePoolRegistration {
+    pub operation_id: [u8; 32],
+    pub pool_id: [u8; 32],
+    pub venue_id: [u8; 32],
+    pub defmi_id: [u8; 32],
+    pub entity_commitment: [u8; 32],
+    pub policy_digest: [u8; 32],
+    pub mandate_digest: [u8; 32],
+    pub asset_id: [u8; 32],
+    pub direction: u8,
+    pub maximum_amount_commitment: [u8; 32],
+    pub pool_note_id: [u8; 32],
+    pub delegation_digest: [u8; 32],
+    pub committee_epoch: u64,
+    pub valid_until: u64,
+    pub spend: NoteSpend,
+}
+
+impl StandingNotePoolRegistration {
+    pub fn body(&self) -> Result<Value, String> {
+        for (name, value) in [
+            ("operation_id", self.operation_id),
+            ("pool_id", self.pool_id),
+            ("venue_id", self.venue_id),
+            ("defmi_id", self.defmi_id),
+            ("entity_commitment", self.entity_commitment),
+            ("policy_digest", self.policy_digest),
+            ("mandate_digest", self.mandate_digest),
+            ("asset_id", self.asset_id),
+            ("maximum_amount_commitment", self.maximum_amount_commitment),
+            ("pool_note_id", self.pool_note_id),
+            ("delegation_digest", self.delegation_digest),
+        ] {
+            nonzero(&value, name)?;
+        }
+        if self.pool_id
+            != standing_note_pool_id(
+                self.entity_commitment,
+                self.policy_digest,
+                self.mandate_digest,
+                self.asset_id,
+                self.direction,
+            )?
+            || self.delegation_digest
+                != standing_note_pool_delegation_digest(
+                    self.pool_id,
+                    self.venue_id,
+                    self.defmi_id,
+                    self.committee_epoch,
+                    self.valid_until,
+                )?
+            || self.spend.asset_id != self.asset_id
+            || self.spend.input_lock_id != ZERO
+        {
+            return Err("standing note pool differs from its signed policy scope".into());
+        }
+        let locked = self
+            .spend
+            .outputs
+            .iter()
+            .filter(|output| output.lock_id == self.pool_id)
+            .collect::<Vec<_>>();
+        if locked.len() != 1
+            || locked[0].note_id != self.pool_note_id
+            || locked[0].value_commitment != self.maximum_amount_commitment
+            || self
+                .spend
+                .outputs
+                .iter()
+                .any(|output| output.lock_id != ZERO && output.lock_id != self.pool_id)
+        {
+            return Err("standing note pool must create one exact parent covenant".into());
+        }
+        Ok(json!({
+            "operation_id": hex::encode(self.operation_id),
+            "pool_id": hex::encode(self.pool_id),
+            "venue_id": hex::encode(self.venue_id),
+            "defmi_id": hex::encode(self.defmi_id),
+            "entity_commitment": hex::encode(self.entity_commitment),
+            "policy_digest": hex::encode(self.policy_digest),
+            "mandate_digest": hex::encode(self.mandate_digest),
+            "asset_id": hex::encode(self.asset_id),
+            "direction": self.direction,
+            "maximum_amount_commitment": hex::encode(self.maximum_amount_commitment),
+            "pool_note_id": hex::encode(self.pool_note_id),
+            "delegation_digest": hex::encode(self.delegation_digest),
+            "committee_epoch": self.committee_epoch,
+            "valid_until": self.valid_until,
+            "spend": self.spend.body()?,
+        }))
+    }
+
+    pub fn statement(&self) -> Result<[u8; 32], String> {
+        digest(STANDING_NOTE_POOL_DOMAIN, &self.body()?)
+    }
+}
+
+/// Exact per-RFQ allocation from a standing Maker pool. The Maker does not
+/// sign or come online here. The already-registered proof committee signs the
+/// allocation only after it has verified the winning quote and DvP relations.
+#[derive(Clone)]
+pub struct StandingNotePoolAllocation {
+    pub pool_id: [u8; 32],
+    pub delegation_digest: [u8; 32],
+    pub committee_epoch: u64,
+    pub expected_pool_sequence: u64,
+    pub previous_pool_note_id: [u8; 32],
+    pub previous_amount_commitment: [u8; 32],
+    pub escrow_note: NoteOutput,
+    pub remainder_note: NoteOutput,
+    pub proof_job_id: [u8; 32],
+    pub quote_proof_digest: [u8; 32],
+    pub dvp_proof_digest: [u8; 32],
+    pub remainder_range_proof_digest: [u8; 32],
+    pub committee_signature: Vec<u8>,
+}
+
+impl StandingNotePoolAllocation {
+    pub fn signing_binding(
+        &self,
+        transition: &CreditFacilityTransition,
+        authorization: &ReservationAuthorization,
+    ) -> Result<StandingPoolAllocationBinding, String> {
+        Ok(StandingPoolAllocationBinding {
+            pool_id: self.pool_id,
+            delegation_digest: self.delegation_digest,
+            committee_epoch: self.committee_epoch,
+            expected_pool_sequence: self.expected_pool_sequence,
+            previous_pool_note_id: self.previous_pool_note_id,
+            previous_amount_commitment: self.previous_amount_commitment,
+            escrow_note: StandingPoolNote {
+                note_id: self.escrow_note.note_id,
+                asset_id: self.escrow_note.asset_id,
+                one_time: self.escrow_note.one_time,
+                value_commitment: self.escrow_note.value_commitment,
+                ephemeral: self.escrow_note.ephemeral,
+                masked_value: self.escrow_note.masked_value,
+                masked_blinding: self.escrow_note.masked_blinding,
+                lock_id: self.escrow_note.lock_id,
+            },
+            remainder_note: StandingPoolNote {
+                note_id: self.remainder_note.note_id,
+                asset_id: self.remainder_note.asset_id,
+                one_time: self.remainder_note.one_time,
+                value_commitment: self.remainder_note.value_commitment,
+                ephemeral: self.remainder_note.ephemeral,
+                masked_value: self.remainder_note.masked_value,
+                masked_blinding: self.remainder_note.masked_blinding,
+                lock_id: self.remainder_note.lock_id,
+            },
+            proof_job_id: self.proof_job_id,
+            quote_proof_digest: self.quote_proof_digest,
+            dvp_proof_digest: self.dvp_proof_digest,
+            remainder_range_proof_digest: self.remainder_range_proof_digest,
+            transition_statement: transition.statement()?,
+            authorization: StandingPoolMakerAuthorization {
+                entity_commitment: authorization.entity_commitment,
+                asset_id: authorization.asset_id,
+                direction: authorization.direction,
+                policy_digest: authorization.authorization_digest,
+                mandate_digest: authorization.mandate_digest,
+                typed_reserve_digest: authorization.typed_reserve_digest,
+                reserve_nullifier: authorization.reserve_nullifier,
+                asset_link_proof_digest: authorization.asset_link_proof_digest,
+                policy_version: authorization.policy_version,
+            },
+        })
+    }
+
+    fn unsigned_body(
+        &self,
+        transition: &CreditFacilityTransition,
+        authorization: &ReservationAuthorization,
+    ) -> Result<Value, String> {
+        transition.body()?;
+        if transition.kind != CreditTransitionKind::Hold
+            || authorization.role != ReservationRole::Maker
+            || authorization.direction != 1 && authorization.direction != 2
+            || authorization.policy_version == 0
+            || transition.query_commitment != authorization.authorization_digest
+            || authorization.limit_price_commitment != ZERO
+            || authorization.rfq_nullifier != ZERO
+            || authorization.admission_ticket_id != ZERO
+            || authorization.admission_slot != 0
+            || authorization.admission_receipt_digest != ZERO
+            || authorization.admission_epoch != 0
+            || authorization.admission_sequence != 0
+            || authorization.admission_batch_id != ZERO
+            || self.committee_epoch == 0
+        {
+            return Err("standing pool allocation is not a Maker policy hold".into());
+        }
+        for (name, value) in [
+            ("pool_id", self.pool_id),
+            ("delegation_digest", self.delegation_digest),
+            ("previous_pool_note_id", self.previous_pool_note_id),
+            (
+                "previous_amount_commitment",
+                self.previous_amount_commitment,
+            ),
+            ("proof_job_id", self.proof_job_id),
+            ("quote_proof_digest", self.quote_proof_digest),
+            ("dvp_proof_digest", self.dvp_proof_digest),
+            (
+                "remainder_range_proof_digest",
+                self.remainder_range_proof_digest,
+            ),
+            ("entity_commitment", authorization.entity_commitment),
+            ("authorization_digest", authorization.authorization_digest),
+            ("mandate_digest", authorization.mandate_digest),
+            ("typed_reserve_digest", authorization.typed_reserve_digest),
+            ("reserve_nullifier", authorization.reserve_nullifier),
+            (
+                "asset_link_proof_digest",
+                authorization.asset_link_proof_digest,
+            ),
+        ] {
+            nonzero(&value, name)?;
+        }
+        if self.pool_id
+            != standing_note_pool_id(
+                authorization.entity_commitment,
+                authorization.authorization_digest,
+                authorization.mandate_digest,
+                authorization.asset_id,
+                authorization.direction,
+            )?
+        {
+            return Err("standing allocation names another Maker policy pool".into());
+        }
+        self.escrow_note.validate()?;
+        self.remainder_note.validate()?;
+        if self.escrow_note.asset_id != authorization.asset_id
+            || self.remainder_note.asset_id != authorization.asset_id
+            || self.escrow_note.lock_id != transition.hold_id
+            || self.remainder_note.lock_id != self.pool_id
+            || self.escrow_note.value_commitment != transition.amount_commitment
+            || self.escrow_note.note_id == self.remainder_note.note_id
+            || self.previous_pool_note_id == self.escrow_note.note_id
+            || self.previous_pool_note_id == self.remainder_note.note_id
+        {
+            return Err("standing allocation changes its asset, hold, or covenant".into());
+        }
+        let previous = CompressedRistretto(self.previous_amount_commitment)
+            .decompress()
+            .ok_or_else(|| "standing pool previous commitment is not canonical".to_string())?;
+        let child = CompressedRistretto(self.escrow_note.value_commitment)
+            .decompress()
+            .ok_or_else(|| "standing pool child commitment is not canonical".to_string())?;
+        let remainder = CompressedRistretto(self.remainder_note.value_commitment)
+            .decompress()
+            .ok_or_else(|| "standing pool remainder commitment is not canonical".to_string())?;
+        if previous != child + remainder {
+            return Err("standing allocation does not conserve its parent commitment".into());
+        }
+        self.signing_binding(transition, authorization)?.body()
+    }
+
+    pub fn signing_message(
+        &self,
+        transition: &CreditFacilityTransition,
+        authorization: &ReservationAuthorization,
+    ) -> Result<[u8; 64], String> {
+        self.unsigned_body(transition, authorization)?;
+        self.signing_binding(transition, authorization)?
+            .signing_message()
+    }
+
+    pub fn verify_committee_signature(
+        &self,
+        transition: &CreditFacilityTransition,
+        authorization: &ReservationAuthorization,
+        public: &frost::keys::PublicKeyPackage,
+    ) -> Result<(), String> {
+        let signature = frost::Signature::deserialize(&self.committee_signature)
+            .map_err(|_| "standing pool committee signature is malformed".to_string())?;
+        public
+            .verifying_key()
+            .verify(
+                &self.signing_message(transition, authorization)?,
+                &signature,
+            )
+            .map_err(|_| "standing pool committee signature is invalid".to_string())
+    }
+
+    pub fn body(
+        &self,
+        transition: &CreditFacilityTransition,
+        authorization: &ReservationAuthorization,
+    ) -> Result<Value, String> {
+        frost::Signature::deserialize(&self.committee_signature)
+            .map_err(|_| "standing pool committee signature is malformed".to_string())?;
+        let mut body = self
+            .unsigned_body(transition, authorization)?
+            .as_object()
+            .cloned()
+            .ok_or_else(|| "standing pool allocation body is not an object".to_string())?;
+        body.insert(
+            "committee_signature".into(),
+            Value::String(hex::encode(&self.committee_signature)),
+        );
+        Ok(Value::Object(body))
+    }
+
+    pub fn statement(
+        &self,
+        transition: &CreditFacilityTransition,
+        authorization: &ReservationAuthorization,
+    ) -> Result<[u8; 32], String> {
+        digest(
+            STANDING_NOTE_POOL_ALLOCATION_DOMAIN,
+            &self.body(transition, authorization)?,
+        )
+    }
+}
+
 impl NoteReservationEscrow {
     /// Verify the wallet's one-out-of-many spend and project exactly one
     /// covenant-locked reserve note. The owner signs here, before seeing any
@@ -1144,6 +1611,46 @@ impl ProductNoteReleaseOrder {
     }
 }
 
+/// Early release of a Taker reservation after the resident committee has
+/// certified a no-fill. The ordinary expiry release remains unchanged; this
+/// wrapper binds the exact validator-verifiable no-fill evidence and admission
+/// lane to the same atomic note/facility refund transition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProductNoteNoFillReleaseOrder {
+    pub release: ProductNoteReleaseOrder,
+    pub venue_id: [u8; 32],
+    pub defmi_id: [u8; 32],
+    pub admission_epoch: u64,
+    pub admission_sequence: u64,
+    pub no_fill_evidence_digest: [u8; 32],
+}
+
+impl ProductNoteNoFillReleaseOrder {
+    pub fn body(&self) -> Result<Value, String> {
+        if self.release.role != ReservationRole::Taker
+            || self.venue_id == ZERO
+            || self.defmi_id == ZERO
+            || self.admission_epoch == 0
+            || self.admission_sequence == 0
+            || self.no_fill_evidence_digest == ZERO
+        {
+            return Err("no-fill release lacks its Taker, venue, epoch, or evidence".into());
+        }
+        Ok(json!({
+            "release": self.release.body()?,
+            "venue_id": hex::encode(self.venue_id),
+            "defmi_id": hex::encode(self.defmi_id),
+            "admission_epoch": self.admission_epoch,
+            "admission_sequence": self.admission_sequence,
+            "no_fill_evidence_digest": hex::encode(self.no_fill_evidence_digest),
+        }))
+    }
+
+    pub fn statement(&self) -> Result<[u8; 32], String> {
+        digest(PRODUCT_NOTE_NO_FILL_RELEASE_DOMAIN, &self.body()?)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProductNoteSettlementOrder {
     pub settlement: DelegatedNoteSettlementOrder,
@@ -1279,6 +1786,7 @@ impl VerifiedNoteSettlementProjection {
             market_statement_digest,
             dvp_proof_digest,
             spends: vec![securities_spend, cash_spend],
+            consolidated_output: None,
         };
         settlement.body()?;
         Ok(Self {
@@ -1727,6 +2235,76 @@ impl ProductNoteSettlementOrder {
     pub fn statement(&self) -> Result<[u8; 32], String> {
         digest(PRODUCT_NOTE_SETTLEMENT_DOMAIN, &self.body()?)
     }
+}
+
+/// One governance statement for the Maker standing-pool split and the final
+/// anonymous DvP. Validators execute both state changes on a private candidate
+/// state and commit only when the complete proof bundle succeeds.
+pub fn standing_pool_product_settlement_statement(
+    allocation_transition: &CreditFacilityTransition,
+    authorization: &ReservationAuthorization,
+    allocation: &StandingNotePoolAllocation,
+    order: &ProductNoteSettlementOrder,
+    evidence_digest: [u8; 32],
+) -> Result<[u8; 32], String> {
+    let allocation_statement = allocation.statement(allocation_transition, authorization)?;
+    let reserve_receipt_digest = authorization.statement(allocation_transition)?;
+    let maker = order
+        .reservations
+        .iter()
+        .find(|reservation| reservation.role == ReservationRole::Maker)
+        .ok_or_else(|| "atomic standing-pool settlement has no Maker reservation".to_string())?;
+    let maker_spend = order
+        .settlement
+        .spends
+        .iter()
+        .find(|spend| spend.hold_id == maker.transition.hold_id)
+        .ok_or_else(|| "atomic standing-pool settlement omits the Maker covenant".to_string())?;
+    let post_allocation_sequence = allocation_transition
+        .before_sequence
+        .checked_add(1)
+        .ok_or_else(|| "standing-pool facility sequence overflow".to_string())?;
+
+    if evidence_digest == ZERO
+        || authorization.escrow_digest != allocation_statement
+        || allocation_transition.kind != CreditTransitionKind::Hold
+        || maker.transition.kind != CreditTransitionKind::Consume
+        || maker.reserve_receipt_digest != reserve_receipt_digest
+        || maker.transition.hold_id != allocation_transition.hold_id
+        || maker.transition.facility_id != allocation_transition.facility_id
+        || maker.transition.query_commitment != allocation_transition.query_commitment
+        || maker.transition.amount_commitment != allocation_transition.amount_commitment
+        || maker.transition.expires_at != allocation_transition.expires_at
+        || maker.transition.before_sequence != post_allocation_sequence
+        || maker.transition.before_available_commitment
+            != allocation_transition.after_available_commitment
+        || maker.transition.before_held_commitment != allocation_transition.after_held_commitment
+        || maker.transition.before_outstanding_commitment
+            != allocation_transition.after_outstanding_commitment
+        || authorization.entity_commitment != order.maker_entity_commitment
+        || authorization.authorization_digest != order.maker_policy_digest
+        || authorization.mandate_digest != order.maker_mandate_digest
+        || authorization.asset_id != maker_spend.asset_id
+        || allocation.quote_proof_digest != order.quote_proof_digest
+        || allocation.dvp_proof_digest != order.dvp_proof_digest
+        || allocation.escrow_note.note_id != maker_spend.escrow_note_id
+        || allocation.escrow_note.value_commitment != maker.transition.amount_commitment
+        || allocation.delegation_digest != maker_spend.delegation_digest
+        || allocation_transition.operation_id == maker.transition.operation_id
+    {
+        return Err(
+            "standing-pool allocation and anonymous DvP are not one atomic settlement".into(),
+        );
+    }
+
+    let body = json!({
+        "allocation_transition": allocation_transition.body()?,
+        "allocation_authorization": authorization.body(allocation_transition)?,
+        "allocation": allocation.body(allocation_transition, authorization)?,
+        "product_settlement": order.body()?,
+        "evidence_digest": hex::encode(evidence_digest),
+    });
+    digest(STANDING_POOL_PRODUCT_SETTLEMENT_DOMAIN, &body)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

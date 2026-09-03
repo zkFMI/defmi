@@ -108,6 +108,8 @@ mod tests {
     /// nothing to say about it. So the rule is stated as the rule: nothing
     /// here carries a real machine name, and `scripts/host_map.txt` is the one
     /// exception because it is the table and it does not ship.
+    /// `scripts/remote_hosts.txt`, the Makefile's list of approved build
+    /// workers, is private for the same reason and is excluded the same way.
     fn shipped_files(root: &Path) -> Vec<PathBuf> {
         // Build products and pulled data. `tapes` is 189 MB of market data
         // fetched from the data host and ignored by git; reading it to look
@@ -143,7 +145,10 @@ mod tests {
                 }
                 if path.is_dir() {
                     visit(&path, root, output);
-                } else if path.is_file() && relative != Path::new("scripts/host_map.txt") {
+                } else if path.is_file()
+                    && relative != Path::new("scripts/host_map.txt")
+                    && relative != Path::new("scripts/remote_hosts.txt")
+                {
                     output.push(path);
                 }
             }

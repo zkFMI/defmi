@@ -7,7 +7,7 @@
 //! process reconstructing the quote, limit, difference, or blindings.
 
 use curve25519_dalek::scalar::Scalar;
-use qomm_mpc::persistence::{FieldElement, LocalRangeHandoff, LocalZkpiHandoff};
+use qomm_mpc::persistence::{FieldElement, LocalDvpHandoff, LocalRangeHandoff, LocalZkpiHandoff};
 use qomm_proofs::threshold_quote::RISTRETTO_SCALAR_ORDER_LE;
 use qomm_proofs::threshold_range::{
     answer_range_challenge, assemble_range_from_rounds, make_range_challenge, prepare_range_round1,
@@ -90,6 +90,29 @@ impl MpcLimitNode {
         Ok(Self {
             party,
             difference: local_range(party, handoff.price_limit_difference, threshold)?,
+        })
+    }
+
+    /// Reuse the same node-local range protocol for the selected Maker's
+    /// standing-pool remainder. The source field is a different persistence
+    /// suffix and uses a distinct Fiat-Shamir context at the coordinator.
+    pub fn from_pool_handoff(handoff: LocalDvpHandoff, threshold: usize) -> Result<Self, String> {
+        let prime: [u8; 32] = handoff
+            .prime
+            .to_bytes_le(32)
+            .map_err(|error| error.to_string())?
+            .try_into()
+            .expect("a requested 32-byte encoding");
+        if prime != RISTRETTO_SCALAR_ORDER_LE {
+            return Err("MPC and standing-pool commitments use different scalar fields".into());
+        }
+        let party = handoff
+            .party
+            .checked_add(1)
+            .ok_or("MPC party identifier overflow")?;
+        Ok(Self {
+            party,
+            difference: local_range(party, handoff.maker_pool_remainder, threshold)?,
         })
     }
 

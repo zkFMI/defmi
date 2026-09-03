@@ -77,6 +77,8 @@ use qomm_transport::pretrade_authority::{
     MakerPretradeAuthority, PretradeAdmission, PretradeAuthorityBundle, PretradeSettlementVerifier,
     ReservationParty, TakerPretradeAuthority,
 };
+use qomm_transport::product_proof_coordinator::prove_standing_pool_remainder;
+use qomm_transport::proof_client::ProofPartyRpc;
 use qomm_transport::proof_codec::{encode_threshold_range, QuoteVerificationBundle};
 use qomm_transport::proof_party::{
     serve as serve_proof_party, ProofParty, ProofPartyConfig, ProofRequest, ProofResponse,
@@ -546,6 +548,8 @@ fn prepare_real_mpc(
         user_limit: 0,
         user_limit_blinding: 101,
         user_qty_blinding: 151,
+        response_mask: None,
+        fill_mask: None,
         check_coefficients: &[],
         check_repeats: config.check_repeats,
         policies: Some(&policies),
@@ -690,6 +694,7 @@ fn prepare_real_mpc(
             dvp_input_shares: tokens[maker_dvp_start..maker_dvp_end].to_vec(),
             policy_input_shares: tokens[policy_start..policy_end].to_vec(),
             quote_policy_blinding_input_shares: tokens[policy_end..quote_end].to_vec(),
+            standing_pool_bindings: Vec::new(),
         })?;
         passphrase_entropy.fill(0);
         passphrase.fill(0);
@@ -1001,6 +1006,12 @@ impl ProofPartyChild {
         } else {
             Err(format!("proof-party process exited with {status}"))
         }
+    }
+}
+
+impl ProofPartyRpc for ProofPartyChild {
+    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        ProofPartyChild::call(self, method, params)
     }
 }
 
@@ -1667,6 +1678,8 @@ struct LiveProofEvidence {
     securities_remainder_point: RistrettoPoint,
     cash_remainder_point: RistrettoPoint,
     cash_commitment_point: RistrettoPoint,
+    maker_pool_remainder_point: RistrettoPoint,
+    maker_pool_remainder_proof: qomm_proofs::threshold_range::ThresholdRangeProof,
     securities_delivery_opening: OpeningEnvelope,
     securities_refund_opening: OpeningEnvelope,
     cash_delivery_opening: OpeningEnvelope,
@@ -1710,6 +1723,8 @@ impl LiveProofEvidence {
             cash_reserve: CompressedRistretto(self.cash_reserve)
                 .decompress()
                 .expect("verified cash reserve commitment"),
+            maker_pool_remainder: self.maker_pool_remainder_point,
+            maker_pool_remainder_proof: self.maker_pool_remainder_proof,
             securities_delivery_opening: self.securities_delivery_opening,
             securities_refund_opening: self.securities_refund_opening,
             cash_delivery_opening: self.cash_delivery_opening,
@@ -2369,6 +2384,8 @@ fn prove_persistence_lane(
     ) {
         return Err("public DvP verifier rejected the node-local MPC handoff".into());
     }
+    let (maker_pool_remainder_point, maker_pool_remainder_proof) =
+        prove_standing_pool_remainder(proof_parties, &key, job_id)?;
     let collect_opening = |leg: &str,
                            recipient: RistrettoPoint,
                            proof_parties: &mut [ProofPartyChild]|
@@ -2431,6 +2448,8 @@ fn prove_persistence_lane(
         securities_remainder_point: securities_remainder,
         cash_remainder_point: cash_remainder,
         cash_commitment_point: cash_commitment,
+        maker_pool_remainder_point,
+        maker_pool_remainder_proof,
         securities_delivery_opening,
         securities_refund_opening,
         cash_delivery_opening,
@@ -2774,7 +2793,7 @@ fn run(config: AcceptanceConfig<'_>) -> Result<bool, String> {
                     .compress()
                     .to_bytes(),
                 entity_commitment: maker_presentations[maker].entity_commitment(),
-                kyb_presentation_digest: maker_presentations[maker].digest(),
+                kyb_presentation_digest: maker_presentations[maker].binding_digest(),
                 valid_from: now.saturating_sub(1).max(1),
                 valid_until: now.saturating_add(3_600),
                 auto_execute: true,
@@ -2866,12 +2885,15 @@ fn run(config: AcceptanceConfig<'_>) -> Result<bool, String> {
                     .compress()
                     .to_bytes(),
                 entity_commitment: client_identities[client].presentation.entity_commitment(),
-                kyb_presentation_digest: client_identities[client].presentation.digest(),
+                kyb_presentation_digest: client_identities[client].presentation.binding_digest(),
                 admission_ticket_id: principal_ticket_id(
                     final_slot,
                     &client_identities[client].fingerprint,
                 )?,
                 admission_slot: u64::from(final_slot),
+                fill_mask_commitment: qomm_transport::mpc_result::fill_mask_commitment(
+                    91 + client as u64,
+                ),
                 deadline: now.saturating_add(3_600),
                 allow_partial: false,
                 auto_settle: true,

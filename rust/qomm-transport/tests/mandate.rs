@@ -5,7 +5,10 @@ use qomm_proofs::kyb::{
     cohort_id, present, BusinessAttributes, KybCredential, KybIssuer, KybPresentation,
     SignedCohortRegistry,
 };
-use qomm_transport::mandate::{Direction, MakerPolicyMandate, TakerExecutionMandate, ZERO};
+use qomm_transport::mandate::{
+    decode_maker_mandate, decode_taker_mandate, encode_maker_mandate, encode_taker_mandate,
+    Direction, MakerPolicyMandate, TakerExecutionMandate, ZERO,
+};
 use rand_core::OsRng;
 use sha2::{Digest, Sha256};
 
@@ -71,7 +74,7 @@ fn maker_policy_pre_authorizes_reserve_and_needs_no_quote_time_signature() {
         maximum_amount_commitment: h("maker-max"),
         maker_handle,
         entity_commitment: proof.entity_commitment(),
-        kyb_presentation_digest: proof.digest(),
+        kyb_presentation_digest: proof.binding_digest(),
         valid_from: 100,
         valid_until: 900,
         auto_execute: true,
@@ -95,6 +98,13 @@ fn maker_policy_pre_authorizes_reserve_and_needs_no_quote_time_signature() {
     let decoded =
         MakerPolicyMandate::from_signed_bytes(&unsigned, mandate.signature.to_bytes()).unwrap();
     assert_eq!(decoded.digest().unwrap(), mandate.digest().unwrap());
+    assert_eq!(
+        decode_maker_mandate(&encode_maker_mandate(&mandate).unwrap())
+            .unwrap()
+            .digest()
+            .unwrap(),
+        mandate.digest().unwrap()
+    );
     let mut trailing = unsigned.clone();
     trailing.push(0);
     assert!(
@@ -139,9 +149,10 @@ fn taker_mandate_binds_rfq_limit_fee_order_and_automatic_settlement() {
         reserve_id: h("taker-reserve"),
         taker_handle,
         entity_commitment: proof.entity_commitment(),
-        kyb_presentation_digest: proof.digest(),
+        kyb_presentation_digest: proof.binding_digest(),
         admission_ticket_id: h("admission-ticket"),
         admission_slot: 5,
+        fill_mask_commitment: h("fill-mask-commitment"),
         deadline: 900,
         allow_partial: false,
         auto_settle: true,
@@ -165,6 +176,13 @@ fn taker_mandate_binds_rfq_limit_fee_order_and_automatic_settlement() {
     let decoded =
         TakerExecutionMandate::from_signed_bytes(&unsigned, mandate.signature.to_bytes()).unwrap();
     assert_eq!(decoded.digest().unwrap(), mandate.digest().unwrap());
+    assert_eq!(
+        decode_taker_mandate(&encode_taker_mandate(&mandate).unwrap())
+            .unwrap()
+            .digest()
+            .unwrap(),
+        mandate.digest().unwrap()
+    );
     let mut changed_body = unsigned;
     let changed_index = changed_body.len() - 33;
     changed_body[changed_index] ^= 1;

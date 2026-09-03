@@ -18,6 +18,7 @@ const NODE_EXECUTION_DOMAIN: &[u8] = b"QOMM:ORDER:NODE-EXECUTION:v1";
 const EXECUTION_RECEIPT_DOMAIN: &[u8] = b"QOMM:MPC:EXECUTION-RECEIPT:v1";
 const EXECUTION_LANE_DOMAIN: &[u8] = b"QOMM:ORDER:EXECUTION-LANE:v1";
 const EXECUTION_WIRE_MAGIC: &[u8] = b"QOMM:EXECUTION-ATTESTATIONS:v1";
+const ADMISSION_WIRE_MAGIC: &[u8] = b"QOMM:ADMISSION-ATTESTATIONS:v1";
 const CLUSTER_BATCH_DOMAIN: &[u8] = b"QOMM:ORDER:CLUSTER-BATCH:v1";
 const PRINCIPAL_TICKET_DOMAIN: &[u8] = b"QOMM:NODE:PRINCIPAL-TICKET:v1";
 const PRINCIPAL_DIGEST_DOMAIN: &[u8] = b"QOMM:ORDER:PRINCIPAL:v1";
@@ -77,7 +78,7 @@ pub fn complete_quote_context(job_id: [u8; 32], request_context: [u8; 32]) -> [u
 /// the Taker's already-signed execution mandate; cover traffic uses an equally
 /// sized random digest.  The statement is produced only after the slot closes,
 /// so a coordinator cannot replace the mandate after seeing the quote.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeAdmissionAttestation {
     pub node: u16,
     pub slot: u64,
@@ -129,6 +130,89 @@ impl NodeAdmissionAttestation {
         self.unsigned()
             .is_ok_and(|body| key.verify(&body, &self.signature).is_ok())
     }
+}
+
+/// Canonical fixed-width wire used to carry one complete seven-node admission
+/// lane from the MPC services to DeFMI.  It contains only digests and node
+/// signatures; the legal-entity identifier and RFQ fields are not serialized.
+pub fn encode_admission_attestations(
+    attestations: &[NodeAdmissionAttestation],
+) -> Result<Vec<u8>, String> {
+    if attestations.len() != COMMITTEE_NODES {
+        return Err("admission attestation wire needs exactly seven nodes".into());
+    }
+    let mut values = attestations.to_vec();
+    values.sort_by_key(|value| value.node);
+    let mut out = Vec::with_capacity(ADMISSION_WIRE_MAGIC.len() + 2 + values.len() * 242);
+    out.extend_from_slice(ADMISSION_WIRE_MAGIC);
+    out.extend_from_slice(&(values.len() as u16).to_be_bytes());
+    for value in values {
+        value.unsigned()?;
+        out.extend_from_slice(&value.node.to_be_bytes());
+        out.extend_from_slice(&value.slot.to_be_bytes());
+        out.extend_from_slice(&value.sequence.to_be_bytes());
+        for digest in [
+            value.principal_digest,
+            value.ticket_id,
+            value.claim_digest,
+            value.batch_digest,
+            value.order_digest,
+        ] {
+            out.extend_from_slice(&digest);
+        }
+        out.extend_from_slice(&value.signature.to_bytes());
+    }
+    Ok(out)
+}
+
+pub fn decode_admission_attestations(raw: &[u8]) -> Result<Vec<NodeAdmissionAttestation>, String> {
+    const RECORD_BYTES: usize = 2 + 8 + 8 + 32 * 5 + 64;
+    let header = ADMISSION_WIRE_MAGIC.len() + 2;
+    if raw.len() < header || &raw[..ADMISSION_WIRE_MAGIC.len()] != ADMISSION_WIRE_MAGIC {
+        return Err("admission attestation wire has an invalid header".into());
+    }
+    let count = u16::from_be_bytes(
+        raw[ADMISSION_WIRE_MAGIC.len()..header]
+            .try_into()
+            .expect("two-byte admission count"),
+    ) as usize;
+    if count != COMMITTEE_NODES || raw.len() != header + count * RECORD_BYTES {
+        return Err("admission attestation wire has the wrong population or length".into());
+    }
+    let mut offset = header;
+    let mut take = |length: usize| {
+        let value = &raw[offset..offset + length];
+        offset += length;
+        value
+    };
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        let node = u16::from_be_bytes(take(2).try_into().expect("two-byte node"));
+        let slot = u64::from_be_bytes(take(8).try_into().expect("eight-byte slot"));
+        let sequence = u64::from_be_bytes(take(8).try_into().expect("eight-byte sequence"));
+        let mut digest = || -> [u8; 32] { take(32).try_into().expect("32-byte digest") };
+        let value = NodeAdmissionAttestation {
+            node,
+            slot,
+            sequence,
+            principal_digest: digest(),
+            ticket_id: digest(),
+            claim_digest: digest(),
+            batch_digest: digest(),
+            order_digest: digest(),
+            signature: Signature::from_bytes(take(64).try_into().expect("64-byte signature")),
+        };
+        value.unsigned()?;
+        values.push(value);
+    }
+    if values
+        .iter()
+        .enumerate()
+        .any(|(expected, value)| usize::from(value.node) != expected)
+    {
+        return Err("admission attestation wire is not in canonical node order".into());
+    }
+    Ok(values)
 }
 
 /// One resident node's signed public receipt for an approved MP-SPDZ run.
@@ -245,6 +329,27 @@ pub fn verify_execution_lane(
             return Err("execution lane contains an unknown, duplicate, or invalid node".into());
         }
     }
+    derive_execution_lane(&ordered, order_digest)
+}
+
+/// Derive the public execution-lane digest from deterministic MPC receipt
+/// fields before proof parties sign them. This is a transcript construction,
+/// not a certification: callers must still use [`verify_execution_lane`] on
+/// the signed receipts before accepting an execution.
+pub fn derive_execution_lane(
+    attestations: &[NodeExecutionAttestation],
+    order_digest: [u8; 32],
+) -> Result<CertifiedExecutionLane, String> {
+    if attestations.len() != COMMITTEE_NODES {
+        return Err("execution lane needs exactly seven receipt statements".into());
+    }
+    let mut ordered = attestations.to_vec();
+    ordered.sort_by_key(|value| value.node);
+    for (expected, value) in ordered.iter().enumerate() {
+        if usize::from(value.node) != expected || value.unsigned().is_err() {
+            return Err("execution lane contains an incomplete or duplicate receipt".into());
+        }
+    }
     let first = &ordered[0];
     if ordered.iter().skip(1).any(|value| {
         value.slot != first.slot
@@ -285,12 +390,9 @@ pub fn verify_execution_lane(
     })
 }
 
-pub fn encode_execution_attestations(
+fn encode_execution_attestation_wire(
     attestations: &[NodeExecutionAttestation],
 ) -> Result<Vec<u8>, String> {
-    if attestations.len() != COMMITTEE_NODES {
-        return Err("execution attestation wire needs exactly seven nodes".into());
-    }
     let mut values = attestations.to_vec();
     values.sort_by_key(|value| value.node);
     let mut out = Vec::with_capacity(EXECUTION_WIRE_MAGIC.len() + 2 + values.len() * 346);
@@ -319,7 +421,28 @@ pub fn encode_execution_attestations(
     Ok(out)
 }
 
-pub fn decode_execution_attestations(raw: &[u8]) -> Result<Vec<NodeExecutionAttestation>, String> {
+pub fn encode_execution_attestations(
+    attestations: &[NodeExecutionAttestation],
+) -> Result<Vec<u8>, String> {
+    if attestations.len() != COMMITTEE_NODES {
+        return Err("execution attestation wire needs exactly seven nodes".into());
+    }
+    encode_execution_attestation_wire(attestations)
+}
+
+/// Encode one node-local execution attestation for transport to the proof
+/// coordinator.  This is deliberately distinct from the canonical seven-node
+/// bundle accepted by DeFMI.
+pub fn encode_node_execution_attestation(
+    attestation: &NodeExecutionAttestation,
+) -> Result<Vec<u8>, String> {
+    encode_execution_attestation_wire(std::slice::from_ref(attestation))
+}
+
+fn decode_execution_attestation_wire(
+    raw: &[u8],
+    expected_count: usize,
+) -> Result<Vec<NodeExecutionAttestation>, String> {
     const RECORD_BYTES: usize = 2 + 8 + 8 + 32 * 6 + 8 * 3 + 64;
     let header = EXECUTION_WIRE_MAGIC.len() + 2;
     if raw.len() < header || &raw[..EXECUTION_WIRE_MAGIC.len()] != EXECUTION_WIRE_MAGIC {
@@ -330,7 +453,7 @@ pub fn decode_execution_attestations(raw: &[u8]) -> Result<Vec<NodeExecutionAtte
             .try_into()
             .expect("two-byte execution count"),
     ) as usize;
-    if count != COMMITTEE_NODES || raw.len() != header + count * RECORD_BYTES {
+    if count != expected_count || raw.len() != header + count * RECORD_BYTES {
         return Err("execution attestation wire has the wrong population or length".into());
     }
     let mut offset = header;
@@ -374,6 +497,11 @@ pub fn decode_execution_attestations(raw: &[u8]) -> Result<Vec<NodeExecutionAtte
         value.unsigned()?;
         values.push(value);
     }
+    Ok(values)
+}
+
+pub fn decode_execution_attestations(raw: &[u8]) -> Result<Vec<NodeExecutionAttestation>, String> {
+    let values = decode_execution_attestation_wire(raw, COMMITTEE_NODES)?;
     if values
         .iter()
         .enumerate()
@@ -382,6 +510,20 @@ pub fn decode_execution_attestations(raw: &[u8]) -> Result<Vec<NodeExecutionAtte
         return Err("execution attestation wire is not in canonical node order".into());
     }
     Ok(values)
+}
+
+/// Decode exactly one node-local response.  The caller still verifies that the
+/// returned node is the party it contacted before assembling the seven-node
+/// canonical bundle.
+pub fn decode_node_execution_attestation(raw: &[u8]) -> Result<NodeExecutionAttestation, String> {
+    let mut values = decode_execution_attestation_wire(raw, 1)?;
+    let value = values
+        .pop()
+        .ok_or_else(|| "node execution attestation is absent".to_string())?;
+    if usize::from(value.node) >= COMMITTEE_NODES {
+        return Err("node execution attestation names a node outside the committee".into());
+    }
+    Ok(value)
 }
 
 /// Committee-verified public binding for one fixed-population lane.  It

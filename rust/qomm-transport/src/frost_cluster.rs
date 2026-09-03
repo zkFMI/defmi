@@ -12,17 +12,20 @@ use base64::Engine;
 use qomm_zkpi::{frost, typed, typed_wire, wire as payment_wire, PartialInstruction, QuoteBinding};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
+use crate::dvp_issuer::DvpProofs;
 use crate::frost_coordinator;
 use crate::mandate::{MakerPolicyMandate, TakerExecutionMandate};
 use crate::proof_client::{ProofPartyRpc, ProofPartyTlsClient};
+use crate::proof_codec::{encode_dvp_proofs, encode_threshold_range};
 use crate::proof_party::{ProofRequest, ProofResponse};
+use crate::standing_pool::StandingPoolAllocationBinding;
+use qomm_proofs::threshold_range::ThresholdRangeProof;
 
 const MAX_RESPONSE: usize = 8 << 20;
 const MAX_REQUEST: usize = 8 << 20;
@@ -231,56 +234,13 @@ impl StdioFrostCluster {
         partial: &PartialInstruction,
         mandate: ReserveMandateRef<'_>,
     ) -> Result<frost::Signature, String> {
-        let message = partial.digest();
-        let signing_job = signing_job(&message);
-        let mut params = mandate.public_params()?;
-        let object = params
-            .as_object_mut()
-            .ok_or_else(|| "reserve mandate parameters are not an object".to_string())?;
-        object.insert("signing_job_id".into(), json!(hex::encode(signing_job)));
-        object.insert("message".into(), json!(BASE64.encode(message)));
-        object.insert(
-            "amount_commitment".into(),
-            json!(hex::encode(partial.amount_commitment.compress().to_bytes())),
-        );
-        object.insert(
-            "price_commitment".into(),
-            json!(hex::encode(partial.price_commitment.compress().to_bytes())),
-        );
-        object.insert(
-            "asset_commitment".into(),
-            json!(hex::encode(partial.asset_commitment.compress().to_bytes())),
-        );
-        object.insert(
-            "payer_handle".into(),
-            json!(hex::encode(partial.payer_handle.compress().to_bytes())),
-        );
-        object.insert(
-            "payee_handle".into(),
-            json!(hex::encode(partial.payee_handle.compress().to_bytes())),
-        );
-        object.insert("deadline".into(), json!(partial.deadline));
-        object.insert("nonce".into(), json!(hex::encode(partial.nonce)));
-        match partial.quote_binding {
-            QuoteBinding::LegacyPackedKey(value) => {
-                object.insert("quote_kind".into(), json!("legacy"));
-                object.insert("quote_key".into(), json!(value));
-            }
-            QuoteBinding::ProofDigest(value) => {
-                object.insert("quote_kind".into(), json!("proof"));
-                object.insert("quote_digest".into(), json!(hex::encode(value)));
-            }
-        }
-        for party in &self.selected {
-            self.parties[*party - 1].call("authorize_reserve_payment", params.clone())?;
-        }
-        let signature =
-            distributed_sign(&mut self.parties, &self.selected, &message, &self.public)?;
-        self.public
-            .verifying_key()
-            .verify(&message, &signature)
-            .map_err(|_| "reserve payment threshold signature is invalid".to_string())?;
-        Ok(signature)
+        sign_reserve_payment(
+            &mut self.parties,
+            &self.selected,
+            &self.public,
+            partial,
+            mandate,
+        )
     }
 
     pub fn sign_reserve_context(
@@ -289,33 +249,36 @@ impl StdioFrostCluster {
         context: &typed::ExecutionContext,
         mandate: ReserveMandateRef<'_>,
     ) -> Result<frost::Signature, String> {
-        let message = typed::digest_for(payment, context, qomm_zkpi::DEFAULT_DOMAIN)
-            .map_err(str::to_string)?;
-        let signing_job = signing_job(&message);
-        let mut params = mandate.public_params()?;
-        let object = params
-            .as_object_mut()
-            .ok_or_else(|| "reserve mandate parameters are not an object".to_string())?;
-        object.insert("signing_job_id".into(), json!(hex::encode(signing_job)));
-        object.insert("message".into(), json!(BASE64.encode(message)));
-        object.insert(
-            "payment".into(),
-            json!(BASE64.encode(payment_wire::encode(payment))),
-        );
-        object.insert(
-            "context".into(),
-            json!(BASE64.encode(typed_wire::encode_context(context))),
-        );
-        for party in &self.selected {
-            self.parties[*party - 1].call("authorize_reserve_typed", params.clone())?;
-        }
-        let signature =
-            distributed_sign(&mut self.parties, &self.selected, &message, &self.public)?;
-        self.public
-            .verifying_key()
-            .verify(&message, &signature)
-            .map_err(|_| "typed reserve threshold signature is invalid".to_string())?;
-        Ok(signature)
+        sign_reserve_context(
+            &mut self.parties,
+            &self.selected,
+            &self.public,
+            payment,
+            context,
+            mandate,
+        )
+    }
+
+    pub fn sign_standing_pool_allocation(
+        &mut self,
+        binding: &StandingPoolAllocationBinding,
+        mandate: &MakerPolicyMandate,
+        payment: &qomm_zkpi::Instruction,
+        dvp_proofs: &DvpProofs,
+        pool_remainder_proof: &ThresholdRangeProof,
+    ) -> Result<frost::Signature, String> {
+        sign_standing_pool_allocation(
+            &mut self.parties,
+            &self.selected,
+            StandingPoolAllocationSignatureRequest {
+                public: &self.public,
+                binding,
+                mandate,
+                payment,
+                dvp_proofs,
+                pool_remainder_proof,
+            },
+        )
     }
 
     pub fn close(mut self) -> Result<(), String> {
@@ -324,6 +287,189 @@ impl StdioFrostCluster {
         }
         Ok(())
     }
+}
+
+/// Authorize one pre-trade reserve with an already deployed proof-party
+/// committee. This is the network equivalent of `StdioFrostCluster`: the
+/// coordinator relays public commitments only and never receives a FROST key
+/// share.
+pub fn sign_reserve_payment<T: ProofPartyRpc>(
+    parties: &mut [T],
+    selected: &[usize],
+    public: &frost::keys::PublicKeyPackage,
+    partial: &PartialInstruction,
+    mandate: ReserveMandateRef<'_>,
+) -> Result<frost::Signature, String> {
+    let message = partial.digest();
+    let signing_job = signing_job(&message);
+    let mut params = mandate.public_params()?;
+    let object = params
+        .as_object_mut()
+        .ok_or_else(|| "reserve mandate parameters are not an object".to_string())?;
+    object.insert("signing_job_id".into(), json!(hex::encode(signing_job)));
+    object.insert("message".into(), json!(BASE64.encode(message)));
+    object.insert(
+        "amount_commitment".into(),
+        json!(hex::encode(partial.amount_commitment.compress().to_bytes())),
+    );
+    object.insert(
+        "price_commitment".into(),
+        json!(hex::encode(partial.price_commitment.compress().to_bytes())),
+    );
+    object.insert(
+        "asset_commitment".into(),
+        json!(hex::encode(partial.asset_commitment.compress().to_bytes())),
+    );
+    object.insert(
+        "payer_handle".into(),
+        json!(hex::encode(partial.payer_handle.compress().to_bytes())),
+    );
+    object.insert(
+        "payee_handle".into(),
+        json!(hex::encode(partial.payee_handle.compress().to_bytes())),
+    );
+    object.insert("deadline".into(), json!(partial.deadline));
+    object.insert("nonce".into(), json!(hex::encode(partial.nonce)));
+    match partial.quote_binding {
+        QuoteBinding::LegacyPackedKey(value) => {
+            object.insert("quote_kind".into(), json!("legacy"));
+            object.insert("quote_key".into(), json!(value));
+        }
+        QuoteBinding::ProofDigest(value) => {
+            object.insert("quote_kind".into(), json!("proof"));
+            object.insert("quote_digest".into(), json!(hex::encode(value)));
+        }
+    }
+    for party in selected {
+        if !(1..=parties.len()).contains(party) {
+            return Err("reserve signing quorum is outside the node set".into());
+        }
+        parties
+            .get_mut(*party - 1)
+            .expect("reserve quorum bounds checked")
+            .call("authorize_reserve_payment", params.clone())?;
+    }
+    let signature = frost_coordinator::distributed_frost_sign(parties, selected, &message, public)?;
+    public
+        .verifying_key()
+        .verify(&message, &signature)
+        .map_err(|_| "reserve payment threshold signature is invalid".to_string())?;
+    Ok(signature)
+}
+
+/// Bind the same reserve to its typed DeFMI execution context using resident
+/// HTTP proof parties. The mandate is checked again by every signing node.
+pub fn sign_reserve_context<T: ProofPartyRpc>(
+    parties: &mut [T],
+    selected: &[usize],
+    public: &frost::keys::PublicKeyPackage,
+    payment: &qomm_zkpi::Instruction,
+    context: &typed::ExecutionContext,
+    mandate: ReserveMandateRef<'_>,
+) -> Result<frost::Signature, String> {
+    let message =
+        typed::digest_for(payment, context, qomm_zkpi::DEFAULT_DOMAIN).map_err(str::to_string)?;
+    let signing_job = signing_job(&message);
+    let mut params = mandate.public_params()?;
+    let object = params
+        .as_object_mut()
+        .ok_or_else(|| "reserve mandate parameters are not an object".to_string())?;
+    object.insert("signing_job_id".into(), json!(hex::encode(signing_job)));
+    object.insert("message".into(), json!(BASE64.encode(message)));
+    object.insert(
+        "payment".into(),
+        json!(BASE64.encode(payment_wire::encode(payment))),
+    );
+    object.insert(
+        "context".into(),
+        json!(BASE64.encode(typed_wire::encode_context(context))),
+    );
+    for party in selected {
+        if !(1..=parties.len()).contains(party) {
+            return Err("reserve signing quorum is outside the node set".into());
+        }
+        parties
+            .get_mut(*party - 1)
+            .expect("reserve quorum bounds checked")
+            .call("authorize_reserve_typed", params.clone())?;
+    }
+    let signature = frost_coordinator::distributed_frost_sign(parties, selected, &message, public)?;
+    public
+        .verifying_key()
+        .verify(&message, &signature)
+        .map_err(|_| "typed reserve threshold signature is invalid".to_string())?;
+    Ok(signature)
+}
+
+/// Authorize one exact child/remainder split from a Maker standing covenant.
+/// Each selected resident node re-verifies the complete public DvP package and
+/// compares the split with its own node-local MPC commitments before exposing
+/// a one-use FROST nonce.
+pub struct StandingPoolAllocationSignatureRequest<'a> {
+    pub public: &'a frost::keys::PublicKeyPackage,
+    pub binding: &'a StandingPoolAllocationBinding,
+    pub mandate: &'a MakerPolicyMandate,
+    pub payment: &'a qomm_zkpi::Instruction,
+    pub dvp_proofs: &'a DvpProofs,
+    pub pool_remainder_proof: &'a ThresholdRangeProof,
+}
+
+pub fn sign_standing_pool_allocation<T: ProofPartyRpc>(
+    parties: &mut [T],
+    selected: &[usize],
+    request: StandingPoolAllocationSignatureRequest<'_>,
+) -> Result<frost::Signature, String> {
+    let StandingPoolAllocationSignatureRequest {
+        public,
+        binding,
+        mandate,
+        payment,
+        dvp_proofs,
+        pool_remainder_proof,
+    } = request;
+    if selected.len() < 3 {
+        return Err("standing pool allocation requires a threshold quorum".into());
+    }
+    let message = binding.signing_message()?;
+    let signing_job = signing_job(&message);
+    let mut params = ReserveMandateRef::Maker(mandate).public_params()?;
+    let object = params
+        .as_object_mut()
+        .ok_or_else(|| "standing pool mandate parameters are not an object".to_string())?;
+    object.insert("job_id".into(), json!(hex::encode(binding.proof_job_id)));
+    object.insert("signing_job_id".into(), json!(hex::encode(signing_job)));
+    object.insert("message".into(), json!(BASE64.encode(message)));
+    object.insert("allocation_binding".into(), binding.body()?);
+    object.insert(
+        "payment".into(),
+        json!(BASE64.encode(payment_wire::encode(payment))),
+    );
+    object.insert(
+        "dvp_proofs".into(),
+        json!(BASE64.encode(encode_dvp_proofs(dvp_proofs)?)),
+    );
+    object.insert(
+        "pool_remainder_range".into(),
+        json!(BASE64.encode(encode_threshold_range(pool_remainder_proof)?)),
+    );
+    for party in selected {
+        if !(1..=parties.len()).contains(party) {
+            return Err("standing pool signing quorum is outside the node set".into());
+        }
+        let value = parties
+            .get_mut(*party - 1)
+            .expect("standing pool quorum bounds checked")
+            .call("authorize_standing_pool_allocation", params.clone())?;
+        if value.get("authorized").and_then(Value::as_bool) != Some(true) {
+            return Err("proof party did not authorize the standing pool split".into());
+        }
+    }
+    let signature = frost_coordinator::distributed_frost_sign(parties, selected, &message, public)?;
+    public
+        .verifying_key()
+        .verify(&message, &signature)
+        .map_err(|_| "standing pool threshold signature is invalid".to_string())?;
+    Ok(signature)
 }
 
 fn distributed_setup(
@@ -339,82 +485,4 @@ fn signing_job(message: &[u8]) -> [u8; 32] {
         .chain_update(message)
         .finalize()
         .into()
-}
-
-fn distributed_sign(
-    parties: &mut [ProofPartyChild],
-    selected: &[usize],
-    message: &[u8],
-    public: &frost::keys::PublicKeyPackage,
-) -> Result<frost::Signature, String> {
-    let job = signing_job(message);
-    let encoded_message = BASE64.encode(message);
-    let commitments = selected
-        .iter()
-        .map(|party| {
-            parties[*party - 1].call(
-                "frost_commit",
-                json!({"job_id": hex::encode(job), "message": encoded_message}),
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut decoded_commitments = BTreeMap::new();
-    for commitment in &commitments {
-        let party = commitment
-            .get("party")
-            .and_then(Value::as_u64)
-            .and_then(|value| u16::try_from(value).ok())
-            .ok_or_else(|| "FROST commitment party is invalid".to_string())?;
-        let raw = BASE64
-            .decode(
-                commitment
-                    .get("commitments")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| "FROST commitment is absent".to_string())?,
-            )
-            .map_err(|_| "FROST commitment is malformed")?;
-        decoded_commitments.insert(
-            frost::Identifier::try_from(party).map_err(|_| "FROST identifier is invalid")?,
-            frost::round1::SigningCommitments::deserialize(&raw)
-                .map_err(|_| "FROST commitment cannot be decoded")?,
-        );
-    }
-    let commitment_values = Value::Array(commitments);
-    let shares = selected
-        .iter()
-        .map(|party| {
-            parties[*party - 1].call(
-                "frost_sign",
-                json!({
-                    "job_id": hex::encode(job),
-                    "message": encoded_message,
-                    "commitments": commitment_values.clone(),
-                }),
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut decoded_shares = BTreeMap::new();
-    for share in shares {
-        let party = share
-            .get("party")
-            .and_then(Value::as_u64)
-            .and_then(|value| u16::try_from(value).ok())
-            .ok_or_else(|| "FROST signature-share party is invalid".to_string())?;
-        let raw = BASE64
-            .decode(
-                share
-                    .get("share")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| "FROST signature share is absent".to_string())?,
-            )
-            .map_err(|_| "FROST signature share is malformed")?;
-        decoded_shares.insert(
-            frost::Identifier::try_from(party).map_err(|_| "FROST identifier is invalid")?,
-            frost::round2::SignatureShare::deserialize(&raw)
-                .map_err(|_| "FROST signature share cannot be decoded")?,
-        );
-    }
-    let package = frost::SigningPackage::new(decoded_commitments, message);
-    frost::aggregate(&package, &decoded_shares, public)
-        .map_err(|_| "FROST aggregation rejected a node response".into())
 }

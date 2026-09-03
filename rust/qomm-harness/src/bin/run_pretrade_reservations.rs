@@ -948,9 +948,11 @@ fn process_authority_notes(
             ]),
             kind,
             name: match kind {
+                GuarantorKind::CentralBank => "Acceptance central bank",
                 GuarantorKind::CentralCounterparty => "Acceptance CCP",
                 GuarantorKind::Bank => "Acceptance bank",
                 GuarantorKind::SelfGuaranteed => "Acceptance self-guarantee",
+                GuarantorKind::CreditProvider => "Acceptance credit provider",
             }
             .into(),
             public_key: key.verifying_key().to_bytes(),
@@ -1154,6 +1156,7 @@ fn process_authority_notes(
         slot: certified[0].slot,
         batch_digest: certified[0].cluster_digest,
         order_digest: certified[0].order_digest,
+        first_sequence: certified[0].sequence,
         admission_digests: certified
             .iter()
             .map(|lane| lane.digest(authority.venue_id, admission.epoch))
@@ -1805,9 +1808,11 @@ fn process_authority(
             ]),
             kind,
             name: match kind {
+                GuarantorKind::CentralBank => "Acceptance central bank",
                 GuarantorKind::CentralCounterparty => "Acceptance CCP",
                 GuarantorKind::Bank => "Acceptance bank",
                 GuarantorKind::SelfGuaranteed => "Acceptance self-guarantee",
+                GuarantorKind::CreditProvider => "Acceptance credit provider",
             }
             .into(),
             public_key: key.verifying_key().to_bytes(),
@@ -2040,6 +2045,7 @@ fn process_authority(
         slot: certified[0].slot,
         batch_digest: certified[0].cluster_digest,
         order_digest: certified[0].order_digest,
+        first_sequence: certified[0].sequence,
         admission_digests: certified
             .iter()
             .map(|lane| lane.digest(authority.venue_id, admission.epoch))

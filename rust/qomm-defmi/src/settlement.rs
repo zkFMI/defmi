@@ -27,6 +27,9 @@ use qomm_proofs::threshold_sigma::PartyId;
 use qomm_transport::dvp_issuer::{
     DvpProofs, DVP_CASH_REMAINDER_CONTEXT, DVP_PRODUCT_CONTEXT, DVP_SECURITIES_REMAINDER_CONTEXT,
 };
+use qomm_transport::standing_pool::{
+    account_of as shared_account_of, threshold_dvp_package_digest, ThresholdDvpSides,
+};
 use qomm_zk::pedersen::Pedersen;
 use qomm_zk::sigma::{
     product_terms, prove_product, prove_same_value, same_value_terms, verify_product, Batch,
@@ -191,57 +194,25 @@ pub struct ThresholdDvpPackage {
     pub value_proof: ProductProof,
 }
 
-fn hash_product_proof(hash: &mut Sha256, proof: &ProductProof) {
-    hash.update(proof.t_factor.compress().as_bytes());
-    hash.update(proof.t_product.compress().as_bytes());
-    hash.update(proof.z_b.to_bytes());
-    hash.update(proof.z_rb.to_bytes());
-    hash.update(proof.z_s.to_bytes());
-}
-
-fn hash_threshold_range(hash: &mut Sha256, proof: &ThresholdRangeProof) {
-    hash.update((proof.bits as u64).to_be_bytes());
-    hash.update((proof.bit_commitments.len() as u64).to_be_bytes());
-    for commitment in &proof.bit_commitments {
-        hash.update(commitment.compress().as_bytes());
-    }
-    hash.update((proof.bit_proofs.len() as u64).to_be_bytes());
-    for bit_proof in &proof.bit_proofs {
-        hash_product_proof(hash, bit_proof);
-    }
-    hash.update(proof.linkage.t.compress().as_bytes());
-    hash.update(proof.linkage.z_value.to_bytes());
-    hash.update(proof.linkage.z_blinding.to_bytes());
-}
-
 impl ThresholdDvpPackage {
     pub fn digest(&self) -> [u8; 32] {
-        fn bytes(hash: &mut Sha256, value: &[u8]) {
-            hash.update((value.len() as u64).to_be_bytes());
-            hash.update(value);
-        }
-        let mut hash = Sha256::new();
-        hash.update(b"QOMM:DEFMI:THRESHOLD-DVP-PACKAGE:v1");
-        bytes(&mut hash, &qomm_zkpi::wire::encode(&self.instruction));
-        for handle in [
-            &self.securities_from,
-            &self.securities_to,
-            &self.cash_from,
-            &self.cash_to,
-        ] {
-            bytes(&mut hash, handle);
-        }
-        for point in [
+        threshold_dvp_package_digest(
+            &self.instruction,
+            &ThresholdDvpSides {
+                securities_from: self.securities_from.clone(),
+                securities_to: self.securities_to.clone(),
+                cash_from: self.cash_from.clone(),
+                cash_to: self.cash_to.clone(),
+            },
             &self.cash_commitment,
             &self.securities_remainder,
             &self.cash_remainder,
-        ] {
-            hash.update(point.compress().as_bytes());
-        }
-        hash_threshold_range(&mut hash, &self.securities_remainder_range);
-        hash_threshold_range(&mut hash, &self.cash_remainder_range);
-        hash_product_proof(&mut hash, &self.value_proof);
-        hash.finalize().into()
+            &DvpProofs {
+                product: self.value_proof.clone(),
+                securities_remainder: self.securities_remainder_range.clone(),
+                cash_remainder: self.cash_remainder_range.clone(),
+            },
+        )
     }
 }
 
@@ -466,12 +437,7 @@ pub struct Carry {
 /// unlinkability there; it costs nothing and keeps a handle from being a key in
 /// two maps at once.
 pub fn account_of(handle: &RistrettoPoint, rail: &[u8]) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(b"QOMM:DEFMI:ACCOUNT:v1");
-    hasher.update((rail.len() as u64).to_be_bytes());
-    hasher.update(rail);
-    hasher.update(handle.compress().as_bytes());
-    hasher.finalize().to_vec()
+    shared_account_of(handle, rail)
 }
 
 pub const SECURITIES_RAIL: &[u8] = b"securities";

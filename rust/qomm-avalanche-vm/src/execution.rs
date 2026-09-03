@@ -14,6 +14,17 @@ use curve25519_dalek::{
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use qomm_defmi::asset_link::{self, AssetLinkProof};
+use qomm_defmi::central_bank_liquidity::{
+    operation_statement as boj_operation_statement, ApplyFundsReceipt, BojParticipant,
+    EndBusinessDay, JgbCollateralLot, OpenBusinessDay, ParticipantStatus, PledgeCollateral,
+    RegisterParticipant, ReleaseIntradayLiquidity, ReserveIntradayLiquidity, ReturnCollateral,
+    RevalueCollateral, SimultaneousCollateralDvp, UpdateOtherSecuredExposure,
+};
+use qomm_defmi::cross_domain::{
+    asset_id_commitment, handle_commitment, Committee as CrossDomainCommittee,
+    CommitteeMember as CrossDomainCommitteeMember, Domain as CrossDomain, FinalityReceipt,
+    PrepareLeg as CrossDomainPrepareLeg, ReceiptEvent, ReceiptSignature,
+};
 use qomm_defmi::facility::{
     AccountOpening, AdmissionBatchPlan, AdmissionCommitteePlan, AdmissionSlotAdvance,
     AssetDefinition, AssetKind, CreditAmendmentMode, CreditControlAction, CreditFacilityAmendment,
@@ -24,17 +35,20 @@ use qomm_defmi::facility::{
     SettlementOrder, StateLeg, ZERO,
 };
 use qomm_defmi::note_chain::{
-    escrow_claim_serial, CsdIssuerControl, CsdIssuerControlKind, CsdIssuerDefinition,
-    DelegatedNoteSettlementOrder, EscrowClaimSpend, NoteClaim, NoteClaimKind,
-    NoteClaimMaterialization, NoteIssuance, NoteOutput, NoteReservationEscrow, NoteSettlementOrder,
-    NoteSpend, ProductNoteReleaseOrder, ProductNoteSettlementBatch, ProductNoteSettlementOrder,
+    escrow_claim_serial, standing_pool_product_settlement_statement, CsdIssuerControl,
+    CsdIssuerControlKind, CsdIssuerDefinition, DelegatedNoteSettlementOrder, EscrowClaimSpend,
+    NoteClaim, NoteClaimKind, NoteClaimMaterialization, NoteIssuance, NoteOutput,
+    NoteReservationEscrow, NoteSettlementOrder, NoteSpend, ProductNoteNoFillReleaseOrder,
+    ProductNoteReleaseOrder, ProductNoteSettlementBatch, ProductNoteSettlementOrder,
+    StandingNotePoolAllocation, StandingNotePoolRegistration,
 };
-use qomm_defmi::product_evidence::ProductSettlementEvidence;
+use qomm_defmi::product_evidence::{MpcNoFillEvidence, ProductSettlementEvidence};
 use qomm_defmi::settlement::{build_threshold_package_from_proofs, Sides};
 use qomm_defmi::settlement_verifier::{settlement_verifier_key, SettlementVerifierConfig};
 use qomm_proofs::opening_envelope::{EncryptedOpeningShare, OpeningEnvelope};
 use qomm_proofs::price_limit::{from_threshold as threshold_price_limit, PriceLimitDirection};
 use qomm_proofs::quote_proof::registered_policy_digest;
+use qomm_transport::mpc_result::verify_public_result_lane;
 use qomm_transport::order::{
     complete_quote_context, decode_execution_attestations, live_proof_job_id,
     verify_admission_lane, verify_execution_lane, CertifiedAdmissionLane, NodeAdmissionAttestation,
@@ -51,14 +65,19 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     state::{
-        admission_committee_key, admission_entry_key, id_key, AccountRecord, AdmissionBatchRecord,
-        AdmissionCommitteeRecord, AdmissionEntryRecord, AssetRecord, CreditFacilityRecord,
-        CreditHoldRecord, CsdIssuerRecord, GuarantorRecord, NoteClaimRecord, NoteRecord,
-        NoteReservationRecord, NoteSerialRecord, NullifierRecord, OpeningEnvelopeRecord,
-        ReservationBindingRecord, ReservationEscrowRecord, SettlementVerifierRecord, State,
+        admission_committee_key, admission_entry_key, cross_domain_committee_key, id_key,
+        AccountRecord, AdmissionBatchRecord, AdmissionCommitteeRecord, AdmissionEntryRecord,
+        AssetRecord, CreditFacilityRecord, CreditHoldRecord, CsdIssuerRecord, GuarantorRecord,
+        NoteClaimRecord, NoteRecord, NoteReservationRecord, NoteSerialRecord, NullifierRecord,
+        OpeningEnvelopeRecord, ReservationBindingRecord, ReservationEscrowRecord,
+        SettlementVerifierRecord, StandingNotePoolRecord, State,
     },
     transaction::TransactionEnvelope,
 };
+
+mod aethel;
+mod deccp;
+mod participant;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -112,6 +131,164 @@ struct GuarantorDto {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BojParticipantDto {
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    #[serde(rename = "legalEntityID")]
+    legal_entity_id: String,
+    #[serde(rename = "fundsAccountID")]
+    funds_account_id: String,
+    #[serde(rename = "jgbAccountID")]
+    jgb_account_id: String,
+    current_account_balance_yen: u64,
+    other_secured_exposure_yen: u64,
+    business_day: u32,
+    repayment_deadline: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BojCollateralPledgeDto {
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    expected_participant_sequence: u64,
+    #[serde(rename = "lotID")]
+    lot_id: String,
+    #[serde(rename = "assetID")]
+    asset_id: String,
+    #[serde(rename = "ownerLegalEntityID")]
+    owner_legal_entity_id: String,
+    face_value_yen: u64,
+    market_price_per_100_micros: u64,
+    index_ratio_ppm: u64,
+    valuation_rate_bps: u16,
+    valuation_epoch: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BojCollateralRevalueDto {
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    #[serde(rename = "lotID")]
+    lot_id: String,
+    expected_lot_sequence: u64,
+    expected_participant_sequence: u64,
+    market_price_per_100_micros: u64,
+    index_ratio_ppm: u64,
+    valuation_rate_bps: u16,
+    valuation_epoch: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BojIntradayReserveDto {
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    #[serde(rename = "reservationID")]
+    reservation_id: String,
+    #[serde(rename = "legalEntityID")]
+    legal_entity_id: String,
+    instruction_commitment: String,
+    expected_participant_sequence: u64,
+    amount_yen: u64,
+    expires_at: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BojIntradayReleaseDto {
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    #[serde(rename = "reservationID")]
+    reservation_id: String,
+    #[serde(rename = "legalEntityID")]
+    legal_entity_id: String,
+    expected_participant_sequence: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BojCollateralReturnDto {
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    #[serde(rename = "lotID")]
+    lot_id: String,
+    expected_lot_sequence: u64,
+    expected_participant_sequence: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BojFundsReceiptDto {
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    #[serde(rename = "receiptID")]
+    receipt_id: String,
+    #[serde(rename = "legalEntityID")]
+    legal_entity_id: String,
+    expected_participant_sequence: u64,
+    amount_yen: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BojOtherExposureDto {
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    #[serde(rename = "legalEntityID")]
+    legal_entity_id: String,
+    expected_participant_sequence: u64,
+    new_exposure_yen: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BojOpenBusinessDayDto {
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    #[serde(rename = "legalEntityID")]
+    legal_entity_id: String,
+    expected_participant_sequence: u64,
+    business_day: u32,
+    repayment_deadline: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BojSimultaneousDvpDto {
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    #[serde(rename = "settlementID")]
+    settlement_id: String,
+    instruction_commitment: String,
+    #[serde(rename = "buyerLegalEntityID")]
+    buyer_legal_entity_id: String,
+    #[serde(rename = "sellerLegalEntityID")]
+    seller_legal_entity_id: String,
+    #[serde(rename = "lotID")]
+    lot_id: String,
+    payment_yen: u64,
+    buyer_pledges_on_receipt: bool,
+    #[serde(rename = "overdraftReservationID")]
+    overdraft_reservation_id: String,
+    expected_buyer_sequence: u64,
+    expected_seller_sequence: u64,
+    expected_lot_sequence: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BojEndOfDayDto {
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    #[serde(rename = "legalEntityID")]
+    legal_entity_id: String,
+    expected_participant_sequence: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SettlementDto {
     #[serde(rename = "operationID")]
     operation_id: String,
@@ -121,6 +298,86 @@ struct SettlementDto {
     proof_digest: String,
     market_statement_digest: String,
     legs: Vec<StateLegDto>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CrossDomainDto {
+    #[serde(rename = "networkID")]
+    network_id: u32,
+    #[serde(rename = "chainID")]
+    chain_id: String,
+    #[serde(rename = "defmiID")]
+    defmi_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CrossDomainMemberDto {
+    #[serde(rename = "memberID")]
+    member_id: String,
+    public_key: String,
+    weight: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CrossDomainCommitteeDto {
+    domain: CrossDomainDto,
+    epoch: u64,
+    quorum_weight: u64,
+    members: Vec<CrossDomainMemberDto>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CrossDomainPrepareDto {
+    local_domain: CrossDomainDto,
+    remote_domain: CrossDomainDto,
+    #[serde(rename = "localLegID")]
+    local_leg_id: String,
+    expected_remote_prepare_binding: String,
+    expected_remote_claim_binding: String,
+    owner_commitment: String,
+    escrow_commitment: String,
+    destination_commitment: String,
+    asset_commitment: String,
+    amount_commitment: String,
+    local_instruction_digest: String,
+    local_relation_proof_digest: String,
+    reserve_transfer_digest: String,
+    claim_transfer_digest: String,
+    refund_transfer_digest: String,
+    arm_deadline: u64,
+    claim_deadline: u64,
+    refund_after: u64,
+    release_condition: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CrossDomainReceiptSignatureDto {
+    #[serde(rename = "memberID")]
+    member_id: String,
+    signature: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CrossDomainReceiptDto {
+    source_domain: CrossDomainDto,
+    destination_domain: CrossDomainDto,
+    #[serde(rename = "destinationLegID")]
+    destination_leg_id: String,
+    event_binding: String,
+    event: String,
+    source_state_root: String,
+    #[serde(rename = "sourceBlockID")]
+    source_block_id: String,
+    source_height: u64,
+    finalised_at: u64,
+    validator_epoch: u64,
+    signatures: Vec<CrossDomainReceiptSignatureDto>,
 }
 
 #[derive(Deserialize)]
@@ -217,6 +474,7 @@ struct NoteSettlementDto {
     market_statement_digest: String,
     dvp_proof_digest: String,
     spends: Vec<NoteSpendDto>,
+    consolidated_output: Option<NoteOutputDto>,
 }
 
 #[derive(Deserialize)]
@@ -241,6 +499,53 @@ struct NoteReservationEscrowDto {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StandingNotePoolRegistrationDto {
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    #[serde(rename = "poolID")]
+    pool_id: String,
+    #[serde(rename = "venueID")]
+    venue_id: String,
+    #[serde(rename = "defmiID")]
+    defmi_id: String,
+    entity_commitment: String,
+    policy_digest: String,
+    mandate_digest: String,
+    #[serde(rename = "assetID")]
+    asset_id: String,
+    direction: u8,
+    maximum_amount_commitment: String,
+    #[serde(rename = "poolNoteID")]
+    pool_note_id: String,
+    delegation_digest: String,
+    committee_epoch: u64,
+    valid_until: u64,
+    spend: NoteSpendDto,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StandingNotePoolAllocationDto {
+    #[serde(rename = "poolID")]
+    pool_id: String,
+    delegation_digest: String,
+    committee_epoch: u64,
+    expected_pool_sequence: u64,
+    #[serde(rename = "previousPoolNoteID")]
+    previous_pool_note_id: String,
+    previous_amount_commitment: String,
+    escrow_note: NoteOutputDto,
+    remainder_note: NoteOutputDto,
+    #[serde(rename = "proofJobID")]
+    proof_job_id: String,
+    quote_proof_digest: String,
+    dvp_proof_digest: String,
+    remainder_range_proof_digest: String,
+    committee_signature: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProductNoteReleaseDto {
     transition: CreditTransitionDto,
     role: String,
@@ -254,6 +559,27 @@ struct ProductNoteReleaseDto {
     #[serde(rename = "escrowNoteID")]
     escrow_note_id: String,
     spend: NoteSpendDto,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProductNoteNoFillReleaseDto {
+    release: ProductNoteReleaseDto,
+    #[serde(rename = "venueID")]
+    venue_id: String,
+    #[serde(rename = "defmiID")]
+    defmi_id: String,
+    admission_epoch: u64,
+    admission_sequence: u64,
+    no_fill_evidence_digest: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MpcNoFillEvidenceDto {
+    signed_taker_mandate: String,
+    public_result_attestations: String,
+    fill_mask: u64,
 }
 
 #[derive(Deserialize)]
@@ -503,6 +829,7 @@ struct AdmissionBatchDto {
     slot: u64,
     batch_digest: String,
     order_digest: String,
+    first_sequence: Option<u64>,
     admission_digests: Vec<String>,
     expires_at: u64,
 }
@@ -658,10 +985,68 @@ pub(crate) fn execute(
         .as_object()
         .ok_or_else(|| "transaction parameters must be an object".to_string())?;
     match transaction.method.as_str() {
+        "defmivm.issueAethelProvider" => {
+            aethel::register_provider(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelStream" => {
+            aethel::register_stream(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelStreamTransition" => {
+            aethel::transition_stream(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelSeries" => {
+            aethel::register_series(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelCredentialIssuer" => {
+            aethel::register_credential_issuer(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelCredentialStatus" => {
+            aethel::publish_credential_status(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelCreditDecision" => {
+            aethel::record_credit_decision(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelGuarantee" => {
+            aethel::record_guarantee(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelFundingQuote" => {
+            aethel::record_funding_quote(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelReceivable" => {
+            aethel::issue_receivable(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelDefault" => {
+            aethel::record_default(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelGuaranteeClaim" => {
+            aethel::claim_guarantee(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelGuaranteeRelease" => {
+            aethel::release_guarantee(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelProviderKeyRotation" => {
+            aethel::rotate_provider_key(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueAethelProviderStatus" => {
+            aethel::set_provider_status(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueDeccpClearingBook" => {
+            deccp::open_clearing_book(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueDeccpMember" => deccp::admit_member(state, params, authorizer, timestamp),
+        "defmivm.issueDeccpGuaranteeFacility" => {
+            deccp::register_guarantee_facility(state, params, authorizer, timestamp)
+        }
         "defmivm.issueAsset" => register_asset(state, params, authorizer),
         "defmivm.issueCSDIssuer" => register_csd_issuer(state, params, authorizer, timestamp),
         "defmivm.issueCSDIssuerControl" => control_csd_issuer(state, params, authorizer),
         "defmivm.issueNote" => issue_note(state, params, authorizer, timestamp),
+        "defmivm.issueStandingNotePool" => {
+            register_standing_note_pool(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueStandingNotePoolAllocation" => {
+            allocate_standing_note_pool(state, params, authorizer, timestamp)
+        }
         "defmivm.issueNoteClaimMaterialization" => {
             materialize_note_claim(state, params, authorizer)
         }
@@ -684,12 +1069,18 @@ pub(crate) fn execute(
         "defmivm.issueNoteProductRelease" => {
             release_note_product(state, params, authorizer, timestamp)
         }
+        "defmivm.issueNoteProductNoFillRelease" => {
+            release_note_product_no_fill(state, params, authorizer, timestamp)
+        }
         "defmivm.issueProductSettlement" => settle_product(state, params, authorizer, timestamp),
         "defmivm.issueProductSettlementBatch" => {
             settle_product_batch(state, params, authorizer, timestamp)
         }
         "defmivm.issueNoteProductSettlement" => {
             settle_note_product(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueStandingPoolProductSettlement" => {
+            settle_standing_pool_product(state, params, authorizer, timestamp)
         }
         "defmivm.issueNoteProductSettlementBatch" => {
             settle_note_product_batch(state, params, authorizer, timestamp)
@@ -701,10 +1092,649 @@ pub(crate) fn execute(
         "defmivm.issueCreditControl" => control_credit(state, params, authorizer, timestamp),
         "defmivm.issueCreditAmendment" => amend_credit(state, params, authorizer, timestamp),
         "defmivm.issueSettlement" => settle(state, params, authorizer, timestamp),
+        "defmivm.issueCrossDomainDomain" => register_cross_domain_domain(state, params, authorizer),
+        "defmivm.issueCrossDomainCommittee" => {
+            register_cross_domain_committee(state, params, authorizer)
+        }
+        "defmivm.issueCrossDomainPrepare" => {
+            prepare_cross_domain(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueCrossDomainArm" => arm_cross_domain(state, params, timestamp),
+        "defmivm.issueCrossDomainClaim" => claim_cross_domain(state, params, authorizer, timestamp),
+        "defmivm.issueCrossDomainRefund" => {
+            refund_cross_domain(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueCrossDomainObserveClaim" => {
+            observe_cross_domain_claim(state, params, timestamp)
+        }
+        "defmivm.issueBojParticipant" => {
+            register_boj_participant(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueBojCollateralPledge" => {
+            pledge_boj_collateral(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueBojCollateralRevalue" => {
+            revalue_boj_collateral(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueBojIntradayReserve" => {
+            reserve_boj_intraday_liquidity(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueBojIntradayRelease" => {
+            release_boj_intraday_liquidity(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueBojCollateralReturn" => {
+            return_boj_collateral(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueBojFundsReceipt" => {
+            apply_boj_funds_receipt(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueBojOtherExposure" => {
+            update_boj_other_exposure(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueBojSimultaneousDvp" => {
+            settle_boj_simultaneous_dvp(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueBojEndOfDay" => close_boj_business_day(state, params, authorizer, timestamp),
+        "defmivm.issueBojOpenBusinessDay" => {
+            open_boj_business_day(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueParticipantRegistry" => {
+            participant::configure_registry(state, params, authorizer)
+        }
+        "defmivm.issueParticipant" => {
+            participant::register_participant(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueParticipantControl" => {
+            participant::control_participant(state, params, authorizer)
+        }
+        "defmivm.issueParticipantKeyRotation" => {
+            participant::rotate_participant_key(state, params, authorizer)
+        }
+        "defmivm.issueMpcService" => {
+            participant::register_mpc_service(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueParticipantAccountBinding" => {
+            participant::bind_account(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueParticipantServiceBinding" => {
+            participant::bind_service(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueStandingMandate" => {
+            participant::create_standing_mandate(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueStandingMandateControl" => {
+            participant::control_standing_mandate(state, params, authorizer)
+        }
+        "defmivm.issueMandateReservation" => {
+            participant::reserve_under_mandate(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueMandateReservationTransition" => {
+            participant::transition_mandate_reservation(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueParticipantProductReservation" => {
+            participant::reserve_product_with_mandate(state, params, authorizer, timestamp, false)
+        }
+        "defmivm.issueParticipantNoteProductReservation" => {
+            participant::reserve_product_with_mandate(state, params, authorizer, timestamp, true)
+        }
         method => Err(format!(
             "{method} has no Rust consensus executor in this build"
         )),
     }
+}
+
+fn cross_domain_from_dto(dto: CrossDomainDto, name: &str) -> Result<CrossDomain, String> {
+    Ok(CrossDomain {
+        network_id: dto.network_id,
+        chain_id: hex_array(&dto.chain_id, &format!("{name}.chainID"))?,
+        defmi_id: hex_array(&dto.defmi_id, &format!("{name}.defmiID"))?,
+    })
+}
+
+fn cross_domain_prepare_from_dto(
+    dto: CrossDomainPrepareDto,
+) -> Result<CrossDomainPrepareLeg, String> {
+    let prepare = CrossDomainPrepareLeg {
+        local_domain: cross_domain_from_dto(dto.local_domain, "prepare.localDomain")?,
+        remote_domain: cross_domain_from_dto(dto.remote_domain, "prepare.remoteDomain")?,
+        local_leg_id: hex_array(&dto.local_leg_id, "prepare.localLegID")?,
+        expected_remote_prepare_binding: hex_array(
+            &dto.expected_remote_prepare_binding,
+            "prepare.expectedRemotePrepareBinding",
+        )?,
+        expected_remote_claim_binding: hex_array(
+            &dto.expected_remote_claim_binding,
+            "prepare.expectedRemoteClaimBinding",
+        )?,
+        owner_commitment: hex_array(&dto.owner_commitment, "prepare.ownerCommitment")?,
+        escrow_commitment: hex_array(&dto.escrow_commitment, "prepare.escrowCommitment")?,
+        destination_commitment: hex_array(
+            &dto.destination_commitment,
+            "prepare.destinationCommitment",
+        )?,
+        asset_commitment: hex_array(&dto.asset_commitment, "prepare.assetCommitment")?,
+        amount_commitment: hex_array(&dto.amount_commitment, "prepare.amountCommitment")?,
+        local_instruction_digest: hex_array(
+            &dto.local_instruction_digest,
+            "prepare.localInstructionDigest",
+        )?,
+        local_relation_proof_digest: hex_array(
+            &dto.local_relation_proof_digest,
+            "prepare.localRelationProofDigest",
+        )?,
+        reserve_transfer_digest: hex_array(
+            &dto.reserve_transfer_digest,
+            "prepare.reserveTransferDigest",
+        )?,
+        claim_transfer_digest: hex_array(
+            &dto.claim_transfer_digest,
+            "prepare.claimTransferDigest",
+        )?,
+        refund_transfer_digest: hex_array(
+            &dto.refund_transfer_digest,
+            "prepare.refundTransferDigest",
+        )?,
+        arm_deadline: dto.arm_deadline,
+        claim_deadline: dto.claim_deadline,
+        refund_after: dto.refund_after,
+        release_condition: hex_array(&dto.release_condition, "prepare.releaseCondition")?,
+    };
+    prepare.validate().map_err(|error| error.to_string())?;
+    Ok(prepare)
+}
+
+fn cross_domain_committee_from_dto(
+    dto: CrossDomainCommitteeDto,
+) -> Result<CrossDomainCommittee, String> {
+    if dto.members.len() > 128 {
+        return Err("cross-domain committee contains too many members".into());
+    }
+    let mut member_ids = BTreeSet::new();
+    let mut members = Vec::new();
+    for member in dto.members {
+        let member_id = hex_array(&member.member_id, "committee.members.memberID")?;
+        let record = CrossDomainCommitteeMember {
+            member_id,
+            public_key: hex_array(&member.public_key, "committee.members.publicKey")?,
+            weight: member.weight,
+        };
+        if !member_ids.insert(member_id) {
+            return Err("cross-domain committee repeats a member".into());
+        }
+        members.push(record);
+    }
+    members.sort_by_key(|member| member.member_id);
+    let committee = CrossDomainCommittee {
+        domain: cross_domain_from_dto(dto.domain, "committee.domain")?,
+        epoch: dto.epoch,
+        quorum_weight: dto.quorum_weight,
+        members,
+    };
+    committee.validate().map_err(|error| error.to_string())?;
+    Ok(committee)
+}
+
+fn cross_domain_receipt_from_dto(dto: CrossDomainReceiptDto) -> Result<FinalityReceipt, String> {
+    if dto.signatures.len() > 128 {
+        return Err("cross-domain receipt contains too many signatures".into());
+    }
+    Ok(FinalityReceipt {
+        source_domain: cross_domain_from_dto(dto.source_domain, "receipt.sourceDomain")?,
+        destination_domain: cross_domain_from_dto(
+            dto.destination_domain,
+            "receipt.destinationDomain",
+        )?,
+        destination_leg_id: hex_array(&dto.destination_leg_id, "receipt.destinationLegID")?,
+        event_binding: hex_array(&dto.event_binding, "receipt.eventBinding")?,
+        event: match dto.event.as_str() {
+            "prepared" => ReceiptEvent::Prepared,
+            "claimed" => ReceiptEvent::Claimed,
+            _ => return Err("cross-domain receipt event is not supported".into()),
+        },
+        source_state_root: hex_array(&dto.source_state_root, "receipt.sourceStateRoot")?,
+        source_block_id: hex_array(&dto.source_block_id, "receipt.sourceBlockID")?,
+        source_height: dto.source_height,
+        finalised_at: dto.finalised_at,
+        validator_epoch: dto.validator_epoch,
+        signatures: dto
+            .signatures
+            .into_iter()
+            .map(|signed| {
+                Ok(ReceiptSignature {
+                    member_id: hex_array(&signed.member_id, "receipt.signatures.memberID")?,
+                    signature: hex::decode(&signed.signature)
+                        .map_err(|_| "receipt signature is not hex".to_string())?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+    })
+}
+
+fn settlement_order_from_dto(dto: SettlementDto, name: &str) -> Result<SettlementOrder, String> {
+    let order = SettlementOrder {
+        operation_id: hex_array(&dto.operation_id, &format!("{name}.operationID"))?,
+        nullifier: hex_array(&dto.nullifier, &format!("{name}.nullifier"))?,
+        deadline: dto.deadline,
+        payment_instruction_digest: hex_array(
+            &dto.payment_instruction_digest,
+            &format!("{name}.paymentInstructionDigest"),
+        )?,
+        proof_digest: hex_array(&dto.proof_digest, &format!("{name}.proofDigest"))?,
+        market_statement_digest: hex_array(
+            &dto.market_statement_digest,
+            &format!("{name}.marketStatementDigest"),
+        )?,
+        legs: dto
+            .legs
+            .into_iter()
+            .map(|leg| {
+                Ok(StateLeg {
+                    handle: hex_array(&leg.handle, &format!("{name}.legs.handle"))?,
+                    asset_id: hex_array(&leg.asset_id, &format!("{name}.legs.assetID"))?,
+                    before_commitment: hex_array(
+                        &leg.before_commitment,
+                        &format!("{name}.legs.beforeCommitment"),
+                    )?,
+                    after_commitment: hex_array(
+                        &leg.after_commitment,
+                        &format!("{name}.legs.afterCommitment"),
+                    )?,
+                    before_sequence: leg.before_sequence,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+    };
+    order.body()?;
+    Ok(order)
+}
+
+fn cross_domain_statement(
+    action: &[u8],
+    local_leg_id: &[u8; 32],
+    primary: &[u8; 32],
+    secondary: &[u8; 32],
+) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"QOMM:DEFMI:CROSS-DOMAIN-ACTION:v1");
+    hash.update((action.len() as u64).to_be_bytes());
+    hash.update(action);
+    hash.update(local_leg_id);
+    hash.update(primary);
+    hash.update(secondary);
+    hash.finalize().into()
+}
+
+fn cross_domain_configuration_statement(kind: &[u8], encoded: &[u8]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"QOMM:DEFMI:CROSS-DOMAIN-CONFIG:v1");
+    hash.update((kind.len() as u64).to_be_bytes());
+    hash.update(kind);
+    hash.update((encoded.len() as u64).to_be_bytes());
+    hash.update(encoded);
+    hash.finalize().into()
+}
+
+fn register_cross_domain_domain(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["domain", "approval", "expectedBeforeRoot"])?;
+    if state.cross_domain_local_domain.is_some() {
+        return Err("cross-domain local domain is immutable once configured".into());
+    }
+    let dto: CrossDomainDto = field(params, "domain")?;
+    let domain = cross_domain_from_dto(dto, "domain")?;
+    if domain.chain_id == ZERO || domain.defmi_id == ZERO {
+        return Err("cross-domain local domain contains a zero identifier".into());
+    }
+    let encoded = serde_json::to_vec(&domain).map_err(|error| error.to_string())?;
+    let statement = cross_domain_configuration_statement(b"local-domain", &encoded);
+    authorize(state, params, statement, authorizer)?;
+    state.cross_domain_local_domain = Some(domain);
+    Ok(statement)
+}
+
+fn register_cross_domain_committee(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["committee", "approval", "expectedBeforeRoot"])?;
+    let dto: CrossDomainCommitteeDto = field(params, "committee")?;
+    let committee = cross_domain_committee_from_dto(dto)?;
+    let local = state
+        .cross_domain_local_domain
+        .as_ref()
+        .ok_or_else(|| "cross-domain local domain is not configured".to_string())?;
+    if &committee.domain == local {
+        return Err("remote committee cannot be registered as the local domain".into());
+    }
+    let encoded = serde_json::to_vec(&committee).map_err(|error| error.to_string())?;
+    let statement = cross_domain_configuration_statement(b"remote-committee", &encoded);
+    authorize(state, params, statement, authorizer)?;
+    let key = cross_domain_committee_key(&committee.domain.id(), committee.epoch);
+    if state.cross_domain_committees.contains_key(&key) {
+        return Err("cross-domain committee epoch is already registered".into());
+    }
+    state.cross_domain_committees.insert(key, committee);
+    Ok(statement)
+}
+
+fn ensure_cross_domain_order(
+    prepare: &CrossDomainPrepareLeg,
+    order: &SettlementOrder,
+    action: &[u8],
+) -> Result<[u8; 32], String> {
+    let (expected_statement, expected_handles, expected_deadline) = match action {
+        b"prepare" => (
+            prepare.reserve_transfer_digest,
+            [prepare.owner_commitment, prepare.escrow_commitment],
+            prepare.arm_deadline,
+        ),
+        b"claim" => (
+            prepare.claim_transfer_digest,
+            [prepare.escrow_commitment, prepare.destination_commitment],
+            prepare.claim_deadline,
+        ),
+        b"refund" => (
+            prepare.refund_transfer_digest,
+            [prepare.escrow_commitment, prepare.owner_commitment],
+            prepare.refund_after,
+        ),
+        _ => return Err("unknown cross-domain transfer action".into()),
+    };
+    let statement = order.statement()?;
+    if statement != expected_statement
+        || order.payment_instruction_digest != prepare.local_instruction_digest
+        || order.proof_digest != prepare.local_relation_proof_digest
+        || order.legs.len() != 2
+    {
+        return Err("cross-domain transfer differs from its private zkPI projection".into());
+    }
+    if action == b"refund" {
+        if order.deadline < expected_deadline {
+            return Err("cross-domain refund order expires before refund becomes available".into());
+        }
+    } else if action == b"claim" {
+        if order.deadline < expected_deadline {
+            return Err("cross-domain claim order expires before its release target".into());
+        }
+    } else if order.deadline != expected_deadline {
+        return Err("cross-domain transfer deadline differs from its prepared deadline".into());
+    }
+    let asset_id = order.legs[0].asset_id;
+    if order.legs[1].asset_id != asset_id
+        || asset_id_commitment(&asset_id) != prepare.asset_commitment
+    {
+        return Err("cross-domain transfer is on the wrong asset rail".into());
+    }
+    let actual_handles = order
+        .legs
+        .iter()
+        .map(|leg| handle_commitment(&leg.handle))
+        .collect::<BTreeSet<_>>();
+    if actual_handles != expected_handles.into_iter().collect() {
+        return Err("cross-domain transfer uses the wrong source, escrow, or destination".into());
+    }
+    Ok(statement)
+}
+
+fn validate_local_settlement(
+    state: &State,
+    order: &SettlementOrder,
+    timestamp: u64,
+) -> Result<(), String> {
+    if timestamp > order.deadline {
+        return Err("cross-domain settlement order has expired".into());
+    }
+    if state.operations.contains_key(&id_key(&order.operation_id)) {
+        return Err("cross-domain settlement operation was already used".into());
+    }
+    if state.nullifiers.contains_key(&id_key(&order.nullifier)) {
+        return Err("cross-domain settlement nullifier was already used".into());
+    }
+    for leg in &order.legs {
+        let account = state
+            .accounts
+            .get(&id_key(&leg.handle))
+            .ok_or_else(|| "cross-domain settlement names an unknown account".to_string())?;
+        if account.asset_id != leg.asset_id
+            || account.commitment != leg.before_commitment
+            || account.sequence != leg.before_sequence
+        {
+            return Err("cross-domain settlement was proved against stale account state".into());
+        }
+        if !state
+            .assets
+            .get(&id_key(&leg.asset_id))
+            .is_some_and(|asset| asset.active)
+        {
+            return Err("cross-domain settlement uses an inactive or unknown asset".into());
+        }
+        account
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| "account sequence overflow".to_string())?;
+    }
+    Ok(())
+}
+
+fn apply_local_settlement(state: &mut State, order: &SettlementOrder, statement: [u8; 32]) {
+    state.nullifiers.insert(
+        id_key(&order.nullifier),
+        NullifierRecord {
+            deadline: order.deadline,
+            statement,
+        },
+    );
+    for leg in &order.legs {
+        let account = state
+            .accounts
+            .get_mut(&id_key(&leg.handle))
+            .expect("cross-domain account was validated");
+        account.commitment = leg.after_commitment;
+        account.sequence += 1;
+    }
+    state
+        .operations
+        .insert(id_key(&order.operation_id), statement);
+}
+
+fn prepare_cross_domain(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(
+        params,
+        &["prepare", "reserveOrder", "approval", "expectedBeforeRoot"],
+    )?;
+    let prepare = cross_domain_prepare_from_dto(field(params, "prepare")?)?;
+    if state.cross_domain_local_domain.as_ref() != Some(&prepare.local_domain) {
+        return Err("cross-domain prepare names the wrong local DeFMI".into());
+    }
+    if !state
+        .cross_domain_committees
+        .values()
+        .any(|committee| committee.domain == prepare.remote_domain)
+    {
+        return Err("cross-domain prepare has no registered remote finality committee".into());
+    }
+    let order = settlement_order_from_dto(field(params, "reserveOrder")?, "reserveOrder")?;
+    let transfer_statement = ensure_cross_domain_order(&prepare, &order, b"prepare")?;
+    validate_local_settlement(state, &order, timestamp)?;
+    let statement = cross_domain_statement(
+        b"prepare",
+        &prepare.local_leg_id,
+        &prepare.digest(),
+        &transfer_statement,
+    );
+    authorize(state, params, statement, authorizer)?;
+    state
+        .cross_domain
+        .prepare(prepare, timestamp)
+        .map_err(|error| error.to_string())?;
+    apply_local_settlement(state, &order, transfer_statement);
+    Ok(statement)
+}
+
+fn remote_committee<'a>(
+    state: &'a State,
+    receipt: &FinalityReceipt,
+) -> Result<&'a CrossDomainCommittee, String> {
+    state
+        .cross_domain_committees
+        .get(&cross_domain_committee_key(
+            &receipt.source_domain.id(),
+            receipt.validator_epoch,
+        ))
+        .ok_or_else(|| "cross-domain receipt uses an unregistered committee epoch".to_string())
+}
+
+fn arm_cross_domain(
+    state: &mut State,
+    params: &Map<String, Value>,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["localLegID", "remoteReceipt"])?;
+    let local_leg_id = hex_array(
+        params
+            .get("localLegID")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "localLegID must be hex".to_string())?,
+        "localLegID",
+    )?;
+    let receipt = cross_domain_receipt_from_dto(field(params, "remoteReceipt")?)?;
+    let committee = remote_committee(state, &receipt)?.clone();
+    state
+        .cross_domain
+        .arm(local_leg_id, &receipt, &committee, timestamp)
+        .map_err(|error| error.to_string())
+}
+
+fn claim_cross_domain(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(
+        params,
+        &[
+            "localLegID",
+            "releaseWitness",
+            "claimOrder",
+            "approval",
+            "expectedBeforeRoot",
+        ],
+    )?;
+    let local_leg_id = hex_array(
+        params
+            .get("localLegID")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "localLegID must be hex".to_string())?,
+        "localLegID",
+    )?;
+    let witness = hex::decode(
+        params
+            .get("releaseWitness")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "releaseWitness must be hex".to_string())?,
+    )
+    .map_err(|_| "releaseWitness is not hex".to_string())?;
+    let prepare = state
+        .cross_domain
+        .legs
+        .get(&local_leg_id)
+        .ok_or_else(|| "unknown cross-domain leg".to_string())?
+        .prepare
+        .clone();
+    let order = settlement_order_from_dto(field(params, "claimOrder")?, "claimOrder")?;
+    let transfer_statement = ensure_cross_domain_order(&prepare, &order, b"claim")?;
+    validate_local_settlement(state, &order, timestamp)?;
+    let statement = cross_domain_statement(
+        b"claim",
+        &local_leg_id,
+        &transfer_statement,
+        &prepare.local_instruction_digest,
+    );
+    authorize(state, params, statement, authorizer)?;
+    state
+        .cross_domain
+        .claim(local_leg_id, &witness, timestamp)
+        .map_err(|error| error.to_string())?;
+    apply_local_settlement(state, &order, transfer_statement);
+    Ok(statement)
+}
+
+fn refund_cross_domain(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(
+        params,
+        &[
+            "localLegID",
+            "refundOrder",
+            "approval",
+            "expectedBeforeRoot",
+        ],
+    )?;
+    let local_leg_id = hex_array(
+        params
+            .get("localLegID")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "localLegID must be hex".to_string())?,
+        "localLegID",
+    )?;
+    let prepare = state
+        .cross_domain
+        .legs
+        .get(&local_leg_id)
+        .ok_or_else(|| "unknown cross-domain leg".to_string())?
+        .prepare
+        .clone();
+    let order = settlement_order_from_dto(field(params, "refundOrder")?, "refundOrder")?;
+    let transfer_statement = ensure_cross_domain_order(&prepare, &order, b"refund")?;
+    validate_local_settlement(state, &order, timestamp)?;
+    let statement = cross_domain_statement(
+        b"refund",
+        &local_leg_id,
+        &transfer_statement,
+        &prepare.local_instruction_digest,
+    );
+    authorize(state, params, statement, authorizer)?;
+    state
+        .cross_domain
+        .refund(local_leg_id, timestamp)
+        .map_err(|error| error.to_string())?;
+    apply_local_settlement(state, &order, transfer_statement);
+    Ok(statement)
+}
+
+fn observe_cross_domain_claim(
+    state: &mut State,
+    params: &Map<String, Value>,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["localLegID", "remoteReceipt"])?;
+    let local_leg_id = hex_array(
+        params
+            .get("localLegID")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "localLegID must be hex".to_string())?,
+        "localLegID",
+    )?;
+    let receipt = cross_domain_receipt_from_dto(field(params, "remoteReceipt")?)?;
+    let committee = remote_committee(state, &receipt)?.clone();
+    state
+        .cross_domain
+        .observe_remote_claim(local_leg_id, &receipt, &committee, timestamp)
+        .map_err(|error| error.to_string())
 }
 
 fn csd_issuer_from_dto(dto: CsdIssuerDto) -> Result<CsdIssuerDefinition, String> {
@@ -809,6 +1839,10 @@ fn note_order_from_dto(dto: NoteSettlementDto) -> Result<NoteSettlementOrder, St
             .enumerate()
             .map(|(index, spend)| note_spend_from_dto(spend, &format!("order.spends[{index}]")))
             .collect::<Result<Vec<_>, _>>()?,
+        consolidated_output: dto
+            .consolidated_output
+            .map(|output| note_output_from_dto(output, "order.consolidatedOutput"))
+            .transpose()?,
     };
     order.body()?;
     Ok(order)
@@ -1115,6 +2149,432 @@ fn issue_note(
     Ok(statement)
 }
 
+fn register_standing_note_pool(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["registration", "approval", "expectedBeforeRoot"])?;
+    let dto: StandingNotePoolRegistrationDto = field(params, "registration")?;
+    let registration = StandingNotePoolRegistration {
+        operation_id: hex_array(&dto.operation_id, "registration.operationID")?,
+        pool_id: hex_array(&dto.pool_id, "registration.poolID")?,
+        venue_id: hex_array(&dto.venue_id, "registration.venueID")?,
+        defmi_id: hex_array(&dto.defmi_id, "registration.defmiID")?,
+        entity_commitment: hex_array(&dto.entity_commitment, "registration.entityCommitment")?,
+        policy_digest: hex_array(&dto.policy_digest, "registration.policyDigest")?,
+        mandate_digest: hex_array(&dto.mandate_digest, "registration.mandateDigest")?,
+        asset_id: hex_array(&dto.asset_id, "registration.assetID")?,
+        direction: dto.direction,
+        maximum_amount_commitment: hex_array(
+            &dto.maximum_amount_commitment,
+            "registration.maximumAmountCommitment",
+        )?,
+        pool_note_id: hex_array(&dto.pool_note_id, "registration.poolNoteID")?,
+        delegation_digest: hex_array(&dto.delegation_digest, "registration.delegationDigest")?,
+        committee_epoch: dto.committee_epoch,
+        valid_until: dto.valid_until,
+        spend: note_spend_from_dto(dto.spend, "registration.spend")?,
+    };
+    registration.body()?;
+    let statement = registration.statement()?;
+    authorize(state, params, statement, authorizer)?;
+    if timestamp == 0 || timestamp > registration.valid_until {
+        return Err("standing note pool registration is expired".into());
+    }
+    let operation_key = id_key(&registration.operation_id);
+    let pool_key = id_key(&registration.pool_id);
+    if state.operations.contains_key(&operation_key)
+        || state.standing_note_pools.contains_key(&pool_key)
+    {
+        return Err("standing note pool operation or identity was already used".into());
+    }
+    let verifier = state
+        .settlement_verifiers
+        .get(&id_key(&settlement_verifier_key(
+            registration.venue_id,
+            registration.committee_epoch,
+        )))
+        .ok_or_else(|| "standing note pool has no registered proof committee".to_string())?;
+    if verifier.defmi_id != registration.defmi_id
+        || timestamp < verifier.valid_from
+        || timestamp > verifier.valid_until
+        || registration.valid_until > verifier.valid_until
+    {
+        return Err("standing note pool is outside its proof committee epoch".into());
+    }
+    check_note_spend(state, &registration.spend, None, true)?;
+    apply_note_spend(
+        state,
+        &registration.spend,
+        registration.valid_until,
+        statement,
+    )?;
+    state.standing_note_pools.insert(
+        pool_key,
+        StandingNotePoolRecord {
+            venue_id: registration.venue_id,
+            defmi_id: registration.defmi_id,
+            entity_commitment: registration.entity_commitment,
+            policy_digest: registration.policy_digest,
+            mandate_digest: registration.mandate_digest,
+            asset_id: registration.asset_id,
+            direction: registration.direction,
+            maximum_amount_commitment: registration.maximum_amount_commitment,
+            current_pool_note_id: registration.pool_note_id,
+            delegation_digest: registration.delegation_digest,
+            committee_epoch: registration.committee_epoch,
+            valid_until: registration.valid_until,
+            sequence: 0,
+            status: "active".into(),
+            statement,
+        },
+    );
+    state.operations.insert(operation_key, statement);
+    Ok(statement)
+}
+
+fn standing_note_pool_allocation_from_params(
+    params: &Map<String, Value>,
+) -> Result<
+    (
+        CreditFacilityTransition,
+        ReservationAuthorization,
+        StandingNotePoolAllocation,
+    ),
+    String,
+> {
+    let transition = credit_transition_from_dto(field(params, "transition")?, "transition")?;
+    let authorization =
+        reservation_authorization_from_dto(field(params, "authorization")?, "authorization")?;
+    let dto: StandingNotePoolAllocationDto = field(params, "allocation")?;
+    let committee_signature = hex::decode(&dto.committee_signature)
+        .map_err(|_| "allocation.committeeSignature is not hexadecimal".to_string())?;
+    if committee_signature.is_empty() || committee_signature.len() > 512 {
+        return Err("allocation committee signature is outside its bound".into());
+    }
+    let allocation = StandingNotePoolAllocation {
+        pool_id: hex_array(&dto.pool_id, "allocation.poolID")?,
+        delegation_digest: hex_array(&dto.delegation_digest, "allocation.delegationDigest")?,
+        committee_epoch: dto.committee_epoch,
+        expected_pool_sequence: dto.expected_pool_sequence,
+        previous_pool_note_id: hex_array(
+            &dto.previous_pool_note_id,
+            "allocation.previousPoolNoteID",
+        )?,
+        previous_amount_commitment: hex_array(
+            &dto.previous_amount_commitment,
+            "allocation.previousAmountCommitment",
+        )?,
+        escrow_note: note_output_from_dto(dto.escrow_note, "allocation.escrowNote")?,
+        remainder_note: note_output_from_dto(dto.remainder_note, "allocation.remainderNote")?,
+        proof_job_id: hex_array(&dto.proof_job_id, "allocation.proofJobID")?,
+        quote_proof_digest: hex_array(&dto.quote_proof_digest, "allocation.quoteProofDigest")?,
+        dvp_proof_digest: hex_array(&dto.dvp_proof_digest, "allocation.dvpProofDigest")?,
+        remainder_range_proof_digest: hex_array(
+            &dto.remainder_range_proof_digest,
+            "allocation.remainderRangeProofDigest",
+        )?,
+        committee_signature,
+    };
+    Ok((transition, authorization, allocation))
+}
+
+fn allocate_standing_note_pool(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(
+        params,
+        &[
+            "transition",
+            "authorization",
+            "allocation",
+            "approval",
+            "expectedBeforeRoot",
+        ],
+    )?;
+    let (transition, authorization, allocation) =
+        standing_note_pool_allocation_from_params(params)?;
+    allocation.body(&transition, &authorization)?;
+    if allocation.statement(&transition, &authorization)? != authorization.escrow_digest {
+        return Err("standing allocation differs from the signed reservation".into());
+    }
+    authorization.body(&transition)?;
+    let statement = authorization.statement(&transition)?;
+    authorize(state, params, statement, authorizer)?;
+
+    let operation_key = id_key(&transition.operation_id);
+    let hold_key = id_key(&transition.hold_id);
+    if state.operations.contains_key(&operation_key)
+        || state.reservation_bindings.contains_key(&hold_key)
+        || state.note_reservations.contains_key(&hold_key)
+        || state.credit_holds.contains_key(&hold_key)
+        || state
+            .reservation_bindings
+            .values()
+            .any(|binding| binding.reserve_nullifier == authorization.reserve_nullifier)
+    {
+        return Err("standing allocation operation, hold, or nullifier was already used".into());
+    }
+
+    let pool_key = id_key(&allocation.pool_id);
+    let mut pool = state
+        .standing_note_pools
+        .get(&pool_key)
+        .cloned()
+        .ok_or_else(|| "standing allocation names an unknown parent pool".to_string())?;
+    if pool.status != "active"
+        || pool.delegation_digest != allocation.delegation_digest
+        || pool.committee_epoch != allocation.committee_epoch
+        || pool.sequence != allocation.expected_pool_sequence
+        || pool.current_pool_note_id != allocation.previous_pool_note_id
+        || pool.entity_commitment != authorization.entity_commitment
+        || pool.policy_digest != authorization.authorization_digest
+        || pool.mandate_digest != authorization.mandate_digest
+        || pool.asset_id != authorization.asset_id
+        || pool.direction != authorization.direction
+        || timestamp > pool.valid_until
+        || transition.expires_at > pool.valid_until
+    {
+        return Err("standing allocation is stale or outside its Maker mandate".into());
+    }
+    let previous = state
+        .notes
+        .get(&id_key(&pool.current_pool_note_id))
+        .ok_or_else(|| "standing allocation parent note is absent".to_string())?;
+    if previous.asset_id != pool.asset_id
+        || previous.lock_id != allocation.pool_id
+        || previous.value_commitment != allocation.previous_amount_commitment
+    {
+        return Err("standing allocation parent note differs from consensus state".into());
+    }
+    let verifier = state
+        .settlement_verifiers
+        .get(&id_key(&settlement_verifier_key(
+            pool.venue_id,
+            pool.committee_epoch,
+        )))
+        .ok_or_else(|| "standing allocation has no proof committee".to_string())?;
+    if verifier.defmi_id != pool.defmi_id
+        || timestamp < verifier.valid_from
+        || timestamp > verifier.valid_until
+    {
+        return Err("standing allocation proof committee is outside its epoch".into());
+    }
+    let public = frost::keys::PublicKeyPackage::deserialize(&verifier.frost_public_package)
+        .map_err(|_| "standing allocation FROST package is invalid".to_string())?;
+    allocation.verify_committee_signature(&transition, &authorization, &public)?;
+
+    let facility_key = id_key(&transition.facility_id);
+    let mut facility = state
+        .credit_facilities
+        .get(&facility_key)
+        .cloned()
+        .ok_or_else(|| "standing allocation names an unknown facility".to_string())?;
+    if facility.beneficiary_commitment != authorization.entity_commitment
+        || facility.rail_asset_id != authorization.asset_id
+        || facility.sequence != transition.before_sequence
+        || facility.available_commitment != transition.before_available_commitment
+        || facility.held_commitment != transition.before_held_commitment
+        || facility.outstanding_commitment != transition.before_outstanding_commitment
+        || transition.kind != CreditTransitionKind::Hold
+        || facility.status != "active"
+        || timestamp < facility.valid_from
+        || timestamp > facility.valid_until
+        || transition.expires_at < timestamp
+        || transition.expires_at > facility.valid_until
+        || transition.before_outstanding_commitment != transition.after_outstanding_commitment
+    {
+        return Err("standing allocation cannot create a valid facility hold".into());
+    }
+    let point = |encoded: [u8; 32], name: &str| {
+        CompressedRistretto(encoded)
+            .decompress()
+            .ok_or_else(|| format!("standing allocation {name} is not a canonical commitment"))
+    };
+    let before_available = point(
+        transition.before_available_commitment,
+        "before-available balance",
+    )?;
+    let after_available = point(
+        transition.after_available_commitment,
+        "after-available balance",
+    )?;
+    let before_held = point(transition.before_held_commitment, "before-held balance")?;
+    let after_held = point(transition.after_held_commitment, "after-held balance")?;
+    let amount = point(transition.amount_commitment, "hold amount")?;
+    if before_available != after_available + amount || after_held != before_held + amount {
+        return Err("standing allocation does not conserve its credit facility".into());
+    }
+
+    insert_note(state, &allocation.escrow_note)?;
+    insert_note(state, &allocation.remainder_note)?;
+    facility.available_commitment = transition.after_available_commitment;
+    facility.held_commitment = transition.after_held_commitment;
+    facility.outstanding_commitment = transition.after_outstanding_commitment;
+    facility.sequence = facility
+        .sequence
+        .checked_add(1)
+        .ok_or_else(|| "credit facility sequence overflow".to_string())?;
+    state.credit_facilities.insert(facility_key, facility);
+    state.credit_holds.insert(
+        hold_key.clone(),
+        CreditHoldRecord {
+            facility_id: transition.facility_id,
+            query_commitment: transition.query_commitment,
+            amount_commitment: transition.amount_commitment,
+            expires_at: transition.expires_at,
+            status: "active".into(),
+            settlement_digest: ZERO,
+            created_sequence: transition.before_sequence + 1,
+            updated_sequence: transition.before_sequence + 1,
+        },
+    );
+    state.reservation_bindings.insert(
+        hold_key.clone(),
+        ReservationBindingRecord {
+            role: authorization.role.as_str().into(),
+            entity_commitment: authorization.entity_commitment,
+            asset_id: authorization.asset_id,
+            direction: authorization.direction,
+            authorization_digest: authorization.authorization_digest,
+            mandate_digest: authorization.mandate_digest,
+            typed_reserve_digest: authorization.typed_reserve_digest,
+            reserve_nullifier: authorization.reserve_nullifier,
+            asset_link_proof_digest: authorization.asset_link_proof_digest,
+            limit_price_commitment: authorization.limit_price_commitment,
+            rfq_nullifier: authorization.rfq_nullifier,
+            policy_version: authorization.policy_version,
+            admission_ticket_id: authorization.admission_ticket_id,
+            admission_slot: authorization.admission_slot,
+            admission_receipt_digest: authorization.admission_receipt_digest,
+            admission_epoch: authorization.admission_epoch,
+            admission_sequence: authorization.admission_sequence,
+            admission_batch_id: authorization.admission_batch_id,
+            receipt_digest: statement,
+        },
+    );
+    state.note_reservations.insert(
+        hold_key,
+        NoteReservationRecord {
+            escrow_note_id: allocation.escrow_note.note_id,
+            asset_id: allocation.escrow_note.asset_id,
+            amount_commitment: transition.amount_commitment,
+            proof_digest: allocation.dvp_proof_digest,
+            delegation_digest: allocation.delegation_digest,
+            status: "active".into(),
+            settlement_digest: ZERO,
+        },
+    );
+    pool.current_pool_note_id = allocation.remainder_note.note_id;
+    pool.sequence = pool
+        .sequence
+        .checked_add(1)
+        .ok_or_else(|| "standing note pool sequence overflow".to_string())?;
+    state.standing_note_pools.insert(pool_key, pool);
+    state
+        .operations
+        .insert(operation_key, transition.statement()?);
+    Ok(statement)
+}
+
+/// Verify an allocation against the current canonical root and return the
+/// exact intermediate state that an atomic settlement must bind, without
+/// committing any mutation.
+pub(crate) fn preview_standing_note_pool_allocation(
+    state: &State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<Value, String> {
+    require_keys(
+        params,
+        &[
+            "transition",
+            "authorization",
+            "allocation",
+            "approval",
+            "expectedBeforeRoot",
+        ],
+    )?;
+    let (transition, _authorization, allocation) =
+        standing_note_pool_allocation_from_params(params)?;
+    let before_root = state.root();
+    let mut candidate = state.clone();
+    let statement = allocate_standing_note_pool(&mut candidate, params, authorizer, timestamp)?;
+    let after_root = candidate.root();
+    let pool = candidate
+        .standing_note_pools
+        .get(&id_key(&allocation.pool_id))
+        .ok_or_else(|| "preview lost the standing note pool".to_string())?;
+    let hold_key = id_key(&transition.hold_id);
+    let reservation = candidate
+        .note_reservations
+        .get(&hold_key)
+        .ok_or_else(|| "preview lost the Maker note reservation".to_string())?;
+    let binding = candidate
+        .reservation_bindings
+        .get(&hold_key)
+        .ok_or_else(|| "preview lost the Maker reservation binding".to_string())?;
+    let hold = candidate
+        .credit_holds
+        .get(&hold_key)
+        .ok_or_else(|| "preview lost the Maker credit hold".to_string())?;
+    let facility = candidate
+        .credit_facilities
+        .get(&id_key(&transition.facility_id))
+        .ok_or_else(|| "preview lost the Maker credit facility".to_string())?;
+    Ok(serde_json::json!({
+        "beforeStateRoot": hex::encode(before_root),
+        "afterStateRoot": hex::encode(after_root),
+        "statement": hex::encode(statement),
+        "pool": {
+            "poolID": hex::encode(allocation.pool_id),
+            "currentPoolNoteID": hex::encode(pool.current_pool_note_id),
+            "sequence": pool.sequence,
+        },
+        "reservation": {
+            "holdID": hex::encode(transition.hold_id),
+            "escrowNoteID": hex::encode(reservation.escrow_note_id),
+            "assetID": hex::encode(reservation.asset_id),
+            "amountCommitment": hex::encode(reservation.amount_commitment),
+            "proofDigest": hex::encode(reservation.proof_digest),
+            "delegationDigest": hex::encode(reservation.delegation_digest),
+            "reserveReceiptDigest": hex::encode(binding.receipt_digest),
+            "status": reservation.status,
+        },
+        "hold": {
+            "holdID": hex::encode(transition.hold_id),
+            "facilityID": hex::encode(hold.facility_id),
+            "queryCommitment": hex::encode(hold.query_commitment),
+            "amountCommitment": hex::encode(hold.amount_commitment),
+            "expiresAt": hold.expires_at,
+            "status": hold.status,
+        },
+        "facility": {
+            "facilityID": hex::encode(transition.facility_id),
+            "guarantorID": hex::encode(facility.guarantor_id),
+            "beneficiaryCommitment": hex::encode(facility.beneficiary_commitment),
+            "railAssetID": hex::encode(facility.rail_asset_id),
+            "capCommitment": hex::encode(facility.cap_commitment),
+            "availableCommitment": hex::encode(facility.available_commitment),
+            "heldCommitment": hex::encode(facility.held_commitment),
+            "outstandingCommitment": hex::encode(facility.outstanding_commitment),
+            "overlimitCommitment": hex::encode(facility.overlimit_commitment),
+            "collateralCommitment": hex::encode(facility.collateral_commitment),
+            "riskPolicyDigest": hex::encode(facility.risk_policy_digest),
+            "validFrom": facility.valid_from,
+            "validUntil": facility.valid_until,
+            "status": facility.status,
+            "sequence": facility.sequence,
+        },
+    }))
+}
+
 fn materialize_note_claim(
     state: &mut State,
     params: &Map<String, Value>,
@@ -1221,6 +2681,19 @@ fn apply_note_spend(
     deadline: u64,
     statement: [u8; 32],
 ) -> Result<(), String> {
+    apply_note_spend_serial(state, spend, deadline, statement)?;
+    for output in &spend.outputs {
+        insert_note(state, output)?;
+    }
+    Ok(())
+}
+
+fn apply_note_spend_serial(
+    state: &mut State,
+    spend: &NoteSpend,
+    deadline: u64,
+    statement: [u8; 32],
+) -> Result<(), String> {
     let serial_key = id_key(&spend.serial_point);
     if state.note_serials.contains_key(&serial_key) {
         return Err("note serial was already settled".into());
@@ -1234,9 +2707,6 @@ fn apply_note_spend(
             statement,
         },
     );
-    for output in &spend.outputs {
-        insert_note(state, output)?;
-    }
     Ok(())
 }
 
@@ -1268,6 +2738,13 @@ fn settle_notes(
             return Err("ordinary note settlement cannot create a reservation lock".into());
         }
     }
+    if order
+        .consolidated_output
+        .as_ref()
+        .is_some_and(|output| state.notes.contains_key(&id_key(&output.note_id)))
+    {
+        return Err("note consolidation reuses an existing output".into());
+    }
     state.nullifiers.insert(
         id_key(&order.nullifier),
         NullifierRecord {
@@ -1278,8 +2755,15 @@ fn settle_notes(
     state
         .operations
         .insert(id_key(&order.operation_id), statement);
-    for spend in &order.spends {
-        apply_note_spend(state, spend, order.deadline, statement)?;
+    if let Some(output) = &order.consolidated_output {
+        for spend in &order.spends {
+            apply_note_spend_serial(state, spend, order.deadline, statement)?;
+        }
+        insert_note(state, output)?;
+    } else {
+        for spend in &order.spends {
+            apply_note_spend(state, spend, order.deadline, statement)?;
+        }
     }
     Ok(statement)
 }
@@ -1313,12 +2797,23 @@ fn register_admission_committee(
     if timestamp < plan.valid_from || timestamp > plan.valid_until {
         return Err("admission committee is not currently valid".into());
     }
+    let key = admission_committee_key(&plan.venue_id, plan.epoch);
+    if let Some(existing) = state.admission_committees.get(&key) {
+        let exact_retry = existing.venue_id == plan.venue_id
+            && existing.epoch == plan.epoch
+            && existing.node_keys == plan.node_keys
+            && existing.valid_from == plan.valid_from
+            && existing.valid_until == plan.valid_until
+            && existing.statement == statement
+            && state.operations.get(&id_key(&plan.operation_id)) == Some(&statement);
+        return if exact_retry {
+            Ok(statement)
+        } else {
+            Err("admission committee venue and epoch were reused".into())
+        };
+    }
     if state.operations.contains_key(&id_key(&plan.operation_id)) {
         return Err("operation identifier was already used".into());
-    }
-    let key = admission_committee_key(&plan.venue_id, plan.epoch);
-    if state.admission_committees.contains_key(&key) {
-        return Err("admission committee venue and epoch were reused".into());
     }
     state.admission_committees.insert(
         key,
@@ -1413,6 +2908,7 @@ fn register_admission_batch(
         slot: dto.slot,
         batch_digest: hex_array(&dto.batch_digest, "plan.batchDigest")?,
         order_digest: hex_array(&dto.order_digest, "plan.orderDigest")?,
+        first_sequence: dto.first_sequence.unwrap_or(1),
         admission_digests: dto
             .admission_digests
             .iter()
@@ -1426,13 +2922,63 @@ fn register_admission_batch(
     if timestamp > plan.expires_at {
         return Err("admission batch has expired".into());
     }
-    if state.operations.contains_key(&id_key(&plan.operation_id)) {
+    let batch_key = id_key(&plan.batch_id);
+    let exact_retry = if let Some(existing) = state.admission_batches.get(&batch_key) {
+        let entries_match = plan
+            .admission_digests
+            .iter()
+            .enumerate()
+            .all(|(index, digest)| {
+                let sequence = plan.first_sequence + index as u64;
+                state
+                    .admission_entries
+                    .get(&admission_entry_key(&plan.batch_id, sequence))
+                    .is_some_and(|entry| entry.admission_digest == *digest)
+            });
+        let exact_retry = existing.venue_id == plan.venue_id
+            && existing.epoch == plan.epoch
+            && existing.slot == plan.slot
+            && existing.batch_digest == plan.batch_digest
+            && existing.order_digest == plan.order_digest
+            && existing.population == plan.admission_digests.len() as u64
+            && existing.expires_at == plan.expires_at
+            && existing.statement == statement
+            && entries_match
+            && state.operations.get(&id_key(&plan.operation_id)) == Some(&statement);
+        if !exact_retry {
+            return Err("admission batch identifier or scope was reused".into());
+        }
+        true
+    } else {
+        false
+    };
+    if !exact_retry && state.operations.contains_key(&id_key(&plan.operation_id)) {
         return Err("operation identifier was already used".into());
     }
-    if state
-        .admission_batches
-        .contains_key(&id_key(&plan.batch_id))
-        || state.admission_batches.values().any(|batch| {
+    if !exact_retry {
+        let last_sequence = state
+            .admission_entries
+            .values()
+            .filter(|entry| {
+                state
+                    .admission_batches
+                    .get(&id_key(&entry.batch_id))
+                    .is_some_and(|batch| {
+                        batch.venue_id == plan.venue_id && batch.epoch == plan.epoch
+                    })
+            })
+            .map(|entry| entry.sequence)
+            .max()
+            .unwrap_or(0);
+        let next_sequence = last_sequence
+            .checked_add(1)
+            .ok_or_else(|| "admission sequence overflowed".to_string())?;
+        if plan.first_sequence != next_sequence {
+            return Err("admission batch is not the next venue sequence".into());
+        }
+    }
+    if !exact_retry
+        && state.admission_batches.values().any(|batch| {
             batch.venue_id == plan.venue_id
                 && batch.epoch == plan.epoch
                 && batch.slot == plan.slot
@@ -1493,7 +3039,7 @@ fn register_admission_batch(
         .collect::<Result<Vec<_>, _>>()?;
     certified.sort_by_key(|lane| lane.sequence);
     if certified.iter().enumerate().any(|(index, lane)| {
-        lane.sequence != index as u64 + 1
+        lane.sequence != plan.first_sequence + index as u64
             || lane.slot != plan.slot
             || lane.cluster_digest != plan.batch_digest
             || lane.order_digest != plan.order_digest
@@ -1502,8 +3048,11 @@ fn register_admission_batch(
     }) {
         return Err("admission batch differs from its seven-node certified population".into());
     }
+    if exact_retry {
+        return Ok(statement);
+    }
     state.admission_batches.insert(
-        id_key(&plan.batch_id),
+        batch_key,
         AdmissionBatchRecord {
             venue_id: plan.venue_id,
             epoch: plan.epoch,
@@ -1517,7 +3066,7 @@ fn register_admission_batch(
         },
     );
     for (index, admission_digest) in plan.admission_digests.into_iter().enumerate() {
-        let sequence = index as u64 + 1;
+        let sequence = plan.first_sequence + index as u64;
         state.admission_entries.insert(
             admission_entry_key(&plan.batch_id, sequence),
             AdmissionEntryRecord {
@@ -1566,7 +3115,9 @@ fn advance_admission(
     if timestamp > batch.expires_at {
         return Err("admission batch has expired".into());
     }
-    if advance.sequence != batch.consumed + 1 || advance.sequence > batch.population {
+    let (next_sequence, last_sequence) =
+        admission_batch_sequence_window(state, &advance.batch_id, &batch)?;
+    if advance.sequence != next_sequence || advance.sequence > last_sequence {
         return Err("admission lane is not the next fixed-population sequence".into());
     }
     let entry = state
@@ -1577,12 +3128,45 @@ fn advance_admission(
         return Err("admission lane differs from the plan or was already consumed".into());
     }
     entry.consumed_by = advance.operation_id;
-    batch.consumed = advance.sequence;
+    batch.consumed = batch
+        .consumed
+        .checked_add(1)
+        .ok_or_else(|| "admission cursor overflowed".to_string())?;
     state.admission_batches.insert(batch_key, batch);
     state
         .operations
         .insert(id_key(&advance.operation_id), statement);
     Ok(statement)
+}
+
+fn admission_batch_sequence_window(
+    state: &State,
+    batch_id: &[u8; 32],
+    batch: &AdmissionBatchRecord,
+) -> Result<(u64, u64), String> {
+    let mut sequences = state
+        .admission_entries
+        .values()
+        .filter(|entry| entry.batch_id == *batch_id)
+        .map(|entry| entry.sequence)
+        .collect::<Vec<_>>();
+    sequences.sort_unstable();
+    if sequences.len() != batch.population as usize || sequences.is_empty() {
+        return Err("admission batch population and entries disagree".into());
+    }
+    let first = sequences[0];
+    if sequences
+        .iter()
+        .enumerate()
+        .any(|(index, sequence)| *sequence != first + index as u64)
+    {
+        return Err("admission batch entries are not a contiguous sequence".into());
+    }
+    let last = *sequences.last().expect("non-empty admission sequence");
+    let next = first
+        .checked_add(batch.consumed)
+        .ok_or_else(|| "admission sequence overflowed".to_string())?;
+    Ok((next, last))
 }
 
 fn credit_transition_from_dto(
@@ -1898,9 +3482,11 @@ fn reserve_product(
             order_digest: batch.order_digest,
         }
         .digest(batch.venue_id, batch.epoch)?;
+        let (next_sequence, last_sequence) =
+            admission_batch_sequence_window(state, &authorization.admission_batch_id, &batch)?;
         if expected != authorization.admission_receipt_digest
-            || authorization.admission_sequence != batch.consumed + 1
-            || authorization.admission_sequence > batch.population
+            || authorization.admission_sequence != next_sequence
+            || authorization.admission_sequence > last_sequence
         {
             return Err("Taker mandate is not the next certified admission claim".into());
         }
@@ -1995,7 +3581,10 @@ fn reserve_product(
             .get_mut(&entry_key)
             .expect("admission entry was validated")
             .consumed_by = transition.operation_id;
-        batch.consumed = authorization.admission_sequence;
+        batch.consumed = batch
+            .consumed
+            .checked_add(1)
+            .ok_or_else(|| "admission cursor overflowed".to_string())?;
         state.admission_batches.insert(batch_key, batch);
     }
     state
@@ -2125,9 +3714,11 @@ fn reserve_note_product(
             order_digest: batch.order_digest,
         }
         .digest(batch.venue_id, batch.epoch)?;
+        let (next_sequence, last_sequence) =
+            admission_batch_sequence_window(state, &authorization.admission_batch_id, &batch)?;
         if expected != authorization.admission_receipt_digest
-            || authorization.admission_sequence != batch.consumed + 1
-            || authorization.admission_sequence > batch.population
+            || authorization.admission_sequence != next_sequence
+            || authorization.admission_sequence > last_sequence
         {
             return Err("Taker mandate is not the next certified admission claim".into());
         }
@@ -2211,7 +3802,10 @@ fn reserve_note_product(
             .get_mut(&entry_key)
             .expect("admission entry was validated")
             .consumed_by = transition.operation_id;
-        batch.consumed = authorization.admission_sequence;
+        batch.consumed = batch
+            .consumed
+            .checked_add(1)
+            .ok_or_else(|| "admission cursor overflowed".to_string())?;
         state.admission_batches.insert(batch_key, batch);
     }
     state
@@ -2400,47 +3994,73 @@ fn release_product(
     state
         .operations
         .insert(id_key(&transition.operation_id), statement);
+    release_linked_participant_reservation(
+        state,
+        order.reserve_receipt_digest,
+        transition.amount_commitment,
+        order.asset_id,
+        order.role,
+        statement,
+        timestamp,
+    )?;
     Ok(statement)
 }
 
-fn release_note_product(
-    state: &mut State,
-    params: &Map<String, Value>,
-    authorizer: &QuorumAuthorizer,
-    timestamp: u64,
-) -> Result<[u8; 32], String> {
-    require_keys(params, &["order", "approval", "expectedBeforeRoot"])?;
-    let dto: ProductNoteReleaseDto = field(params, "order")?;
+fn product_note_release_from_dto(
+    dto: ProductNoteReleaseDto,
+    field_name: &str,
+) -> Result<ProductNoteReleaseOrder, String> {
     let order = ProductNoteReleaseOrder {
-        transition: credit_transition_from_dto(dto.transition, "order.transition")?,
+        transition: credit_transition_from_dto(
+            dto.transition,
+            &format!("{field_name}.transition"),
+        )?,
         role: match dto.role.as_str() {
             "maker" => ReservationRole::Maker,
             "taker" => ReservationRole::Taker,
-            _ => return Err("order.role is not supported".into()),
+            _ => return Err(format!("{field_name}.role is not supported")),
         },
         reserve_receipt_digest: hex_array(
             &dto.reserve_receipt_digest,
-            "order.reserveReceiptDigest",
+            &format!("{field_name}.reserveReceiptDigest"),
         )?,
         typed_instruction_digest: hex_array(
             &dto.typed_instruction_digest,
-            "order.typedInstructionDigest",
+            &format!("{field_name}.typedInstructionDigest"),
         )?,
-        release_nullifier: hex_array(&dto.release_nullifier, "order.releaseNullifier")?,
+        release_nullifier: hex_array(
+            &dto.release_nullifier,
+            &format!("{field_name}.releaseNullifier"),
+        )?,
         release_deadline: dto.release_deadline,
-        asset_id: hex_array(&dto.asset_id, "order.assetID")?,
+        asset_id: hex_array(&dto.asset_id, &format!("{field_name}.assetID"))?,
         asset_link_proof_digest: hex_array(
             &dto.asset_link_proof_digest,
-            "order.assetLinkProofDigest",
+            &format!("{field_name}.assetLinkProofDigest"),
         )?,
-        escrow_note_id: hex_array(&dto.escrow_note_id, "order.escrowNoteID")?,
-        spend: note_spend_from_dto(dto.spend, "order.spend")?,
+        escrow_note_id: hex_array(&dto.escrow_note_id, &format!("{field_name}.escrowNoteID"))?,
+        spend: note_spend_from_dto(dto.spend, &format!("{field_name}.spend"))?,
     };
     order.body()?;
-    let statement = order.statement()?;
-    authorize(state, params, statement, authorizer)?;
-    if timestamp <= order.transition.expires_at || timestamp > order.release_deadline {
-        return Err("anonymous reservation is not yet releasable or release has expired".into());
+    Ok(order)
+}
+
+fn apply_note_product_release(
+    state: &mut State,
+    order: ProductNoteReleaseOrder,
+    statement: [u8; 32],
+    timestamp: u64,
+    certified_no_fill: bool,
+) -> Result<[u8; 32], String> {
+    if timestamp > order.release_deadline
+        || (!certified_no_fill && timestamp <= order.transition.expires_at)
+        || (certified_no_fill && timestamp > order.transition.expires_at)
+    {
+        return Err(if certified_no_fill {
+            "certified no-fill release is late or has expired".into()
+        } else {
+            "anonymous reservation is not yet releasable or release has expired".into()
+        });
     }
     if state
         .nullifiers
@@ -2482,9 +4102,32 @@ fn release_note_product(
     let transition = &order.transition;
     if transition.kind != CreditTransitionKind::Release
         || transition.settlement_digest != ZERO
+        || transition.consumed_commitment != ZERO
+        || transition.refund_commitment != ZERO
+        || transition.after_held_commitment != ZERO
         || transition.before_outstanding_commitment != transition.after_outstanding_commitment
     {
-        return Err("anonymous release is not a pure expired-hold refund".into());
+        return Err("anonymous release is not a pure hold refund".into());
+    }
+    let before_available = settlement_point(
+        transition.before_available_commitment,
+        "release before-available balance",
+    )?;
+    let after_available = settlement_point(
+        transition.after_available_commitment,
+        "release after-available balance",
+    )?;
+    let before_held = settlement_point(
+        transition.before_held_commitment,
+        "release before-held balance",
+    )?;
+    let after_held = settlement_point(
+        transition.after_held_commitment,
+        "release after-held balance",
+    )?;
+    let amount = settlement_point(transition.amount_commitment, "release amount")?;
+    if after_available != before_available + amount || before_held != after_held + amount {
+        return Err("anonymous release does not conserve the facility balance".into());
     }
     let facility_key = id_key(&transition.facility_id);
     let mut facility = state
@@ -2554,7 +4197,228 @@ fn release_note_product(
     state
         .operations
         .insert(id_key(&transition.operation_id), statement);
+    release_linked_participant_reservation(
+        state,
+        order.reserve_receipt_digest,
+        transition.amount_commitment,
+        order.asset_id,
+        order.role,
+        statement,
+        timestamp,
+    )?;
     Ok(statement)
+}
+
+fn release_note_product(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["order", "approval", "expectedBeforeRoot"])?;
+    let dto: ProductNoteReleaseDto = field(params, "order")?;
+    let order = product_note_release_from_dto(dto, "order")?;
+    let statement = order.statement()?;
+    authorize(state, params, statement, authorizer)?;
+    apply_note_product_release(state, order, statement, timestamp, false)
+}
+
+fn release_note_product_no_fill(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(
+        params,
+        &["order", "evidence", "approval", "expectedBeforeRoot"],
+    )?;
+    let dto: ProductNoteNoFillReleaseDto = field(params, "order")?;
+    let release = product_note_release_from_dto(dto.release, "order.release")?;
+    let order = ProductNoteNoFillReleaseOrder {
+        release,
+        venue_id: hex_array(&dto.venue_id, "order.venueID")?,
+        defmi_id: hex_array(&dto.defmi_id, "order.defmiID")?,
+        admission_epoch: dto.admission_epoch,
+        admission_sequence: dto.admission_sequence,
+        no_fill_evidence_digest: hex_array(
+            &dto.no_fill_evidence_digest,
+            "order.noFillEvidenceDigest",
+        )?,
+    };
+    order.body()?;
+    let evidence_dto: MpcNoFillEvidenceDto = field(params, "evidence")?;
+    let evidence = MpcNoFillEvidence {
+        signed_taker_mandate: BASE64
+            .decode(evidence_dto.signed_taker_mandate)
+            .map_err(|_| "evidence.signedTakerMandate is not base64".to_string())?,
+        public_result_attestations: BASE64
+            .decode(evidence_dto.public_result_attestations)
+            .map_err(|_| "evidence.publicResultAttestations is not base64".to_string())?,
+        fill_mask: evidence_dto.fill_mask,
+    };
+    evidence.validate_encoding()?;
+    if evidence.digest()? != order.no_fill_evidence_digest {
+        return Err("no-fill release carries another evidence bundle".into());
+    }
+    let statement = order.statement()?;
+    authorize(state, params, statement, authorizer)?;
+
+    let transition = &order.release.transition;
+    let hold_key = id_key(&transition.hold_id);
+    let binding = state
+        .reservation_bindings
+        .get(&hold_key)
+        .ok_or_else(|| "no-fill release names an unknown Taker reservation".to_string())?;
+    if binding.role != ReservationRole::Taker.as_str()
+        || binding.policy_version != 0
+        || binding.admission_epoch != order.admission_epoch
+        || binding.admission_sequence != order.admission_sequence
+    {
+        return Err("no-fill release differs from the admitted Taker reservation".into());
+    }
+    let mandate = evidence.mandate()?;
+    mandate.verify_signature_at(timestamp)?;
+    let mandate_digest = mandate.digest()?;
+    let expected_direction = match mandate.direction {
+        qomm_transport::mandate::Direction::TakerBuys => 1,
+        qomm_transport::mandate::Direction::TakerSells => 2,
+    };
+    if mandate_digest != binding.mandate_digest
+        || mandate_digest != binding.authorization_digest
+        || mandate.reserve_id != transition.hold_id
+        || mandate.rfq_nullifier != binding.rfq_nullifier
+        || mandate.asset_id == ZERO
+        || mandate.reserve_asset_id != order.release.asset_id
+        || mandate.reserve_asset_id != binding.asset_id
+        || mandate.maximum_amount_commitment != transition.amount_commitment
+        || mandate.limit_price_commitment != binding.limit_price_commitment
+        || mandate.entity_commitment != binding.entity_commitment
+        || mandate.admission_ticket_id != binding.admission_ticket_id
+        || mandate.admission_slot != binding.admission_slot
+        || mandate.venue_id != order.venue_id
+        || mandate.defmi_id != order.defmi_id
+        || expected_direction != binding.direction
+        || !mandate.auto_settle
+    {
+        return Err("no-fill evidence is not the pre-signed reserved RFQ".into());
+    }
+    if state
+        .rfq_nullifiers
+        .contains_key(&id_key(&mandate.rfq_nullifier))
+    {
+        return Err("RFQ nullifier was already settled or released".into());
+    }
+    let admission_batch = state
+        .admission_batches
+        .get(&id_key(&binding.admission_batch_id))
+        .ok_or_else(|| "no-fill result has no registered admission batch".to_string())?;
+    if admission_batch.venue_id != order.venue_id
+        || admission_batch.epoch != order.admission_epoch
+        || admission_batch.slot != binding.admission_slot
+        || timestamp > admission_batch.expires_at
+    {
+        return Err("no-fill result differs from or outlived its admission batch".into());
+    }
+    let committee = state
+        .admission_committees
+        .get(&admission_committee_key(
+            &admission_batch.venue_id,
+            admission_batch.epoch,
+        ))
+        .ok_or_else(|| "no-fill result has no governance-pinned resident committee".to_string())?;
+    if timestamp < committee.valid_from || timestamp > committee.valid_until {
+        return Err("resident committee was not valid at no-fill release time".into());
+    }
+    let trusted_keys = committee
+        .node_keys
+        .iter()
+        .map(|value| {
+            VerifyingKey::from_bytes(value)
+                .map_err(|_| "stored resident result key is invalid".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let attestations = evidence.attestations()?;
+    let result =
+        verify_public_result_lane(&attestations, &trusted_keys, admission_batch.order_digest)?;
+    if result.slot != admission_batch.slot
+        || result.sequence != order.admission_sequence
+        || result.cluster_digest != admission_batch.batch_digest
+        || result
+            .masked_fill
+            .checked_sub(i128::from(evidence.fill_mask))
+            != Some(0)
+    {
+        return Err("resident committee did not certify zero fills for this RFQ lane".into());
+    }
+
+    let rfq_nullifier = mandate.rfq_nullifier;
+    apply_note_product_release(state, order.release, statement, timestamp, true)?;
+    state
+        .rfq_nullifiers
+        .insert(id_key(&rfq_nullifier), statement);
+    Ok(statement)
+}
+
+fn participant_mandate_role(role: ReservationRole) -> qomm_defmi::participant::MandateRole {
+    match role {
+        ReservationRole::Maker => qomm_defmi::participant::MandateRole::Maker,
+        ReservationRole::Taker => qomm_defmi::participant::MandateRole::Taker,
+    }
+}
+
+fn release_linked_participant_reservation(
+    state: &mut State,
+    reserve_receipt_digest: [u8; 32],
+    amount_commitment: [u8; 32],
+    asset_id: [u8; 32],
+    role: ReservationRole,
+    release_proof_digest: [u8; 32],
+    timestamp: u64,
+) -> Result<(), String> {
+    state
+        .participant_registry
+        .release_linked_reservation(
+            qomm_defmi::participant::AutomaticReservationEvidence {
+                underlying_reservation_digest: reserve_receipt_digest,
+                amount_commitment,
+                asset_id,
+                role: participant_mandate_role(role),
+                settlement_digest: ZERO,
+                transition_proof_digest: release_proof_digest,
+            },
+            timestamp,
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn consume_linked_participant_reservations(
+    state: &mut State,
+    reservations: &[ReservationConsumption],
+    settlement_digest: [u8; 32],
+    dvp_proof_digest: [u8; 32],
+    timestamp: u64,
+) -> Result<(), String> {
+    for consumption in reservations {
+        let binding = state
+            .reservation_bindings
+            .get(&id_key(&consumption.transition.hold_id))
+            .ok_or_else(|| "settled reservation binding disappeared".to_string())?;
+        let evidence = qomm_defmi::participant::AutomaticReservationEvidence {
+            underlying_reservation_digest: consumption.reserve_receipt_digest,
+            amount_commitment: consumption.transition.amount_commitment,
+            asset_id: binding.asset_id,
+            role: participant_mandate_role(consumption.role),
+            settlement_digest,
+            transition_proof_digest: dvp_proof_digest,
+        };
+        state
+            .participant_registry
+            .consume_linked_reservation(evidence, timestamp)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 struct PreparedProductReservation {
@@ -2930,6 +4794,13 @@ fn apply_product_settlement(
     state
         .operations
         .insert(id_key(&order.settlement.operation_id), statement);
+    consume_linked_participant_reservations(
+        state,
+        &order.reservations,
+        statement,
+        order.dvp_proof_digest,
+        timestamp,
+    )?;
     Ok(statement)
 }
 
@@ -3449,6 +5320,13 @@ fn apply_note_product_settlement(
             );
         }
     }
+    consume_linked_participant_reservations(
+        state,
+        &order.reservations,
+        statement,
+        order.dvp_proof_digest,
+        timestamp,
+    )?;
     Ok(statement)
 }
 
@@ -3468,6 +5346,66 @@ fn settle_note_product(
     authorize(state, params, statement, authorizer)?;
     verify_product_settlement_evidence(state, &evidence, &order, timestamp)?;
     apply_note_product_settlement(state, order, timestamp)
+}
+
+/// Atomically split the winning Maker's standing covenant and consume both
+/// Maker and Taker reservations in one consensus transaction.  All mutations
+/// happen on a candidate clone so a malformed proof, stale sequence, or
+/// concurrent root change leaves the canonical state byte-for-byte untouched.
+fn settle_standing_pool_product(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(
+        params,
+        &[
+            "allocationTransition",
+            "allocationAuthorization",
+            "allocation",
+            "allocationApproval",
+            "order",
+            "evidence",
+            "approval",
+            "expectedBeforeRoot",
+        ],
+    )?;
+    let allocation_params = Map::from_iter([
+        (
+            "transition".to_string(),
+            params["allocationTransition"].clone(),
+        ),
+        (
+            "authorization".to_string(),
+            params["allocationAuthorization"].clone(),
+        ),
+        ("allocation".to_string(), params["allocation"].clone()),
+        ("approval".to_string(), params["allocationApproval"].clone()),
+        (
+            "expectedBeforeRoot".to_string(),
+            params["expectedBeforeRoot"].clone(),
+        ),
+    ]);
+    let (allocation_transition, allocation_authorization, allocation) =
+        standing_note_pool_allocation_from_params(&allocation_params)?;
+    let order = product_note_order_from_dto(field(params, "order")?, "order")?;
+    let evidence = product_settlement_evidence_from_dto(field(params, "evidence")?, "evidence")?;
+    let statement = standing_pool_product_settlement_statement(
+        &allocation_transition,
+        &allocation_authorization,
+        &allocation,
+        &order,
+        evidence.digest()?,
+    )?;
+    authorize(state, params, statement, authorizer)?;
+
+    let mut candidate = state.clone();
+    allocate_standing_note_pool(&mut candidate, &allocation_params, authorizer, timestamp)?;
+    verify_product_settlement_evidence(&candidate, &evidence, &order, timestamp)?;
+    apply_note_product_settlement(&mut candidate, order, timestamp)?;
+    *state = candidate;
+    Ok(statement)
 }
 
 fn settlement_verifier_for<'a>(
@@ -3951,6 +5889,310 @@ fn open_account(
     Ok(statement)
 }
 
+fn register_boj_participant(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["request", "approval", "expectedBeforeRoot"])?;
+    let dto: BojParticipantDto = field(params, "request")?;
+    let request = RegisterParticipant {
+        operation_id: hex_array(&dto.operation_id, "request.operationID")?,
+        participant: BojParticipant {
+            legal_entity_id: hex_array(&dto.legal_entity_id, "request.legalEntityID")?,
+            funds_account_id: hex_array(&dto.funds_account_id, "request.fundsAccountID")?,
+            jgb_account_id: hex_array(&dto.jgb_account_id, "request.jgbAccountID")?,
+            current_account_balance_yen: dto.current_account_balance_yen,
+            other_secured_exposure_yen: dto.other_secured_exposure_yen,
+            intraday_overdraft_yen: 0,
+            business_day: dto.business_day,
+            repayment_deadline: dto.repayment_deadline,
+            business_day_closed: false,
+            sequence: 0,
+            status: ParticipantStatus::Active,
+        },
+    };
+    let statement = boj_operation_statement(b"register-participant", &request)?;
+    authorize(state, params, statement, authorizer)?;
+    state
+        .boj_liquidity
+        .register_participant(request, timestamp)
+        .map_err(|error| error.to_string())?;
+    Ok(statement)
+}
+
+fn pledge_boj_collateral(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["request", "approval", "expectedBeforeRoot"])?;
+    let dto: BojCollateralPledgeDto = field(params, "request")?;
+    let request = PledgeCollateral {
+        operation_id: hex_array(&dto.operation_id, "request.operationID")?,
+        expected_participant_sequence: dto.expected_participant_sequence,
+        lot: JgbCollateralLot {
+            lot_id: hex_array(&dto.lot_id, "request.lotID")?,
+            asset_id: hex_array(&dto.asset_id, "request.assetID")?,
+            owner_legal_entity_id: hex_array(
+                &dto.owner_legal_entity_id,
+                "request.ownerLegalEntityID",
+            )?,
+            face_value_yen: dto.face_value_yen,
+            market_price_per_100_micros: dto.market_price_per_100_micros,
+            index_ratio_ppm: dto.index_ratio_ppm,
+            valuation_rate_bps: dto.valuation_rate_bps,
+            valuation_epoch: dto.valuation_epoch,
+            pledged: true,
+            sequence: 0,
+        },
+    };
+    let statement = boj_operation_statement(b"pledge-collateral", &request)?;
+    authorize(state, params, statement, authorizer)?;
+    state
+        .boj_liquidity
+        .pledge_collateral(request, timestamp)
+        .map_err(|error| error.to_string())?;
+    Ok(statement)
+}
+
+fn revalue_boj_collateral(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["request", "approval", "expectedBeforeRoot"])?;
+    let dto: BojCollateralRevalueDto = field(params, "request")?;
+    let request = RevalueCollateral {
+        operation_id: hex_array(&dto.operation_id, "request.operationID")?,
+        lot_id: hex_array(&dto.lot_id, "request.lotID")?,
+        expected_lot_sequence: dto.expected_lot_sequence,
+        expected_participant_sequence: dto.expected_participant_sequence,
+        market_price_per_100_micros: dto.market_price_per_100_micros,
+        index_ratio_ppm: dto.index_ratio_ppm,
+        valuation_rate_bps: dto.valuation_rate_bps,
+        valuation_epoch: dto.valuation_epoch,
+    };
+    let statement = boj_operation_statement(b"revalue-collateral", &request)?;
+    authorize(state, params, statement, authorizer)?;
+    state
+        .boj_liquidity
+        .revalue_collateral(request, timestamp)
+        .map_err(|error| error.to_string())?;
+    Ok(statement)
+}
+
+fn reserve_boj_intraday_liquidity(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["request", "approval", "expectedBeforeRoot"])?;
+    let dto: BojIntradayReserveDto = field(params, "request")?;
+    let request = ReserveIntradayLiquidity {
+        operation_id: hex_array(&dto.operation_id, "request.operationID")?,
+        reservation_id: hex_array(&dto.reservation_id, "request.reservationID")?,
+        legal_entity_id: hex_array(&dto.legal_entity_id, "request.legalEntityID")?,
+        instruction_commitment: hex_array(
+            &dto.instruction_commitment,
+            "request.instructionCommitment",
+        )?,
+        expected_participant_sequence: dto.expected_participant_sequence,
+        amount_yen: dto.amount_yen,
+        expires_at: dto.expires_at,
+    };
+    let statement = boj_operation_statement(b"reserve-intraday-liquidity", &request)?;
+    authorize(state, params, statement, authorizer)?;
+    state
+        .boj_liquidity
+        .reserve_intraday_liquidity(request, timestamp)
+        .map_err(|error| error.to_string())?;
+    Ok(statement)
+}
+
+fn release_boj_intraday_liquidity(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["request", "approval", "expectedBeforeRoot"])?;
+    let dto: BojIntradayReleaseDto = field(params, "request")?;
+    let request = ReleaseIntradayLiquidity {
+        operation_id: hex_array(&dto.operation_id, "request.operationID")?,
+        reservation_id: hex_array(&dto.reservation_id, "request.reservationID")?,
+        legal_entity_id: hex_array(&dto.legal_entity_id, "request.legalEntityID")?,
+        expected_participant_sequence: dto.expected_participant_sequence,
+    };
+    let statement = boj_operation_statement(b"release-intraday-liquidity", &request)?;
+    authorize(state, params, statement, authorizer)?;
+    state
+        .boj_liquidity
+        .release_intraday_liquidity(request, timestamp)
+        .map_err(|error| error.to_string())?;
+    Ok(statement)
+}
+
+fn return_boj_collateral(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["request", "approval", "expectedBeforeRoot"])?;
+    let dto: BojCollateralReturnDto = field(params, "request")?;
+    let request = ReturnCollateral {
+        operation_id: hex_array(&dto.operation_id, "request.operationID")?,
+        lot_id: hex_array(&dto.lot_id, "request.lotID")?,
+        expected_lot_sequence: dto.expected_lot_sequence,
+        expected_participant_sequence: dto.expected_participant_sequence,
+    };
+    let statement = boj_operation_statement(b"return-collateral", &request)?;
+    authorize(state, params, statement, authorizer)?;
+    state
+        .boj_liquidity
+        .return_collateral(request, timestamp)
+        .map_err(|error| error.to_string())?;
+    Ok(statement)
+}
+
+fn apply_boj_funds_receipt(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["request", "approval", "expectedBeforeRoot"])?;
+    let dto: BojFundsReceiptDto = field(params, "request")?;
+    let request = ApplyFundsReceipt {
+        operation_id: hex_array(&dto.operation_id, "request.operationID")?,
+        receipt_id: hex_array(&dto.receipt_id, "request.receiptID")?,
+        legal_entity_id: hex_array(&dto.legal_entity_id, "request.legalEntityID")?,
+        expected_participant_sequence: dto.expected_participant_sequence,
+        amount_yen: dto.amount_yen,
+    };
+    let statement = boj_operation_statement(b"apply-funds-receipt", &request)?;
+    authorize(state, params, statement, authorizer)?;
+    state
+        .boj_liquidity
+        .apply_funds_receipt(request, timestamp)
+        .map_err(|error| error.to_string())?;
+    Ok(statement)
+}
+
+fn update_boj_other_exposure(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["request", "approval", "expectedBeforeRoot"])?;
+    let dto: BojOtherExposureDto = field(params, "request")?;
+    let request = UpdateOtherSecuredExposure {
+        operation_id: hex_array(&dto.operation_id, "request.operationID")?,
+        legal_entity_id: hex_array(&dto.legal_entity_id, "request.legalEntityID")?,
+        expected_participant_sequence: dto.expected_participant_sequence,
+        new_exposure_yen: dto.new_exposure_yen,
+    };
+    let statement = boj_operation_statement(b"update-other-secured-exposure", &request)?;
+    authorize(state, params, statement, authorizer)?;
+    state
+        .boj_liquidity
+        .update_other_secured_exposure(request, timestamp)
+        .map_err(|error| error.to_string())?;
+    Ok(statement)
+}
+
+fn settle_boj_simultaneous_dvp(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["request", "approval", "expectedBeforeRoot"])?;
+    let dto: BojSimultaneousDvpDto = field(params, "request")?;
+    let request = SimultaneousCollateralDvp {
+        operation_id: hex_array(&dto.operation_id, "request.operationID")?,
+        settlement_id: hex_array(&dto.settlement_id, "request.settlementID")?,
+        instruction_commitment: hex_array(
+            &dto.instruction_commitment,
+            "request.instructionCommitment",
+        )?,
+        buyer_legal_entity_id: hex_array(&dto.buyer_legal_entity_id, "request.buyerLegalEntityID")?,
+        seller_legal_entity_id: hex_array(
+            &dto.seller_legal_entity_id,
+            "request.sellerLegalEntityID",
+        )?,
+        lot_id: hex_array(&dto.lot_id, "request.lotID")?,
+        payment_yen: dto.payment_yen,
+        buyer_pledges_on_receipt: dto.buyer_pledges_on_receipt,
+        overdraft_reservation_id: hex_array(
+            &dto.overdraft_reservation_id,
+            "request.overdraftReservationID",
+        )?,
+        expected_buyer_sequence: dto.expected_buyer_sequence,
+        expected_seller_sequence: dto.expected_seller_sequence,
+        expected_lot_sequence: dto.expected_lot_sequence,
+    };
+    let statement = boj_operation_statement(b"simultaneous-collateral-dvp", &request)?;
+    authorize(state, params, statement, authorizer)?;
+    state
+        .boj_liquidity
+        .settle_simultaneous_collateral_dvp(request, timestamp)
+        .map_err(|error| error.to_string())?;
+    Ok(statement)
+}
+
+fn close_boj_business_day(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["request", "approval", "expectedBeforeRoot"])?;
+    let dto: BojEndOfDayDto = field(params, "request")?;
+    let request = EndBusinessDay {
+        operation_id: hex_array(&dto.operation_id, "request.operationID")?,
+        legal_entity_id: hex_array(&dto.legal_entity_id, "request.legalEntityID")?,
+        expected_participant_sequence: dto.expected_participant_sequence,
+    };
+    let statement = boj_operation_statement(b"end-business-day", &request)?;
+    authorize(state, params, statement, authorizer)?;
+    state
+        .boj_liquidity
+        .end_business_day(request, timestamp)
+        .map_err(|error| error.to_string())?;
+    Ok(statement)
+}
+
+fn open_boj_business_day(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+    timestamp: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["request", "approval", "expectedBeforeRoot"])?;
+    let dto: BojOpenBusinessDayDto = field(params, "request")?;
+    let request = OpenBusinessDay {
+        operation_id: hex_array(&dto.operation_id, "request.operationID")?,
+        legal_entity_id: hex_array(&dto.legal_entity_id, "request.legalEntityID")?,
+        expected_participant_sequence: dto.expected_participant_sequence,
+        business_day: dto.business_day,
+        repayment_deadline: dto.repayment_deadline,
+    };
+    let statement = boj_operation_statement(b"open-business-day", &request)?;
+    authorize(state, params, statement, authorizer)?;
+    state
+        .boj_liquidity
+        .open_business_day(request, timestamp)
+        .map_err(|error| error.to_string())?;
+    Ok(statement)
+}
+
 fn register_guarantor(
     state: &mut State,
     params: &Map<String, Value>,
@@ -3961,8 +6203,10 @@ fn register_guarantor(
     let definition = GuarantorDefinition {
         guarantor_id: hex_array(&dto.guarantor_id, "guarantor.guarantorID")?,
         kind: match dto.kind.as_str() {
+            "central_bank" => GuarantorKind::CentralBank,
             "ccp" => GuarantorKind::CentralCounterparty,
             "bank" => GuarantorKind::Bank,
+            "credit_provider" => GuarantorKind::CreditProvider,
             "self" => GuarantorKind::SelfGuaranteed,
             _ => return Err("guarantor.kind is not supported".into()),
         },
@@ -4656,6 +6900,18 @@ fn hex_array<const N: usize>(value: &str, name: &str) -> Result<[u8; N], String>
 }
 
 #[cfg(test)]
+mod cross_domain_tests;
+
+#[cfg(test)]
+mod aethel_tests;
+
+#[cfg(test)]
+mod deccp_tests;
+
+#[cfg(test)]
+mod participant_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
@@ -4664,7 +6920,10 @@ mod tests {
     use ed25519_dalek::{Signer, SigningKey};
     use merlin::Transcript;
     use qomm_defmi::facility::DefmiFacility;
-    use qomm_defmi::note_chain::{note_ring_root, NoteClaim, NoteClaimKind};
+    use qomm_defmi::note_chain::{
+        note_ring_root, standing_note_pool_delegation_digest, standing_note_pool_id, NoteClaim,
+        NoteClaimKind,
+    };
     use qomm_proofs::opening_envelope::{EncryptedOpeningShare, OpeningEnvelope};
     use qomm_proofs::price_limit::{
         from_threshold as threshold_price_limit, threshold_context as price_limit_context,
@@ -4682,6 +6941,10 @@ mod tests {
     use qomm_transport::proof_codec::{
         encode_dvp_proofs, encode_quote_verification, encode_threshold_range,
         QuoteVerificationBundle,
+    };
+    use qomm_transport::standing_pool::{
+        standing_pool_reservation_metadata, threshold_range_proof_digest,
+        STANDING_POOL_REMAINDER_CONTEXT,
     };
     use qomm_zk::sigma::prove_product;
     use qomm_zkpi::typed::{
@@ -5040,7 +7303,7 @@ mod tests {
     }
 
     fn admission_batch_json(plan: &AdmissionBatchPlan) -> Value {
-        json!({
+        let mut value = json!({
             "operationID": hex::encode(plan.operation_id),
             "batchID": hex::encode(plan.batch_id),
             "venueID": hex::encode(plan.venue_id),
@@ -5050,7 +7313,14 @@ mod tests {
             "orderDigest": hex::encode(plan.order_digest),
             "admissionDigests": plan.admission_digests.iter().map(hex::encode).collect::<Vec<_>>(),
             "expiresAt": plan.expires_at,
-        })
+        });
+        if plan.first_sequence != 1 {
+            value
+                .as_object_mut()
+                .expect("admission batch test value is an object")
+                .insert("firstSequence".into(), json!(plan.first_sequence));
+        }
+        value
     }
 
     fn admission_lanes_json(lanes: &[Vec<NodeAdmissionAttestation>]) -> Value {
@@ -5291,7 +7561,7 @@ mod tests {
     }
 
     fn note_order_json(order: &NoteSettlementOrder) -> Value {
-        json!({
+        let mut value = json!({
             "operationID": hex::encode(order.operation_id),
             "nullifier": hex::encode(order.nullifier),
             "deadline": order.deadline,
@@ -5299,7 +7569,14 @@ mod tests {
             "marketStatementDigest": hex::encode(order.market_statement_digest),
             "dvpProofDigest": hex::encode(order.dvp_proof_digest),
             "spends": order.spends.iter().map(note_spend_json).collect::<Vec<_>>(),
-        })
+        });
+        if let Some(output) = &order.consolidated_output {
+            value
+                .as_object_mut()
+                .expect("note settlement test value is an object")
+                .insert("consolidatedOutput".into(), note_output_json(output));
+        }
+        value
     }
 
     fn note_materialization_json(value: &NoteClaimMaterialization) -> Value {
@@ -5317,6 +7594,68 @@ mod tests {
             "escrowNoteID": hex::encode(escrow.escrow_note_id),
             "delegationDigest": hex::encode(escrow.delegation_digest),
         })
+    }
+
+    fn standing_note_pool_registration_json(registration: &StandingNotePoolRegistration) -> Value {
+        json!({
+            "operationID": hex::encode(registration.operation_id),
+            "poolID": hex::encode(registration.pool_id),
+            "venueID": hex::encode(registration.venue_id),
+            "defmiID": hex::encode(registration.defmi_id),
+            "entityCommitment": hex::encode(registration.entity_commitment),
+            "policyDigest": hex::encode(registration.policy_digest),
+            "mandateDigest": hex::encode(registration.mandate_digest),
+            "assetID": hex::encode(registration.asset_id),
+            "direction": registration.direction,
+            "maximumAmountCommitment": hex::encode(registration.maximum_amount_commitment),
+            "poolNoteID": hex::encode(registration.pool_note_id),
+            "delegationDigest": hex::encode(registration.delegation_digest),
+            "committeeEpoch": registration.committee_epoch,
+            "validUntil": registration.valid_until,
+            "spend": note_spend_json(&registration.spend),
+        })
+    }
+
+    fn standing_note_pool_allocation_json(allocation: &StandingNotePoolAllocation) -> Value {
+        json!({
+            "poolID": hex::encode(allocation.pool_id),
+            "delegationDigest": hex::encode(allocation.delegation_digest),
+            "committeeEpoch": allocation.committee_epoch,
+            "expectedPoolSequence": allocation.expected_pool_sequence,
+            "previousPoolNoteID": hex::encode(allocation.previous_pool_note_id),
+            "previousAmountCommitment": hex::encode(allocation.previous_amount_commitment),
+            "escrowNote": note_output_json(&allocation.escrow_note),
+            "remainderNote": note_output_json(&allocation.remainder_note),
+            "proofJobID": hex::encode(allocation.proof_job_id),
+            "quoteProofDigest": hex::encode(allocation.quote_proof_digest),
+            "dvpProofDigest": hex::encode(allocation.dvp_proof_digest),
+            "remainderRangeProofDigest": hex::encode(allocation.remainder_range_proof_digest),
+            "committeeSignature": hex::encode(&allocation.committee_signature),
+        })
+    }
+
+    fn authorized_standing_pool_allocation_transaction(
+        state: &State,
+        authorizer: &QuorumAuthorizer,
+        signers: &BTreeMap<String, SigningKey>,
+        transition: &CreditFacilityTransition,
+        authorization: &ReservationAuthorization,
+        allocation: &StandingNotePoolAllocation,
+    ) -> Result<Vec<u8>, String> {
+        let root = state.root();
+        let statement = authorization.statement(transition)?;
+        let approval = authorizer.approve(statement, root, signers)?;
+        TransactionEnvelope::new(
+            "defmivm.issueStandingNotePoolAllocation",
+            json!({
+                "transition": transition_json(transition),
+                "authorization": reservation_authorization_json(authorization),
+                "allocation": standing_note_pool_allocation_json(allocation),
+                "approval": approval_json(&approval),
+                "expectedBeforeRoot": hex::encode(root),
+            }),
+        )?
+        .encode()
     }
 
     fn authorized_note_reservation_transaction(
@@ -5503,7 +7842,7 @@ mod tests {
         let taker_facility = [104; 32];
         let maker_entity = [105; 32];
         let taker_entity = [106; 32];
-        let maker_available = [107; 32];
+        let maker_available = (G * Scalar::from(60_u64)).compress().to_bytes();
         let taker_available = [108; 32];
         let maker_hold_id = [109; 32];
         let taker_hold_id = [110; 32];
@@ -5572,6 +7911,117 @@ mod tests {
             .expect("test cash reserve overflow");
         let (frost_shares, frost_public) = qomm_zkpi::deal_quorum(7, 3, &mut OsRng).unwrap();
         let frost_keys = frost_key_packages(frost_shares);
+        // The untyped zkPI and complete public DvP package are final before
+        // either DeFMI reserve is created.  This avoids a hash cycle: the
+        // reservation acknowledgement is needed only by the later typed
+        // execution context, not by the payment or DvP proof.
+        let proof_key = Pedersen::new(b"qomm:defmi:v1");
+        let amount_blinding = Scalar::ZERO;
+        let price_blinding = Scalar::ZERO;
+        let amount_commitment = proof_key.commit_u64(quantity_value, &amount_blinding);
+        let price_commitment = proof_key.commit_u64(winning_price, &price_blinding);
+        let asset_commitment = proof_key.commit(&asset_scalar(&security_asset), &Scalar::ZERO);
+        let maker_handle = G * Scalar::from(201_u64);
+        let taker_handle = G * Scalar::from(202_u64);
+        let reserve_handle = G * Scalar::from(203_u64);
+        let partial = PartialInstruction::from_threshold_ranges(
+            &proof_key,
+            &Bounds {
+                amount_bits: 16,
+                price_bits: 32,
+                max_horizon: 3_600,
+            },
+            amount_commitment,
+            price_commitment,
+            asset_commitment,
+            threshold_range(
+                &proof_key,
+                quantity_value,
+                amount_blinding,
+                16,
+                AMOUNT_RANGE_CONTEXT,
+            ),
+            threshold_range(
+                &proof_key,
+                winning_price,
+                price_blinding,
+                32,
+                PRICE_RANGE_CONTEXT,
+            ),
+            taker_handle,
+            maker_handle,
+            400,
+            [147; 32],
+            quote_proof_digest,
+        )
+        .expect("construct threshold zkPI");
+        let payment_digest = partial.digest_for(DEFAULT_DOMAIN);
+        let payment = partial.sealed(frost_sign(&frost_keys, &frost_public, &payment_digest));
+        let quantity = payment.amount_commitment.compress().to_bytes();
+        let securities_remainder_value = 20_u64
+            .checked_sub(quantity_value)
+            .expect("test securities reservation covers the trade");
+        let cash_remainder_value = cash_reserve_value
+            .checked_sub(cash_value)
+            .expect("test cash reservation covers the trade");
+        let securities_refund = proof_key
+            .commit_u64(securities_remainder_value, &Scalar::ZERO)
+            .compress()
+            .to_bytes();
+        let cash_commitment = proof_key.commit_u64(cash_value, &Scalar::ZERO);
+        let cash = cash_commitment.compress().to_bytes();
+        let cash_refund = proof_key
+            .commit_u64(cash_remainder_value, &Scalar::ZERO)
+            .compress()
+            .to_bytes();
+        let dvp_proofs = DvpProofs {
+            product: prove_product(
+                &proof_key,
+                &mut Transcript::new(DVP_PRODUCT_CONTEXT),
+                &payment.amount_commitment,
+                &Scalar::from(quantity_value),
+                &amount_blinding,
+                &Scalar::from(winning_price),
+                &price_blinding,
+                &Scalar::ZERO,
+                &mut OsRng,
+            ),
+            securities_remainder: threshold_range(
+                &proof_key,
+                securities_remainder_value,
+                Scalar::ZERO,
+                16,
+                DVP_SECURITIES_REMAINDER_CONTEXT,
+            ),
+            cash_remainder: threshold_range(
+                &proof_key,
+                cash_remainder_value,
+                Scalar::ZERO,
+                16,
+                DVP_CASH_REMAINDER_CONTEXT,
+            ),
+        };
+        let dvp_package = build_threshold_package_from_proofs(
+            &proof_key,
+            payment.clone(),
+            Sides::of(&payment),
+            proof_key.commit_u64(20, &Scalar::ZERO),
+            proof_key.commit_u64(cash_reserve_value, &Scalar::ZERO),
+            cash_commitment,
+            dvp_proofs.clone(),
+            16,
+        )
+        .expect("verify test threshold DvP");
+        let dvp_proof_digest = dvp_package.digest();
+        let maker_pool_remainder_proof = threshold_range(
+            &proof_key,
+            20,
+            Scalar::ZERO,
+            16,
+            STANDING_POOL_REMAINDER_CONTEXT,
+        );
+        let maker_pool_remainder_proof_digest =
+            threshold_range_proof_digest(&maker_pool_remainder_proof);
         let verifier = SettlementVerifierConfig {
             venue_id,
             defmi_id,
@@ -5688,8 +8138,72 @@ mod tests {
             insert_note(&mut state, output).expect("seed spendable note");
         }
 
+        let maker_mandate_digest = [125; 32];
+        let maker_pool_id = standing_note_pool_id(
+            maker_entity,
+            maker_policy_digest,
+            maker_mandate_digest,
+            security_asset,
+            1,
+        )
+        .expect("Maker standing pool identifier");
+        let maker_pool_amount = (G * Scalar::from(40_u64)).compress().to_bytes();
+        let maker_pool_note = synthetic_note(security_asset, 90, maker_pool_amount, maker_pool_id);
+        let maker_pool_change = synthetic_note(
+            security_asset,
+            91,
+            (G * Scalar::from(1_u64)).compress().to_bytes(),
+            ZERO,
+        );
+        let maker_pool_delegation =
+            standing_note_pool_delegation_digest(maker_pool_id, venue_id, defmi_id, 1, 900)
+                .expect("Maker standing pool delegation");
+        let maker_pool_registration = StandingNotePoolRegistration {
+            operation_id: [217; 32],
+            pool_id: maker_pool_id,
+            venue_id,
+            defmi_id,
+            entity_commitment: maker_entity,
+            policy_digest: maker_policy_digest,
+            mandate_digest: maker_mandate_digest,
+            asset_id: security_asset,
+            direction: 1,
+            maximum_amount_commitment: maker_pool_amount,
+            pool_note_id: maker_pool_note.note_id,
+            delegation_digest: maker_pool_delegation,
+            committee_epoch: 1,
+            valid_until: 900,
+            spend: NoteSpend {
+                asset_id: security_asset,
+                ring: maker_ring.iter().map(|note| note.note_id).collect(),
+                ring_root: note_ring_root(
+                    security_asset,
+                    &maker_ring
+                        .iter()
+                        .map(|note| note.note_id)
+                        .collect::<Vec<_>>(),
+                )
+                .expect("Maker pool ring root"),
+                serial_point: (G * Scalar::from(218_u64)).compress().to_bytes(),
+                input_lock_id: ZERO,
+                proof_digest: [219; 32],
+                outputs: vec![maker_pool_note.clone(), maker_pool_change.clone()],
+            },
+        };
+        apply(
+            &mut state,
+            &authorizer,
+            &signers,
+            "defmivm.issueStandingNotePool",
+            "registration",
+            standing_note_pool_registration_json(&maker_pool_registration),
+            maker_pool_registration.statement().unwrap(),
+            100,
+        )
+        .expect("register Maker standing note pool");
+
         let maker_amount = (G * Scalar::from(20_u64)).compress().to_bytes();
-        let maker_after_available = [118; 32];
+        let maker_after_available = (G * Scalar::from(40_u64)).compress().to_bytes();
         let maker_transition = CreditFacilityTransition {
             operation_id: [119; 32],
             facility_id: maker_facility,
@@ -5711,34 +8225,19 @@ mod tests {
             relation_proof_digest: [121; 32],
         };
         let maker_locked = synthetic_note(security_asset, 14, maker_amount, maker_hold_id);
-        let maker_spend = NoteSpend {
-            asset_id: security_asset,
-            ring: maker_ring.iter().map(|note| note.note_id).collect(),
-            ring_root: note_ring_root(
-                security_asset,
-                &maker_ring
-                    .iter()
-                    .map(|note| note.note_id)
-                    .collect::<Vec<_>>(),
-            )
-            .expect("maker ring root"),
-            serial_point: (G * Scalar::from(122_u64)).compress().to_bytes(),
-            input_lock_id: ZERO,
-            proof_digest: [123; 32],
-            outputs: vec![maker_locked.clone()],
-        };
-        let maker_escrow = NoteReservationEscrow {
-            spend: maker_spend,
-            escrow_note_id: maker_locked.note_id,
-            delegation_digest: [124; 32],
-        };
+        let maker_pool_remainder = synthetic_note(
+            security_asset,
+            92,
+            (G * Scalar::from(20_u64)).compress().to_bytes(),
+            maker_pool_id,
+        );
         let mut maker_authorization = ReservationAuthorization {
             role: ReservationRole::Maker,
             entity_commitment: maker_entity,
             asset_id: security_asset,
             direction: 1,
             authorization_digest: maker_transition.query_commitment,
-            mandate_digest: [125; 32],
+            mandate_digest: maker_mandate_digest,
             typed_reserve_digest: [126; 32],
             reserve_nullifier: [127; 32],
             asset_link_proof_digest: [128; 32],
@@ -5753,21 +8252,250 @@ mod tests {
             admission_sequence: 0,
             admission_batch_id: ZERO,
         };
-        maker_authorization.escrow_digest = maker_escrow
+        let mut maker_allocation = StandingNotePoolAllocation {
+            pool_id: maker_pool_id,
+            delegation_digest: maker_pool_delegation,
+            committee_epoch: 1,
+            expected_pool_sequence: 0,
+            previous_pool_note_id: maker_pool_note.note_id,
+            previous_amount_commitment: maker_pool_amount,
+            escrow_note: maker_locked.clone(),
+            remainder_note: maker_pool_remainder.clone(),
+            proof_job_id: quote_job,
+            quote_proof_digest,
+            dvp_proof_digest,
+            remainder_range_proof_digest: maker_pool_remainder_proof_digest,
+            committee_signature: Vec::new(),
+        };
+        let maker_metadata = standing_pool_reservation_metadata(
+            maker_allocation.pool_id,
+            maker_allocation.delegation_digest,
+            maker_allocation.expected_pool_sequence,
+            maker_allocation.previous_pool_note_id,
+            maker_allocation.proof_job_id,
+            maker_allocation.quote_proof_digest,
+            maker_allocation.dvp_proof_digest,
+            maker_transition
+                .statement()
+                .expect("Maker transition statement"),
+            maker_authorization.entity_commitment,
+            maker_authorization.asset_id,
+            maker_authorization.direction,
+            maker_authorization.authorization_digest,
+            maker_authorization.mandate_digest,
+            maker_authorization.policy_version,
+        )
+        .expect("Maker allocation metadata");
+        maker_authorization.typed_reserve_digest = maker_metadata.typed_reserve_digest;
+        maker_authorization.reserve_nullifier = maker_metadata.reserve_nullifier;
+        maker_authorization.asset_link_proof_digest = maker_metadata.asset_link_proof_digest;
+
+        // Even a fully valid proof-committee signature cannot authorize a
+        // facility update that fails the two public conservation equations.
+        // Rejection must leave the canonical state byte-for-byte unchanged.
+        let before_bad_root = state.root();
+        let mut bad_transition = maker_transition.clone();
+        bad_transition.after_available_commitment = bad_transition.before_available_commitment;
+        let mut bad_authorization = maker_authorization.clone();
+        let mut bad_allocation = maker_allocation.clone();
+        let bad_metadata = standing_pool_reservation_metadata(
+            bad_allocation.pool_id,
+            bad_allocation.delegation_digest,
+            bad_allocation.expected_pool_sequence,
+            bad_allocation.previous_pool_note_id,
+            bad_allocation.proof_job_id,
+            bad_allocation.quote_proof_digest,
+            bad_allocation.dvp_proof_digest,
+            bad_transition
+                .statement()
+                .expect("bad transition statement"),
+            bad_authorization.entity_commitment,
+            bad_authorization.asset_id,
+            bad_authorization.direction,
+            bad_authorization.authorization_digest,
+            bad_authorization.mandate_digest,
+            bad_authorization.policy_version,
+        )
+        .expect("bad allocation metadata");
+        bad_authorization.typed_reserve_digest = bad_metadata.typed_reserve_digest;
+        bad_authorization.reserve_nullifier = bad_metadata.reserve_nullifier;
+        bad_authorization.asset_link_proof_digest = bad_metadata.asset_link_proof_digest;
+        let bad_message = bad_allocation
+            .signing_message(&bad_transition, &bad_authorization)
+            .expect("bad allocation signing message");
+        bad_allocation.committee_signature = frost_sign(&frost_keys, &frost_public, &bad_message)
+            .serialize()
+            .expect("serialize bad allocation signature");
+        bad_authorization.escrow_digest = bad_allocation
+            .statement(&bad_transition, &bad_authorization)
+            .expect("bad allocation statement");
+        let bad_reservation = authorized_standing_pool_allocation_transaction(
+            &state,
+            &authorizer,
+            &signers,
+            &bad_transition,
+            &bad_authorization,
+            &bad_allocation,
+        )
+        .expect("bad standing allocation transaction");
+        assert_eq!(
+            state.apply(&bad_reservation, &authorizer, 100),
+            Err("standing allocation does not conserve its credit facility".into())
+        );
+        assert_eq!(state.root(), before_bad_root);
+
+        let allocation_message = maker_allocation
+            .signing_message(&maker_transition, &maker_authorization)
+            .expect("Maker standing allocation message");
+        maker_allocation.committee_signature =
+            frost_sign(&frost_keys, &frost_public, &allocation_message)
+                .serialize()
+                .expect("serialize Maker allocation signature");
+        maker_authorization.escrow_digest = maker_allocation
             .statement(&maker_transition, &maker_authorization)
-            .expect("maker escrow statement");
-        let maker_reservation = authorized_note_reservation_transaction(
+            .expect("Maker allocation statement");
+        let maker_reservation = authorized_standing_pool_allocation_transaction(
             &state,
             &authorizer,
             &signers,
             &maker_transition,
             &maker_authorization,
-            &maker_escrow,
+            &maker_allocation,
         )
-        .expect("maker anonymous reservation transaction");
+        .expect("Maker standing allocation transaction");
         state
             .apply(&maker_reservation, &authorizer, 100)
-            .expect("maker anonymous reservation");
+            .expect("Maker standing allocation");
+        assert_eq!(
+            state
+                .standing_note_pools
+                .get(&id_key(&maker_pool_id))
+                .expect("Maker standing pool")
+                .current_pool_note_id,
+            maker_pool_remainder.note_id
+        );
+
+        // A concurrent RFQ may have been proved from the same pre-state. Even
+        // if it refreshes the facility sequence before submission, it cannot
+        // reuse the old parent covenant after consensus accepted the winner.
+        let stale_hold_id = [220; 32];
+        let stale_amount = (G * Scalar::from(5_u64)).compress().to_bytes();
+        let stale_transition = CreditFacilityTransition {
+            operation_id: [221; 32],
+            facility_id: maker_facility,
+            hold_id: stale_hold_id,
+            kind: CreditTransitionKind::Hold,
+            query_commitment: maker_policy_digest,
+            amount_commitment: stale_amount,
+            consumed_commitment: ZERO,
+            refund_commitment: ZERO,
+            before_available_commitment: maker_after_available,
+            after_available_commitment: (G * Scalar::from(35_u64)).compress().to_bytes(),
+            before_held_commitment: maker_amount,
+            after_held_commitment: (G * Scalar::from(25_u64)).compress().to_bytes(),
+            before_outstanding_commitment: ZERO,
+            after_outstanding_commitment: ZERO,
+            before_sequence: 1,
+            expires_at: 500,
+            settlement_digest: ZERO,
+            relation_proof_digest: [224; 32],
+        };
+        let stale_locked = synthetic_note(security_asset, 93, stale_amount, stale_hold_id);
+        let stale_remainder = synthetic_note(
+            security_asset,
+            94,
+            (G * Scalar::from(35_u64)).compress().to_bytes(),
+            maker_pool_id,
+        );
+        let mut stale_authorization = ReservationAuthorization {
+            role: ReservationRole::Maker,
+            entity_commitment: maker_entity,
+            asset_id: security_asset,
+            direction: 1,
+            authorization_digest: maker_policy_digest,
+            mandate_digest: maker_mandate_digest,
+            typed_reserve_digest: [233; 32],
+            reserve_nullifier: [234; 32],
+            asset_link_proof_digest: [235; 32],
+            limit_price_commitment: ZERO,
+            escrow_digest: ZERO,
+            rfq_nullifier: ZERO,
+            policy_version: 1,
+            admission_ticket_id: ZERO,
+            admission_slot: 0,
+            admission_receipt_digest: ZERO,
+            admission_epoch: 0,
+            admission_sequence: 0,
+            admission_batch_id: ZERO,
+        };
+        let mut stale_allocation = StandingNotePoolAllocation {
+            pool_id: maker_pool_id,
+            delegation_digest: maker_pool_delegation,
+            committee_epoch: 1,
+            expected_pool_sequence: 0,
+            previous_pool_note_id: maker_pool_note.note_id,
+            previous_amount_commitment: maker_pool_amount,
+            escrow_note: stale_locked,
+            remainder_note: stale_remainder,
+            proof_job_id: [230; 32],
+            quote_proof_digest,
+            dvp_proof_digest: [231; 32],
+            remainder_range_proof_digest: [232; 32],
+            committee_signature: Vec::new(),
+        };
+        let stale_metadata = standing_pool_reservation_metadata(
+            stale_allocation.pool_id,
+            stale_allocation.delegation_digest,
+            stale_allocation.expected_pool_sequence,
+            stale_allocation.previous_pool_note_id,
+            stale_allocation.proof_job_id,
+            stale_allocation.quote_proof_digest,
+            stale_allocation.dvp_proof_digest,
+            stale_transition
+                .statement()
+                .expect("stale transition statement"),
+            stale_authorization.entity_commitment,
+            stale_authorization.asset_id,
+            stale_authorization.direction,
+            stale_authorization.authorization_digest,
+            stale_authorization.mandate_digest,
+            stale_authorization.policy_version,
+        )
+        .expect("stale allocation metadata");
+        stale_authorization.typed_reserve_digest = stale_metadata.typed_reserve_digest;
+        stale_authorization.reserve_nullifier = stale_metadata.reserve_nullifier;
+        stale_authorization.asset_link_proof_digest = stale_metadata.asset_link_proof_digest;
+        let stale_message = stale_allocation
+            .signing_message(&stale_transition, &stale_authorization)
+            .expect("stale standing allocation message");
+        stale_allocation.committee_signature =
+            frost_sign(&frost_keys, &frost_public, &stale_message)
+                .serialize()
+                .expect("serialize stale allocation signature");
+        stale_authorization.escrow_digest = stale_allocation
+            .statement(&stale_transition, &stale_authorization)
+            .expect("stale Maker allocation statement");
+        let stale_reservation = authorized_standing_pool_allocation_transaction(
+            &state,
+            &authorizer,
+            &signers,
+            &stale_transition,
+            &stale_authorization,
+            &stale_allocation,
+        )
+        .expect("stale Maker standing allocation transaction");
+        assert_eq!(
+            state.apply(&stale_reservation, &authorizer, 100),
+            Err("standing allocation is stale or outside its Maker mandate".into())
+        );
+        assert_eq!(
+            state
+                .standing_note_pools
+                .get(&id_key(&maker_pool_id))
+                .expect("Maker standing pool after stale RFQ")
+                .sequence,
+            1
+        );
         let maker_reserved_state = state.clone();
 
         let admission_receipt = CertifiedAdmissionLane {
@@ -5904,48 +8632,6 @@ mod tests {
             "active"
         );
 
-        let proof_key = Pedersen::new(b"qomm:defmi:v1");
-        let amount_blinding = Scalar::ZERO;
-        let price_blinding = Scalar::ZERO;
-        let amount_commitment = proof_key.commit_u64(quantity_value, &amount_blinding);
-        let price_commitment = proof_key.commit_u64(winning_price, &price_blinding);
-        let asset_commitment = proof_key.commit(&asset_scalar(&security_asset), &Scalar::ZERO);
-        let maker_handle = G * Scalar::from(201_u64);
-        let taker_handle = G * Scalar::from(202_u64);
-        let reserve_handle = G * Scalar::from(203_u64);
-        let partial = PartialInstruction::from_threshold_ranges(
-            &proof_key,
-            &Bounds {
-                amount_bits: 16,
-                price_bits: 32,
-                max_horizon: 3_600,
-            },
-            amount_commitment,
-            price_commitment,
-            asset_commitment,
-            threshold_range(
-                &proof_key,
-                quantity_value,
-                amount_blinding,
-                16,
-                AMOUNT_RANGE_CONTEXT,
-            ),
-            threshold_range(
-                &proof_key,
-                winning_price,
-                price_blinding,
-                32,
-                PRICE_RANGE_CONTEXT,
-            ),
-            taker_handle,
-            maker_handle,
-            400,
-            [147; 32],
-            quote_proof_digest,
-        )
-        .expect("construct threshold zkPI");
-        let payment_digest = partial.digest_for(DEFAULT_DOMAIN);
-        let payment = partial.sealed(frost_sign(&frost_keys, &frost_public, &payment_digest));
         let maker_reserve_receipt = maker_authorization
             .statement(&maker_transition)
             .expect("maker reserve receipt");
@@ -5984,66 +8670,6 @@ mod tests {
         };
         let typed_instruction_wire = typed_wire::encode(&typed_instruction);
         let typed_instruction_digest: [u8; 32] = Sha256::digest(&typed_instruction_wire).into();
-        let quantity = typed_instruction
-            .payment
-            .amount_commitment
-            .compress()
-            .to_bytes();
-        let securities_remainder_value = 20_u64
-            .checked_sub(quantity_value)
-            .expect("test securities reservation covers the trade");
-        let cash_remainder_value = cash_reserve_value
-            .checked_sub(cash_value)
-            .expect("test cash reservation covers the trade");
-        let securities_refund = proof_key
-            .commit_u64(securities_remainder_value, &Scalar::ZERO)
-            .compress()
-            .to_bytes();
-        let cash_commitment = proof_key.commit_u64(cash_value, &Scalar::ZERO);
-        let cash = cash_commitment.compress().to_bytes();
-        let cash_refund = proof_key
-            .commit_u64(cash_remainder_value, &Scalar::ZERO)
-            .compress()
-            .to_bytes();
-        let dvp_proofs = DvpProofs {
-            product: prove_product(
-                &proof_key,
-                &mut Transcript::new(DVP_PRODUCT_CONTEXT),
-                &typed_instruction.payment.amount_commitment,
-                &Scalar::from(quantity_value),
-                &amount_blinding,
-                &Scalar::from(winning_price),
-                &price_blinding,
-                &Scalar::ZERO,
-                &mut OsRng,
-            ),
-            securities_remainder: threshold_range(
-                &proof_key,
-                securities_remainder_value,
-                Scalar::ZERO,
-                16,
-                DVP_SECURITIES_REMAINDER_CONTEXT,
-            ),
-            cash_remainder: threshold_range(
-                &proof_key,
-                cash_remainder_value,
-                Scalar::ZERO,
-                16,
-                DVP_CASH_REMAINDER_CONTEXT,
-            ),
-        };
-        let dvp_package = build_threshold_package_from_proofs(
-            &proof_key,
-            typed_instruction.payment.clone(),
-            Sides::of(&typed_instruction.payment),
-            settlement_point(maker_amount, "test Maker reserve").unwrap(),
-            settlement_point(taker_amount, "test Taker reserve").unwrap(),
-            cash_commitment,
-            dvp_proofs.clone(),
-            16,
-        )
-        .expect("verify test threshold DvP");
-        let dvp_proof_digest = dvp_package.digest();
         let limit_commitment = settlement_point(
             taker_authorization.limit_price_commitment,
             "test Taker price limit",
@@ -6106,7 +8732,7 @@ mod tests {
                     asset_id: security_asset,
                     hold_id: maker_hold_id,
                     escrow_note_id: maker_locked.note_id,
-                    delegation_digest: maker_escrow.delegation_digest,
+                    delegation_digest: maker_pool_delegation,
                     proof_digest: dvp_proof_digest,
                     claims: vec![
                         synthetic_claim(
@@ -6256,6 +8882,13 @@ mod tests {
 
         let mut bad_asset = evidence.clone();
         bad_asset.asset_link.response += Scalar::ONE;
+        assert_ne!(
+            evidence.digest().expect("valid evidence digest"),
+            bad_asset
+                .digest()
+                .expect("tampered canonical evidence digest"),
+            "composite approval must bind the exact verifier evidence"
+        );
         verify_product_settlement_evidence(&state, &bad_asset, &order, 120)
             .expect_err("tampered asset-link proof must be rejected");
 
@@ -6274,12 +8907,161 @@ mod tests {
             .expect_err("tampered MPC persistence digest must be rejected");
 
         let before_settlement = state.clone();
+
+        // Reconstruct the canonical pre-allocation state while preserving the
+        // independently accepted Taker reservation. Reapplying the Maker
+        // allocation must reproduce the exact root to which the typed zkPI is
+        // bound, but the read-only preview itself must commit nothing.
+        let mut atomic_base = before_settlement.clone();
+        atomic_base
+            .notes
+            .remove(&id_key(&maker_allocation.escrow_note.note_id));
+        atomic_base
+            .notes
+            .remove(&id_key(&maker_allocation.remainder_note.note_id));
+        atomic_base.credit_holds.remove(&id_key(&maker_hold_id));
+        atomic_base
+            .reservation_bindings
+            .remove(&id_key(&maker_hold_id));
+        atomic_base
+            .note_reservations
+            .remove(&id_key(&maker_hold_id));
+        atomic_base
+            .operations
+            .remove(&id_key(&maker_transition.operation_id));
+        {
+            let facility = atomic_base
+                .credit_facilities
+                .get_mut(&id_key(&maker_facility))
+                .expect("Maker facility before atomic settlement");
+            facility.available_commitment = maker_transition.before_available_commitment;
+            facility.held_commitment = maker_transition.before_held_commitment;
+            facility.outstanding_commitment = maker_transition.before_outstanding_commitment;
+            facility.sequence = maker_transition.before_sequence;
+        }
+        {
+            let pool = atomic_base
+                .standing_note_pools
+                .get_mut(&id_key(&maker_pool_id))
+                .expect("Maker pool before atomic settlement");
+            pool.current_pool_note_id = maker_allocation.previous_pool_note_id;
+            pool.sequence = maker_allocation.expected_pool_sequence;
+        }
+        let allocation_transaction = authorized_standing_pool_allocation_transaction(
+            &atomic_base,
+            &authorizer,
+            &signers,
+            &maker_transition,
+            &maker_authorization,
+            &maker_allocation,
+        )
+        .expect("atomic Maker allocation transaction");
+        let allocation_envelope = TransactionEnvelope::decode(&allocation_transaction)
+            .expect("decode atomic Maker allocation");
+        let allocation_params = allocation_envelope
+            .params
+            .as_object()
+            .expect("atomic Maker allocation params");
+        let atomic_base_root = atomic_base.root();
+        let preview = preview_standing_note_pool_allocation(
+            &atomic_base,
+            allocation_params,
+            &authorizer,
+            120,
+        )
+        .expect("preview atomic Maker allocation");
+        assert_eq!(atomic_base.root(), atomic_base_root);
+        let expected_base_root = hex::encode(atomic_base_root);
+        assert_eq!(
+            preview["beforeStateRoot"].as_str(),
+            Some(expected_base_root.as_str())
+        );
+        let expected_intermediate_root = hex::encode(before_settlement.root());
+        assert_eq!(
+            preview["afterStateRoot"].as_str(),
+            Some(expected_intermediate_root.as_str()),
+            "preview must reproduce the typed-zkPI pre-state"
+        );
+
+        let composite_transaction =
+            |base: &State, settlement_evidence: &ProductSettlementEvidence| -> Vec<u8> {
+                let allocation_transaction = authorized_standing_pool_allocation_transaction(
+                    base,
+                    &authorizer,
+                    &signers,
+                    &maker_transition,
+                    &maker_authorization,
+                    &maker_allocation,
+                )
+                .expect("authorize Maker allocation for composite settlement");
+                let allocation_envelope = TransactionEnvelope::decode(&allocation_transaction)
+                    .expect("decode composite Maker allocation");
+                let allocation_params = allocation_envelope
+                    .params
+                    .as_object()
+                    .expect("composite Maker allocation params");
+                let statement = standing_pool_product_settlement_statement(
+                    &maker_transition,
+                    &maker_authorization,
+                    &maker_allocation,
+                    &order,
+                    settlement_evidence
+                        .digest()
+                        .expect("composite settlement evidence digest"),
+                )
+                .expect("composite settlement statement");
+                let approval = authorizer
+                    .approve(statement, base.root(), &signers)
+                    .expect("composite settlement approval");
+                TransactionEnvelope::new(
+                    "defmivm.issueStandingPoolProductSettlement",
+                    json!({
+                        "allocationTransition": allocation_params["transition"].clone(),
+                        "allocationAuthorization": allocation_params["authorization"].clone(),
+                        "allocation": allocation_params["allocation"].clone(),
+                        "allocationApproval": allocation_params["approval"].clone(),
+                        "order": product_note_order_json(&order),
+                        "evidence": product_evidence_json(settlement_evidence),
+                        "approval": approval_json(&approval),
+                        "expectedBeforeRoot": hex::encode(base.root()),
+                    }),
+                )
+                .expect("composite settlement transaction")
+                .encode()
+                .expect("encode composite settlement")
+            };
+
+        let mut rejected_atomic = atomic_base.clone();
+        let rejected_root = rejected_atomic.root();
+        let bad_atomic_transaction = composite_transaction(&rejected_atomic, &bad_asset);
+        rejected_atomic
+            .apply(&bad_atomic_transaction, &authorizer, 120)
+            .expect_err("post-allocation proof failure must reject the whole transaction");
+        assert_eq!(rejected_atomic.root(), rejected_root);
+        assert!(!rejected_atomic
+            .credit_holds
+            .contains_key(&id_key(&maker_hold_id)));
+        assert_eq!(
+            rejected_atomic.standing_note_pools[&id_key(&maker_pool_id)].current_pool_note_id,
+            maker_allocation.previous_pool_note_id
+        );
+
+        let mut atomic_state = atomic_base.clone();
+        let valid_atomic_transaction = composite_transaction(&atomic_state, &evidence);
+        atomic_state
+            .apply(&valid_atomic_transaction, &authorizer, 120)
+            .expect("atomically allocate Maker covenant and settle DvP");
         let settlement_transaction =
             authorized_note_product_transaction(&state, &authorizer, &signers, &order, &evidence)
                 .expect("anonymous settlement transaction");
         state
             .apply(&settlement_transaction, &authorizer, 120)
             .expect("settle anonymous product without another signature");
+        assert_eq!(
+            atomic_state.root(),
+            state.root(),
+            "atomic transaction must reach the same canonical final root"
+        );
         assert_eq!(state.accounts.len(), 0);
         assert_eq!(state.note_claims.len(), 4);
         assert_eq!(
@@ -6745,6 +9527,7 @@ mod tests {
             market_statement_digest: [71; 32],
             dvp_proof_digest: [72; 32],
             spends: vec![spend.clone()],
+            consolidated_output: None,
         };
         apply(
             &mut state,
@@ -6763,6 +9546,84 @@ mod tests {
         assert!(state
             .note_serials
             .contains_key(&id_key(&spend.serial_point)));
+
+        let intermediate_first = synthetic_note(
+            asset_id,
+            6,
+            (G * Scalar::from(11_u64)).compress().to_bytes(),
+            ZERO,
+        );
+        let intermediate_second = synthetic_note(
+            asset_id,
+            7,
+            (G * Scalar::from(29_u64)).compress().to_bytes(),
+            ZERO,
+        );
+        let consolidated_output = synthetic_note(
+            asset_id,
+            8,
+            (G * Scalar::from(40_u64)).compress().to_bytes(),
+            ZERO,
+        );
+        let consolidation_spends = vec![
+            NoteSpend {
+                asset_id,
+                ring: vec![first_output.note_id, second_output.note_id],
+                ring_root: note_ring_root(asset_id, &[first_output.note_id, second_output.note_id])
+                    .expect("first consolidation ring root"),
+                serial_point: (G * Scalar::from(80_u64)).compress().to_bytes(),
+                input_lock_id: ZERO,
+                proof_digest: [81; 32],
+                outputs: vec![intermediate_first.clone()],
+            },
+            NoteSpend {
+                asset_id,
+                ring: vec![first_output.note_id, second_output.note_id],
+                ring_root: note_ring_root(asset_id, &[first_output.note_id, second_output.note_id])
+                    .expect("second consolidation ring root"),
+                serial_point: (G * Scalar::from(82_u64)).compress().to_bytes(),
+                input_lock_id: ZERO,
+                proof_digest: [83; 32],
+                outputs: vec![intermediate_second.clone()],
+            },
+        ];
+        let consolidation = NoteSettlementOrder {
+            operation_id: [84; 32],
+            nullifier: [85; 32],
+            deadline: 300,
+            payment_instruction_digest: [86; 32],
+            market_statement_digest: [87; 32],
+            dvp_proof_digest: [88; 32],
+            spends: consolidation_spends.clone(),
+            consolidated_output: Some(consolidated_output.clone()),
+        };
+        apply(
+            &mut state,
+            &authorizer,
+            &signers,
+            "defmivm.issueNoteSettlement",
+            "order",
+            note_order_json(&consolidation),
+            consolidation
+                .statement()
+                .expect("note-consolidation statement"),
+            121,
+        )
+        .expect("atomically consolidate anonymous notes");
+        assert!(!state
+            .notes
+            .contains_key(&id_key(&intermediate_first.note_id)));
+        assert!(!state
+            .notes
+            .contains_key(&id_key(&intermediate_second.note_id)));
+        assert!(state
+            .notes
+            .contains_key(&id_key(&consolidated_output.note_id)));
+        for consolidation_spend in &consolidation_spends {
+            assert!(state
+                .note_serials
+                .contains_key(&id_key(&consolidation_spend.serial_point)));
+        }
 
         let replay_output = synthetic_note(
             asset_id,
@@ -6791,7 +9652,7 @@ mod tests {
         .expect("serial replay transaction");
         let before_replay = state.clone();
         assert!(state
-            .apply(&replay_transaction, &authorizer, 121)
+            .apply(&replay_transaction, &authorizer, 122)
             .unwrap_err()
             .contains("serial was already settled"));
         assert_eq!(state, before_replay);
@@ -8294,6 +11155,19 @@ mod tests {
         )
         .expect("VM committee");
         assert_eq!(state.root(), facility.state_root().expect("committee root"));
+        let committee_root = state.root();
+        apply(
+            &mut state,
+            &authorizer,
+            &signers,
+            "defmivm.issueAdmissionCommittee",
+            "plan",
+            admission_committee_json(&committee_plan),
+            statement,
+            100,
+        )
+        .expect("exact VM committee retry");
+        assert_eq!(state.root(), committee_root);
 
         let order_digest = [161; 32];
         let node_batch_digests = (0u8..7).map(|node| [170 + node; 32]).collect::<Vec<_>>();
@@ -8337,6 +11211,7 @@ mod tests {
             slot: 42,
             batch_digest: certified[0].cluster_digest,
             order_digest,
+            first_sequence: certified[0].sequence,
             admission_digests: certified
                 .iter()
                 .map(|lane| {
@@ -8373,6 +11248,26 @@ mod tests {
             .apply(&batch_transaction, &authorizer, 100)
             .expect("VM batch");
         assert_eq!(state.root(), facility.state_root().expect("batch root"));
+        let batch_root = state.root();
+        let retry_approval = authorizer
+            .approve(statement, batch_root, &signers)
+            .expect("retry batch approval");
+        let retry_batch_transaction = TransactionEnvelope::new(
+            "defmivm.issueAdmissionBatch",
+            json!({
+                "plan": admission_batch_json(&batch_plan),
+                "admissionLanes": admission_lanes_json(&lanes),
+                "approval": approval_json(&retry_approval),
+                "expectedBeforeRoot": hex::encode(batch_root),
+            }),
+        )
+        .expect("retry batch transaction")
+        .encode()
+        .expect("retry batch bytes");
+        state
+            .apply(&retry_batch_transaction, &authorizer, 100)
+            .expect("exact VM admission batch retry");
+        assert_eq!(state.root(), batch_root);
 
         let skip = AdmissionSlotAdvance {
             operation_id: [192; 32],
@@ -8428,5 +11323,425 @@ mod tests {
             state.admission_batches[&id_key(&batch_plan.batch_id)].consumed,
             2
         );
+
+        // A later immediate RFQ is a one-lane batch whose certified sequence
+        // continues the venue-global order instead of restarting at one.
+        let next_order_digest = [201; 32];
+        let next_node_batches = (0u8..7).map(|node| [202 + node; 32]).collect::<Vec<_>>();
+        let next_lanes = vec![admission_keys
+            .iter()
+            .enumerate()
+            .map(|(node, key)| {
+                NodeAdmissionAttestation {
+                    node: node as u16,
+                    slot: 43,
+                    sequence: 3,
+                    principal_digest: [210; 32],
+                    ticket_id: [211; 32],
+                    claim_digest: [212; 32],
+                    batch_digest: next_node_batches[node],
+                    order_digest: next_order_digest,
+                    signature: Signature::from_bytes(&[0; 64]),
+                }
+                .sign(key)
+                .expect("next admission signature")
+            })
+            .collect::<Vec<_>>()];
+        let next_certified =
+            verify_admission_lane(&next_lanes[0], &trusted_keys).expect("next certified lane");
+        let next_plan = AdmissionBatchPlan {
+            operation_id: [213; 32],
+            batch_id: [214; 32],
+            venue_id: committee_plan.venue_id,
+            epoch: committee_plan.epoch,
+            slot: 43,
+            batch_digest: next_certified.cluster_digest,
+            order_digest: next_order_digest,
+            first_sequence: 3,
+            admission_digests: vec![next_certified
+                .digest(committee_plan.venue_id, committee_plan.epoch)
+                .expect("next lane digest")],
+            expires_at: 500,
+        };
+        let next_statement = next_plan.statement().expect("next batch statement");
+        let next_native_approval = authorizer
+            .approve(
+                next_statement,
+                facility.state_root().expect("native next root"),
+                &signers,
+            )
+            .expect("next native approval");
+        let next_snapshot = facility
+            .register_admission_batch(&next_plan, &next_lanes, &next_native_approval, 100)
+            .expect("native later-sequence batch");
+        assert_eq!(
+            (
+                next_snapshot.first_sequence,
+                next_snapshot.population,
+                next_snapshot.consumed,
+            ),
+            (3, 1, 0)
+        );
+        let next_vm_root = state.root();
+        let next_vm_approval = authorizer
+            .approve(next_statement, next_vm_root, &signers)
+            .expect("next VM approval");
+        let next_transaction = TransactionEnvelope::new(
+            "defmivm.issueAdmissionBatch",
+            json!({
+                "plan": admission_batch_json(&next_plan),
+                "admissionLanes": admission_lanes_json(&next_lanes),
+                "approval": approval_json(&next_vm_approval),
+                "expectedBeforeRoot": hex::encode(next_vm_root),
+            }),
+        )
+        .expect("next batch transaction")
+        .encode()
+        .expect("next batch bytes");
+        state
+            .apply(&next_transaction, &authorizer, 100)
+            .expect("VM later-sequence batch");
+        assert_eq!(
+            state.root(),
+            facility.state_root().expect("later-sequence batch root")
+        );
+    }
+
+    #[test]
+    fn boj_common_collateral_reservation_and_simultaneous_dvp_are_consensus_atomic() {
+        let (authorizer, signers) = committee();
+        let mut state = State::default();
+        let deadline = 10_000;
+        for (entity, funds, jgb, operation, cash) in [
+            ([1; 32], [11; 32], [21; 32], [101; 32], 100_000),
+            ([2; 32], [12; 32], [22; 32], [102; 32], 0),
+        ] {
+            let request = RegisterParticipant {
+                operation_id: operation,
+                participant: BojParticipant {
+                    legal_entity_id: entity,
+                    funds_account_id: funds,
+                    jgb_account_id: jgb,
+                    current_account_balance_yen: cash,
+                    other_secured_exposure_yen: 0,
+                    intraday_overdraft_yen: 0,
+                    business_day: 20260831,
+                    repayment_deadline: deadline,
+                    business_day_closed: false,
+                    sequence: 0,
+                    status: ParticipantStatus::Active,
+                },
+            };
+            apply(
+                &mut state,
+                &authorizer,
+                &signers,
+                "defmivm.issueBojParticipant",
+                "request",
+                json!({
+                    "operationID": hex::encode(operation),
+                    "legalEntityID": hex::encode(entity),
+                    "fundsAccountID": hex::encode(funds),
+                    "jgbAccountID": hex::encode(jgb),
+                    "currentAccountBalanceYen": cash,
+                    "otherSecuredExposureYen": 0,
+                    "businessDay": 20260831,
+                    "repaymentDeadline": deadline,
+                }),
+                boj_operation_statement(b"register-participant", &request).unwrap(),
+                100,
+            )
+            .unwrap();
+        }
+
+        for (operation, lot_id, owner) in [
+            ([103; 32], [30; 32], [1; 32]),
+            ([104; 32], [31; 32], [2; 32]),
+        ] {
+            let request = PledgeCollateral {
+                operation_id: operation,
+                expected_participant_sequence: 0,
+                lot: JgbCollateralLot {
+                    lot_id,
+                    asset_id: [90; 32],
+                    owner_legal_entity_id: owner,
+                    face_value_yen: 1_000_000,
+                    market_price_per_100_micros: 100_000_000,
+                    index_ratio_ppm: 1_000_000,
+                    valuation_rate_bps: 9_700,
+                    valuation_epoch: 1,
+                    pledged: true,
+                    sequence: 0,
+                },
+            };
+            apply(
+                &mut state,
+                &authorizer,
+                &signers,
+                "defmivm.issueBojCollateralPledge",
+                "request",
+                json!({
+                    "operationID": hex::encode(operation),
+                    "expectedParticipantSequence": 0,
+                    "lotID": hex::encode(lot_id),
+                    "assetID": hex::encode([90; 32]),
+                    "ownerLegalEntityID": hex::encode(owner),
+                    "faceValueYen": 1_000_000,
+                    "marketPricePer100Micros": 100_000_000,
+                    "indexRatioPpm": 1_000_000,
+                    "valuationRateBps": 9_700,
+                    "valuationEpoch": 1,
+                }),
+                boj_operation_statement(b"pledge-collateral", &request).unwrap(),
+                100,
+            )
+            .unwrap();
+        }
+
+        let reserve = ReserveIntradayLiquidity {
+            operation_id: [105; 32],
+            reservation_id: [50; 32],
+            legal_entity_id: [1; 32],
+            instruction_commitment: [60; 32],
+            expected_participant_sequence: 1,
+            amount_yen: 700_000,
+            expires_at: 1_000,
+        };
+        apply(
+            &mut state,
+            &authorizer,
+            &signers,
+            "defmivm.issueBojIntradayReserve",
+            "request",
+            json!({
+                "operationID": hex::encode(reserve.operation_id),
+                "reservationID": hex::encode(reserve.reservation_id),
+                "legalEntityID": hex::encode(reserve.legal_entity_id),
+                "instructionCommitment": hex::encode(reserve.instruction_commitment),
+                "expectedParticipantSequence": reserve.expected_participant_sequence,
+                "amountYen": reserve.amount_yen,
+                "expiresAt": reserve.expires_at,
+            }),
+            boj_operation_statement(b"reserve-intraday-liquidity", &reserve).unwrap(),
+            100,
+        )
+        .unwrap();
+
+        let stale = ReserveIntradayLiquidity {
+            operation_id: [106; 32],
+            reservation_id: [51; 32],
+            legal_entity_id: [1; 32],
+            instruction_commitment: [61; 32],
+            expected_participant_sequence: 1,
+            amount_yen: 1,
+            expires_at: 1_000,
+        };
+        let stale_transaction = authorized_transaction(
+            &state,
+            &authorizer,
+            &signers,
+            "defmivm.issueBojIntradayReserve",
+            "request",
+            json!({
+                "operationID": hex::encode(stale.operation_id),
+                "reservationID": hex::encode(stale.reservation_id),
+                "legalEntityID": hex::encode(stale.legal_entity_id),
+                "instructionCommitment": hex::encode(stale.instruction_commitment),
+                "expectedParticipantSequence": stale.expected_participant_sequence,
+                "amountYen": stale.amount_yen,
+                "expiresAt": stale.expires_at,
+            }),
+            boj_operation_statement(b"reserve-intraday-liquidity", &stale).unwrap(),
+        )
+        .unwrap();
+        let before_stale = state.clone();
+        assert!(state
+            .apply(&stale_transaction, &authorizer, 100)
+            .unwrap_err()
+            .contains("expected sequence"));
+        assert_eq!(state, before_stale);
+
+        let dvp = SimultaneousCollateralDvp {
+            operation_id: [107; 32],
+            settlement_id: [70; 32],
+            instruction_commitment: [60; 32],
+            buyer_legal_entity_id: [1; 32],
+            seller_legal_entity_id: [2; 32],
+            lot_id: [31; 32],
+            payment_yen: 800_000,
+            buyer_pledges_on_receipt: true,
+            overdraft_reservation_id: [50; 32],
+            expected_buyer_sequence: 2,
+            expected_seller_sequence: 1,
+            expected_lot_sequence: 1,
+        };
+        apply(
+            &mut state,
+            &authorizer,
+            &signers,
+            "defmivm.issueBojSimultaneousDvp",
+            "request",
+            json!({
+                "operationID": hex::encode(dvp.operation_id),
+                "settlementID": hex::encode(dvp.settlement_id),
+                "instructionCommitment": hex::encode(dvp.instruction_commitment),
+                "buyerLegalEntityID": hex::encode(dvp.buyer_legal_entity_id),
+                "sellerLegalEntityID": hex::encode(dvp.seller_legal_entity_id),
+                "lotID": hex::encode(dvp.lot_id),
+                "paymentYen": dvp.payment_yen,
+                "buyerPledgesOnReceipt": dvp.buyer_pledges_on_receipt,
+                "overdraftReservationID": hex::encode(dvp.overdraft_reservation_id),
+                "expectedBuyerSequence": dvp.expected_buyer_sequence,
+                "expectedSellerSequence": dvp.expected_seller_sequence,
+                "expectedLotSequence": dvp.expected_lot_sequence,
+            }),
+            boj_operation_statement(b"simultaneous-collateral-dvp", &dvp).unwrap(),
+            100,
+        )
+        .unwrap();
+
+        let buyer = &state.boj_liquidity.participants[&id_key(&[1; 32])];
+        let seller = &state.boj_liquidity.participants[&id_key(&[2; 32])];
+        assert_eq!(buyer.current_account_balance_yen, 0);
+        assert_eq!(buyer.intraday_overdraft_yen, 700_000);
+        assert_eq!(seller.current_account_balance_yen, 800_000);
+        assert_eq!(
+            state.boj_liquidity.collateral_lots[&id_key(&[31; 32])].owner_legal_entity_id,
+            [1; 32]
+        );
+        assert_eq!(
+            state.boj_liquidity.reservations[&id_key(&[50; 32])].status,
+            qomm_defmi::central_bank_liquidity::ReservationStatus::Consumed
+        );
+
+        let receipt = ApplyFundsReceipt {
+            operation_id: [108; 32],
+            receipt_id: [80; 32],
+            legal_entity_id: [1; 32],
+            expected_participant_sequence: 3,
+            amount_yen: 800_000,
+        };
+        apply(
+            &mut state,
+            &authorizer,
+            &signers,
+            "defmivm.issueBojFundsReceipt",
+            "request",
+            json!({
+                "operationID": hex::encode(receipt.operation_id),
+                "receiptID": hex::encode(receipt.receipt_id),
+                "legalEntityID": hex::encode(receipt.legal_entity_id),
+                "expectedParticipantSequence": receipt.expected_participant_sequence,
+                "amountYen": receipt.amount_yen,
+            }),
+            boj_operation_statement(b"apply-funds-receipt", &receipt).unwrap(),
+            9_000,
+        )
+        .unwrap();
+        assert_eq!(
+            state.boj_liquidity.participants[&id_key(&[1; 32])].intraday_overdraft_yen,
+            0
+        );
+        assert_eq!(
+            state.boj_liquidity.participants[&id_key(&[1; 32])].current_account_balance_yen,
+            100_000
+        );
+
+        let exposure = UpdateOtherSecuredExposure {
+            operation_id: [109; 32],
+            legal_entity_id: [1; 32],
+            expected_participant_sequence: 4,
+            new_exposure_yen: 100_000,
+        };
+        apply(
+            &mut state,
+            &authorizer,
+            &signers,
+            "defmivm.issueBojOtherExposure",
+            "request",
+            json!({
+                "operationID": hex::encode(exposure.operation_id),
+                "legalEntityID": hex::encode(exposure.legal_entity_id),
+                "expectedParticipantSequence": exposure.expected_participant_sequence,
+                "newExposureYen": exposure.new_exposure_yen,
+            }),
+            boj_operation_statement(b"update-other-secured-exposure", &exposure).unwrap(),
+            9_000,
+        )
+        .unwrap();
+
+        let collateral_return = ReturnCollateral {
+            operation_id: [110; 32],
+            lot_id: [30; 32],
+            expected_lot_sequence: 1,
+            expected_participant_sequence: 5,
+        };
+        apply(
+            &mut state,
+            &authorizer,
+            &signers,
+            "defmivm.issueBojCollateralReturn",
+            "request",
+            json!({
+                "operationID": hex::encode(collateral_return.operation_id),
+                "lotID": hex::encode(collateral_return.lot_id),
+                "expectedLotSequence": collateral_return.expected_lot_sequence,
+                "expectedParticipantSequence": collateral_return.expected_participant_sequence,
+            }),
+            boj_operation_statement(b"return-collateral", &collateral_return).unwrap(),
+            9_000,
+        )
+        .unwrap();
+        assert!(!state.boj_liquidity.collateral_lots[&id_key(&[30; 32])].pledged);
+
+        let close = EndBusinessDay {
+            operation_id: [111; 32],
+            legal_entity_id: [1; 32],
+            expected_participant_sequence: 6,
+        };
+        apply(
+            &mut state,
+            &authorizer,
+            &signers,
+            "defmivm.issueBojEndOfDay",
+            "request",
+            json!({
+                "operationID": hex::encode(close.operation_id),
+                "legalEntityID": hex::encode(close.legal_entity_id),
+                "expectedParticipantSequence": close.expected_participant_sequence,
+            }),
+            boj_operation_statement(b"end-business-day", &close).unwrap(),
+            deadline,
+        )
+        .unwrap();
+        let open = OpenBusinessDay {
+            operation_id: [112; 32],
+            legal_entity_id: [1; 32],
+            expected_participant_sequence: 7,
+            business_day: 20260901,
+            repayment_deadline: 20_000,
+        };
+        apply(
+            &mut state,
+            &authorizer,
+            &signers,
+            "defmivm.issueBojOpenBusinessDay",
+            "request",
+            json!({
+                "operationID": hex::encode(open.operation_id),
+                "legalEntityID": hex::encode(open.legal_entity_id),
+                "expectedParticipantSequence": open.expected_participant_sequence,
+                "businessDay": open.business_day,
+                "repaymentDeadline": open.repayment_deadline,
+            }),
+            boj_operation_statement(b"open-business-day", &open).unwrap(),
+            10_001,
+        )
+        .unwrap();
+        assert_eq!(
+            state.boj_liquidity.participants[&id_key(&[1; 32])].business_day,
+            20260901
+        );
+        state.validate().unwrap();
     }
 }

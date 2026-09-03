@@ -3,6 +3,21 @@
 version = 4
 
 [[package]]
+name = "aethel-core"
+version = "0.1.0"
+source = "git+https://github.com/shukob/aethel#0bd07a2cb596db36133e9ece6d783a3a6e982aa8"
+dependencies = [
+ "dekyx-aethel",
+ "dekyx-core",
+ "ed25519-dalek",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -310,6 +325,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "deccp-aethel"
+version = "0.1.0"
+source = "git+https://github.com/shukob/deccp#bd362a73000b7663665ef62c155e26c959385a78"
+dependencies = [
+ "deccp-core",
+ "sha2",
+]
+
+[[package]]
+name = "deccp-core"
+version = "0.1.0"
+source = "git+https://github.com/shukob/deccp#bd362a73000b7663665ef62c155e26c959385a78"
+dependencies = [
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "dekyx-aethel"
+version = "0.1.0"
+source = "git+https://github.com/shukob/dekyx#96fcaf13e24fc5ae85d0e2a4b1b5753685535b8f"
+dependencies = [
+ "dekyx-core",
+ "serde",
+]
+
+[[package]]
+name = "dekyx-core"
+version = "0.1.0"
+source = "git+https://github.com/shukob/dekyx#96fcaf13e24fc5ae85d0e2a4b1b5753685535b8f"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519-dalek",
+ "rand_core",
+ "serde",
+ "sha2",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -356,6 +414,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
  "pkcs8",
+ "serde",
  "signature",
 ]
 
@@ -869,9 +928,9 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "mio"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30d65c71f1ce40ab09135ce117d742b9f8a19ff91a41a8b57ed50bc2de59c427"
+checksum = "4b18443e9c262bfe8fa82f51666e2642c53393f7e5c27b3e1aeab922cff5b9d8"
 dependencies = [
  "libc",
  "wasi",
@@ -1165,10 +1224,13 @@ dependencies = [
 name = "qomm-avalanche-vm"
 version = "0.1.0"
 dependencies = [
+ "aethel-core",
  "avalanche-rpcchainvm-qomm",
  "base64",
  "bs58",
  "curve25519-dalek",
+ "deccp-aethel",
+ "deccp-core",
  "ed25519-dalek",
  "hex",
  "merlin",
@@ -1337,6 +1399,8 @@ dependencies = [
  "qomm-zk",
  "rand",
  "rand_core",
+ "serde",
+ "serde_json",
  "sha2",
 ]
 
@@ -1561,9 +1625,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smallvec"
-version = "1.15.2"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
 
 [[package]]
 name = "socket2"
@@ -2080,6 +2144,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "zkpi-defmi-sdk"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "qomm-defmi",
+ "qomm-transport",
+ "qomm-zkpi",
+ "serde",
+ "sha2",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["qomm-defmi", "qomm-proofs", "qomm-zk", "qomm-zkpi", "qomm-measure", "qomm-sim", "qomm-dsl", "qomm-mpc", "qomm-transport", "qomm-audit", "qomm-avalanche-vm", "qomm-harness"]
+members = ["qomm-defmi", "qomm-proofs", "qomm-zk", "qomm-zkpi", "qomm-measure", "qomm-sim", "qomm-dsl", "qomm-mpc", "qomm-transport", "qomm-audit", "qomm-avalanche-vm", "zkpi-defmi-sdk", "qomm-harness"]
 
 [workspace.package]
 version = "0.1.0"
@@ -42,4 +42,6 @@ qomm-sim = { path = "qomm-sim" }
 qomm-measure = { path = "qomm-measure" }
 qomm-mpc = { path = "qomm-mpc" }
 qomm-transport = { path = "qomm-transport" }
+zkpi-defmi-sdk = { path = "zkpi-defmi-sdk" }
 qomm-audit = { path = "qomm-audit" }
+aethel-core = { git = "https://github.com/shukob/aethel" }

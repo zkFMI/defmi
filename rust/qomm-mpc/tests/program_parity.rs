@@ -91,7 +91,12 @@ const CASES: [Case; 6] = [
 // from the generated source without changing its circuit semantics. V6 emits
 // the approved policy DSL as executable pricing code. V7 gates RFQ output and
 // persisted winner witnesses with the secret real/cover bit.
-const GENERATOR_V7_PROGRAM_CONTRACT: [(&str, usize, &str); 6] = [
+// V8 (reissued 2026-09-03): only the profile that persists the DvP witness
+// changes, because the generated DvP block now carries the winning Maker's
+// pool-before opening and its remainder range proof and takes the Taker's
+// buy-side cash reserve from the priced amount; see all_files_parity.rs for
+// the provenance of that generator revision.
+const GENERATOR_V8_PROGRAM_CONTRACT: [(&str, usize, &str); 6] = [
     (
         "rfq_4_anchored_all_off",
         9_596,
@@ -99,8 +104,8 @@ const GENERATOR_V7_PROGRAM_CONTRACT: [(&str, usize, &str); 6] = [
     ),
     (
         "rfq_16_none_all_on_shamir",
-        18_854,
-        "45faa13d7ec42b52824429940aaddee70ba9993f8c7a1e5a783c0c3e3de09f08",
+        19_019,
+        "d97bb739f87f12419d64200ffaecc773ee2ee82c4aaa3e0acb57facbdb58d04c",
     ),
     (
         "rfm_4_none_input_shamir",
@@ -206,7 +211,7 @@ fn rust_cli_matches_the_versioned_generator_program_contract() {
 
     let mut mismatches = Vec::new();
     for (case, (contract_name, expected_bytes, expected_sha256)) in
-        CASES.into_iter().zip(GENERATOR_V7_PROGRAM_CONTRACT)
+        CASES.into_iter().zip(GENERATOR_V8_PROGRAM_CONTRACT)
     {
         assert_eq!(case.name, contract_name);
         let rust_program = directory.0.join(format!("{}.mpc", case.name));

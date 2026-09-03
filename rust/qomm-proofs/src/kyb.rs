@@ -83,6 +83,30 @@ impl KybCredential {
         })
     }
 
+    /// Reconstruct a credential inside the legal entity's protected service.
+    ///
+    /// The scalar is expected to come from an encrypted key store or HSM.  It
+    /// is never part of a presentation and must not be sent to the venue.  The
+    /// constructor exists so a participant service can survive restarts while
+    /// keeping the same venue-scoped nullifier and facility limit.
+    pub fn from_secret_scalar(
+        control_group_id: &str,
+        attributes: BusinessAttributes,
+        max_tier: u32,
+        secret: Scalar,
+    ) -> Result<Self, &'static str> {
+        if control_group_id.trim().is_empty() || max_tier == 0 || secret == Scalar::ZERO {
+            return Err("control group, maximum tier, and non-zero secret are required");
+        }
+        Ok(Self {
+            control_group_id: control_group_id.to_string(),
+            public_point: RISTRETTO_BASEPOINT_POINT * secret,
+            secret,
+            cohorts: attributes.cohorts(max_tier),
+            attributes,
+        })
+    }
+
     /// What the venue counts against. Equal across an entity's wallets,
     /// unrelated across scopes.
     pub fn scope_nullifier(&self, scope: &[u8]) -> RistrettoPoint {
@@ -191,6 +215,25 @@ impl KybPresentation {
         for response in &self.proof.responses {
             hash.update(response.as_bytes());
         }
+        hash.finalize().into()
+    }
+
+    /// Stable authorization binding for a long-lived mandate in one venue
+    /// scope. The membership proof itself is deliberately re-randomized on
+    /// every presentation, so its full transcript digest must never be used
+    /// as a durable facility or reserve identifier. This binding keeps the
+    /// cohort, registry, scope, context and scope nullifier, while excluding
+    /// one-use proof challenges and responses.
+    pub fn binding_digest(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(b"QOMM:KYB:SCOPE-BINDING:v1");
+        hash.update((self.cohort.len() as u32).to_be_bytes());
+        hash.update(self.cohort.as_bytes());
+        hash.update(self.registry_id);
+        hash.update((self.scope.len() as u32).to_be_bytes());
+        hash.update(&self.scope);
+        hash.update(self.context_hash);
+        hash.update(self.proof.nullifier.compress().as_bytes());
         hash.finalize().into()
     }
 

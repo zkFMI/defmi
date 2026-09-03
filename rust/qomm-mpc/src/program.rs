@@ -24,6 +24,24 @@ pub const FIELDS: [&str; 10] = [
     "use_ref",
 ];
 
+/// Bit widths used by the production QOMM product circuit and by the public
+/// zkPI/DvP proof coordinator. Keep these values in one crate so persisted MPC
+/// witnesses can never be interpreted with a narrower verifier bound.
+pub const PRODUCT_ZKPI_AMOUNT_BITS: usize = 64;
+pub const PRODUCT_ZKPI_PRICE_BITS: usize = 32;
+// DeFMI's settlement-verifier epoch publishes one amount bound and applies it
+// both to the transferred quantity and to the two reservation remainders.
+// The MPC persistence must therefore use that exact width: a different valid
+// Bulletproof width would produce a proof that the public DeFMI verifier is
+// required to reject even when the underlying remainder is non-negative.
+pub const PRODUCT_DVP_REMAINDER_BITS: usize = PRODUCT_ZKPI_AMOUNT_BITS;
+pub const PRODUCT_QUOTE_ELIGIBILITY_BITS: usize = 48;
+pub const PRODUCT_QUOTE_SPAN_BITS: usize = 48;
+
+const fn is_bulletproof_width(bits: usize) -> bool {
+    matches!(bits, 8 | 16 | 32 | 64)
+}
+
 /// The scalar field order of Ed25519, used by the Shamir input option.
 pub const ED25519_ORDER: &str =
     "7237005577332262213973186563042994240857116359379907606001950938285454250989";
@@ -519,13 +537,10 @@ pub fn build_program(config: &ProgramConfig) -> Result<String, ProgramError> {
         ));
     }
     if c.persist_zkpi_wires
-        && (c.zkpi_amount_bits == 0
-            || c.zkpi_amount_bits > 64
-            || c.zkpi_price_bits == 0
-            || c.zkpi_price_bits > 64)
+        && (!is_bulletproof_width(c.zkpi_amount_bits) || !is_bulletproof_width(c.zkpi_price_bits))
     {
         return Err(ProgramError(
-            "zkPI amount and price widths must be between 1 and 64".into(),
+            "zkPI amount and price widths must be one of 8, 16, 32 or 64 bits".into(),
         ));
     }
     if c.persist_dvp_wires
@@ -602,7 +617,18 @@ pub fn build_program(config: &ProgramConfig) -> Result<String, ProgramError> {
     w.push(format!("M = {}", c.n_mm));
     w.push(format!("N_PARTIES = {}", c.n_parties));
     w.push(format!("LARGE = {large}"));
-    w.push(format!("NOW_T = {}", c.now_t));
+    if c.persist_quote_proof_wires {
+        // A product quote circuit is compiled once and serves many epochs.
+        // MP-SPDZ reads this public value from the round-local
+        // Programs/Public-Input file at execution time. Keeping `now_t` as a
+        // compile-time constant made the MPC freshness wire disagree with the
+        // public quote proof as soon as the first live round used another
+        // timestamp.
+        w.push("from Compiler.library import public_input");
+        w.push("NOW_T = public_input()");
+    } else {
+        w.push(format!("NOW_T = {}", c.now_t));
+    }
     if c.persist_zkpi_wires {
         w.push(format!("ZKPI_AMOUNT_BITS = {}", c.zkpi_amount_bits));
         w.push(format!("ZKPI_PRICE_BITS = {}", c.zkpi_price_bits));
@@ -1458,7 +1484,10 @@ pub fn build_program(config: &ProgramConfig) -> Result<String, ProgramError> {
                     |# request has an independent M-maker lane and `pack_key` uses
                     |# `cost*M + maker`; N_REQ must never change the price scale.
                     |# Therefore `cost <= L` is exactly `key <= L*M + M-1`.
-                    |limit_key = u_limit * M + (M - 1)
+            |# Buy: ask <= maximum. Sell: -bid <= -minimum. Keep the
+            |# comparison in the same signed-cost domain used by argmin.
+            |cost_limit = u_dir.if_else(-u_limit, u_limit)
+            |limit_key = cost_limit * M + (M - 1)
                     |# The fill comparison rides the tournament's last layer rather
                     |# than running after it. Measured at +9 rounds standalone.
                     |raw_best_key, raw_fill = argmin_fill(wide_keys.get_vector(0, M), M,
@@ -1617,32 +1646,52 @@ pub fn build_program(config: &ProgramConfig) -> Result<String, ProgramError> {
                             |    selected_maker_cash_reserve = selected_maker_cash_reserve + winner_flags[_m] * dvp_maker_cash_reserves[_m]
                             |    selected_maker_cash_blinding = selected_maker_cash_blinding + winner_flags[_m] * dvp_maker_cash_blindings[_m]
                             |
-                            |# user buys (dir=0): Maker delivers securities and
-                            |# Taker pays cash. user sells (dir=1): the roles reverse.
-                            |dvp_direction = req_dir[0]
-                            |dvp_securities_reserve = dvp_direction.if_else(dvp_taker_securities_reserve,
-                            |                                                   selected_maker_securities_reserve)
-                            |dvp_securities_reserve_blinding = dvp_direction.if_else(dvp_taker_securities_blinding,
-                            |                                                            selected_maker_securities_blinding)
-                            |dvp_cash_reserve = dvp_direction.if_else(selected_maker_cash_reserve,
-                            |                                             dvp_taker_cash_reserve)
-                            |dvp_cash_reserve_blinding = dvp_direction.if_else(selected_maker_cash_blinding,
-                            |                                                      dvp_taker_cash_blinding)
                             |dvp_cash = W_qty[0] * zkpi_price
                             |dvp_cash_blinding = sint.get_random()
                             |dvp_product_cross = dvp_cash_blinding - zkpi_qty_blinding * zkpi_price
+                            |# user buys (dir=0): Maker delivers exactly the
+                            |# requested securities quantity and Taker's maximum
+                            |# cash reserve covers the hidden price. user sells
+                            |# (dir=1): Taker securities cover the quantity and
+                            |# Maker delivers exactly the MPC-computed cash.
+                            |# The larger standing Maker pool is split separately
+                            |# below, so one RFQ cannot lock the whole policy cap.
+                            |dvp_direction = req_dir[0]
+                            |dvp_securities_reserve = dvp_direction.if_else(dvp_taker_securities_reserve,
+                            |                                                   W_qty[0])
+                            |dvp_securities_reserve_blinding = dvp_direction.if_else(dvp_taker_securities_blinding,
+                            |                                                            zkpi_qty_blinding)
+                            |dvp_cash_reserve = dvp_direction.if_else(dvp_cash,
+                            |                                             dvp_taker_cash_reserve)
+                            |dvp_cash_reserve_blinding = dvp_direction.if_else(dvp_cash_blinding,
+                            |                                                      dvp_taker_cash_blinding)
                             |dvp_securities_remainder = dvp_securities_reserve - W_qty[0]
                             |dvp_securities_remainder_blinding = dvp_securities_reserve_blinding - zkpi_qty_blinding
                             |dvp_cash_remainder = dvp_cash_reserve - dvp_cash
                             |dvp_cash_remainder_blinding = dvp_cash_reserve_blinding - dvp_cash_blinding
+                            |# This is not either DvP refund. It is the unallocated
+                            |# balance of the selected Maker's policy covenant.
+                            |dvp_maker_pool_before = dvp_direction.if_else(selected_maker_cash_reserve,
+                            |                                                  selected_maker_securities_reserve)
+                            |dvp_maker_pool_before_blinding = dvp_direction.if_else(selected_maker_cash_blinding,
+                            |                                                           selected_maker_securities_blinding)
+                            |dvp_maker_delivery = dvp_direction.if_else(dvp_cash, W_qty[0])
+                            |dvp_maker_delivery_blinding = dvp_direction.if_else(dvp_cash_blinding,
+                            |                                                        zkpi_qty_blinding)
+                            |dvp_maker_pool_remainder = dvp_maker_pool_before - dvp_maker_delivery
+                            |dvp_maker_pool_remainder_blinding = dvp_maker_pool_before_blinding - dvp_maker_delivery_blinding
                             |dvp_securities_bits = dvp_securities_remainder.bit_decompose(DVP_REMAINDER_BITS)
                             |dvp_cash_bits = dvp_cash_remainder.bit_decompose(DVP_REMAINDER_BITS)
+                            |dvp_maker_pool_bits = dvp_maker_pool_remainder.bit_decompose(DVP_REMAINDER_BITS)
                             |dvp_securities_bit_blindings = [sint.get_random() for _ in range(DVP_REMAINDER_BITS)]
                             |dvp_cash_bit_blindings = [sint.get_random() for _ in range(DVP_REMAINDER_BITS)]
+                            |dvp_maker_pool_bit_blindings = [sint.get_random() for _ in range(DVP_REMAINDER_BITS)]
                             |dvp_securities_bit_cross = [dvp_securities_bit_blindings[_b] * (1 - dvp_securities_bits[_b])
                             |                            for _b in range(DVP_REMAINDER_BITS)]
                             |dvp_cash_bit_cross = [dvp_cash_bit_blindings[_b] * (1 - dvp_cash_bits[_b])
                             |                    for _b in range(DVP_REMAINDER_BITS)]
+                            |dvp_maker_pool_bit_cross = [dvp_maker_pool_bit_blindings[_b] * (1 - dvp_maker_pool_bits[_b])
+                            |                          for _b in range(DVP_REMAINDER_BITS)]
                             "###,
                         );
                     }
@@ -1800,6 +1849,10 @@ pub fn build_program(config: &ProgramConfig) -> Result<String, ProgramError> {
                             |for _b in range(DVP_REMAINDER_BITS):
                             |    wires += [dvp_cash_bits[_b], dvp_cash_bit_blindings[_b],
                             |              dvp_cash_bit_cross[_b]]
+                            |wires += [dvp_maker_pool_remainder, dvp_maker_pool_remainder_blinding]
+                            |for _b in range(DVP_REMAINDER_BITS):
+                            |    wires += [dvp_maker_pool_bits[_b], dvp_maker_pool_bit_blindings[_b],
+                            |              dvp_maker_pool_bit_cross[_b]]
                             "###,
                         );
                     }
@@ -1977,5 +2030,50 @@ mod tests {
         let output = build_program(&ProgramConfig::default()).unwrap();
         assert!(output.ends_with('\n'));
         assert!(!output.ends_with("\n\n"));
+    }
+
+    #[test]
+    fn complete_quote_program_reads_the_market_time_at_runtime() {
+        let config = ProgramConfig {
+            persist_wires: true,
+            persist_zkpi_wires: true,
+            persist_quote_proof_wires: true,
+            public_maker_assets: true,
+            ..ProgramConfig::default()
+        };
+        let output = build_program(&config).unwrap();
+        assert!(output.contains("from Compiler.library import public_input"));
+        assert!(output.contains("NOW_T = public_input()"));
+        assert!(!output.contains("NOW_T = 1000"));
+    }
+
+    #[test]
+    fn persisted_zkpi_widths_are_validated_before_runtime_proof_generation() {
+        let production = ProgramConfig {
+            persist_wires: true,
+            persist_zkpi_wires: true,
+            zkpi_amount_bits: PRODUCT_ZKPI_AMOUNT_BITS,
+            zkpi_price_bits: PRODUCT_ZKPI_PRICE_BITS,
+            ..ProgramConfig::default()
+        };
+        build_program(&production).unwrap();
+
+        let unsupported = ProgramConfig {
+            zkpi_amount_bits: 48,
+            ..production
+        };
+        assert_eq!(
+            build_program(&unsupported).unwrap_err().to_string(),
+            "zkPI amount and price widths must be one of 8, 16, 32 or 64 bits"
+        );
+    }
+
+    #[test]
+    fn production_dvp_remainder_uses_the_defmi_amount_bound() {
+        assert_eq!(
+            PRODUCT_DVP_REMAINDER_BITS, PRODUCT_ZKPI_AMOUNT_BITS,
+            "the DeFMI verifier applies its amount bound to DvP remainders"
+        );
+        assert!(is_bulletproof_width(PRODUCT_DVP_REMAINDER_BITS));
     }
 }

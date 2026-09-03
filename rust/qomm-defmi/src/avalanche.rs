@@ -2,21 +2,28 @@
 
 use crate::facility::{
     AccountOpening, AdmissionBatchPlan, AdmissionBatchSnapshot, AdmissionCommitteePlan,
-    AdmissionSlotAdvance, AssetDefinition, CreditFacilityAmendment, CreditFacilityAmendmentProof,
-    CreditFacilityControl, CreditFacilityGrant, CreditFacilityRelationProof,
-    CreditFacilitySnapshot, CreditFacilityStatus, CreditFacilityTransition, DefmiFacility,
-    GuarantorDefinition, ProductReleaseOrder, ProductSettlementBatch, ProductSettlementOrder,
-    QuorumApproval, QuorumAuthorizer, ReservationAuthorization, ReservationEscrow, SettlementOrder,
+    AdmissionSlotAdvance, AssetDefinition, AssetKind, CreditFacilityAmendment,
+    CreditFacilityAmendmentProof, CreditFacilityControl, CreditFacilityGrant,
+    CreditFacilityRelationProof, CreditFacilitySnapshot, CreditFacilityStatus,
+    CreditFacilityTransition, DefmiFacility, GuarantorDefinition, GuarantorKind,
+    ProductReleaseOrder, ProductSettlementBatch, ProductSettlementOrder, QuorumApproval,
+    QuorumAuthorizer, ReservationAuthorization, ReservationEscrow, SettlementOrder,
     SettlementReceipt,
 };
 use crate::note_chain::{
-    CsdIssuerControl, CsdIssuerDefinition, DelegatedNoteSettlementOrder, EscrowClaimSpend,
-    NoteClaim, NoteClaimKind, NoteClaimMaterialization, NoteIssuance, NoteOutput,
-    NoteReservationEscrow, NoteSettlementOrder, NoteSpend, ProductNoteReleaseOrder,
-    ProductNoteSettlementBatch, ProductNoteSettlementOrder,
+    standing_pool_product_settlement_statement, CsdIssuerControl, CsdIssuerDefinition,
+    DelegatedNoteSettlementOrder, EscrowClaimSpend, NoteClaim, NoteClaimKind,
+    NoteClaimMaterialization, NoteIssuance, NoteOutput, NoteReservationEscrow, NoteSettlementOrder,
+    NoteSpend, ProductNoteNoFillReleaseOrder, ProductNoteReleaseOrder, ProductNoteSettlementBatch,
+    ProductNoteSettlementOrder, StandingNotePoolAllocation, StandingNotePoolRegistration,
 };
 use crate::notes::NoteLedger;
-use crate::product_evidence::ProductSettlementEvidence;
+use crate::participant::{
+    AccountBinding, EntityApproval, MandateControl, MandateReservation,
+    MandateReservationTransition, MpcService, ParticipantControl, ParticipantServiceBinding,
+    RegisterParticipant, RegistryConfiguration, RotateParticipantKey, StandingMandate,
+};
+use crate::product_evidence::{MpcNoFillEvidence, ProductSettlementEvidence};
 use crate::settlement_verifier::SettlementVerifierConfig;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -57,6 +64,19 @@ pub struct AcceptedTransition {
     pub after_root: [u8; 32],
 }
 
+/// Complete input to one atomic standing-pool split and product settlement.
+/// Grouping these references prevents callers from accidentally reordering or
+/// omitting one of the two linked authorizations when crossing an RPC boundary.
+#[derive(Clone, Copy)]
+pub struct StandingPoolProductSettlementRequest<'a> {
+    pub allocation_transition: &'a CreditFacilityTransition,
+    pub allocation_authorization: &'a ReservationAuthorization,
+    pub allocation: &'a StandingNotePoolAllocation,
+    pub allocation_approval: &'a QuorumApproval,
+    pub order: &'a ProductNoteSettlementOrder,
+    pub evidence: &'a ProductSettlementEvidence,
+}
+
 fn result_object(value: &Value) -> Result<&serde_json::Map<String, Value>, String> {
     value
         .as_object()
@@ -95,6 +115,146 @@ fn result_string<'a>(
 pub struct CanonicalCreditFacility {
     pub state_root: [u8; 32],
     pub facility: CreditFacilitySnapshot,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalAsset {
+    pub state_root: [u8; 32],
+    pub definition: AssetDefinition,
+    pub active: bool,
+}
+
+impl CanonicalAsset {
+    fn parse(value: &Value) -> Result<Self, String> {
+        let object = result_object(value)?;
+        let decimals = result_u64(object, "decimals")?;
+        let definition = AssetDefinition {
+            asset_id: result_hex32(object, "assetID")?,
+            code: result_string(object, "code")?.to_string(),
+            kind: AssetKind::parse(result_string(object, "kind")?)?,
+            decimals: decimals
+                .try_into()
+                .map_err(|_| "L1 asset decimals exceed u8".to_string())?,
+            terms_digest: result_hex32(object, "termsDigest")?,
+        };
+        definition.body()?;
+        Ok(Self {
+            state_root: result_hex32(object, "stateRoot")?,
+            definition,
+            active: object
+                .get("active")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| "L1 asset is missing active status".to_string())?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalGuarantor {
+    pub state_root: [u8; 32],
+    pub definition: GuarantorDefinition,
+    pub active: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalSettlementVerifier {
+    pub state_root: [u8; 32],
+    pub config: SettlementVerifierConfig,
+    pub statement: [u8; 32],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalAdmissionCursor {
+    pub state_root: [u8; 32],
+    pub venue_id: [u8; 32],
+    pub epoch: u64,
+    pub last_sequence: u64,
+    pub next_sequence: u64,
+}
+
+impl CanonicalAdmissionCursor {
+    fn parse(value: &Value) -> Result<Self, String> {
+        let object = result_object(value)?;
+        let last_sequence = result_u64(object, "lastSequence")?;
+        let next_sequence = result_u64(object, "nextSequence")?;
+        if result_u64(object, "epoch")? == 0
+            || next_sequence
+                != last_sequence
+                    .checked_add(1)
+                    .ok_or_else(|| "L1 admission sequence is exhausted".to_string())?
+        {
+            return Err("L1 admission cursor is not canonical".into());
+        }
+        Ok(Self {
+            state_root: result_hex32(object, "stateRoot")?,
+            venue_id: result_hex32(object, "venueID")?,
+            epoch: result_u64(object, "epoch")?,
+            last_sequence,
+            next_sequence,
+        })
+    }
+}
+
+impl CanonicalSettlementVerifier {
+    fn parse(value: &Value) -> Result<Self, String> {
+        let object = result_object(value)?;
+        let config = SettlementVerifierConfig {
+            venue_id: result_hex32(object, "venueID")?,
+            defmi_id: result_hex32(object, "defmiID")?,
+            epoch: result_u64(object, "epoch")?,
+            quote_registry_digest: result_hex32(object, "quoteRegistryDigest")?,
+            quote_eligibility_bits: result_u64(object, "quoteEligibilityBits")?
+                .try_into()
+                .map_err(|_| "L1 quote eligibility width exceeds u16".to_string())?,
+            quote_span_bits: result_u64(object, "quoteSpanBits")?
+                .try_into()
+                .map_err(|_| "L1 quote span width exceeds u16".to_string())?,
+            amount_bits: result_u64(object, "amountBits")?
+                .try_into()
+                .map_err(|_| "L1 amount width exceeds u16".to_string())?,
+            price_bits: result_u64(object, "priceBits")?
+                .try_into()
+                .map_err(|_| "L1 price width exceeds u16".to_string())?,
+            max_horizon: result_u64(object, "maxHorizon")?,
+            frost_public_package: BASE64
+                .decode(result_string(object, "frostPublicPackage")?)
+                .map_err(|_| "L1 FROST public package is not base64".to_string())?,
+            valid_from: result_u64(object, "validFrom")?,
+            valid_until: result_u64(object, "validUntil")?,
+        };
+        config.validate()?;
+        let statement = result_hex32(object, "statement")?;
+        if config.statement()? != statement {
+            return Err("L1 settlement verifier statement differs from its fields".into());
+        }
+        Ok(Self {
+            state_root: result_hex32(object, "stateRoot")?,
+            config,
+            statement,
+        })
+    }
+}
+
+impl CanonicalGuarantor {
+    fn parse(value: &Value) -> Result<Self, String> {
+        let object = result_object(value)?;
+        let definition = GuarantorDefinition {
+            guarantor_id: result_hex32(object, "guarantorID")?,
+            kind: GuarantorKind::parse(result_string(object, "kind")?)?,
+            name: result_string(object, "name")?.to_string(),
+            public_key: result_hex32(object, "publicKey")?,
+            risk_policy_digest: result_hex32(object, "riskPolicyDigest")?,
+        };
+        definition.body()?;
+        Ok(Self {
+            state_root: result_hex32(object, "stateRoot")?,
+            definition,
+            active: object
+                .get("active")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| "L1 guarantor is missing active status".to_string())?,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -217,6 +377,27 @@ pub struct CanonicalNote {
     pub output: NoteOutput,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalNoteSerial {
+    pub state_root: [u8; 32],
+    pub serial_point: [u8; 32],
+    pub spent: bool,
+}
+
+impl CanonicalNoteSerial {
+    fn parse(value: &Value) -> Result<Self, String> {
+        let object = result_object(value)?;
+        Ok(Self {
+            state_root: result_hex32(object, "stateRoot")?,
+            serial_point: result_hex32(object, "serialPoint")?,
+            spent: object
+                .get("spent")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| "L1 note-serial snapshot has no spent flag".to_string())?,
+        })
+    }
+}
+
 impl CanonicalNote {
     fn parse(value: &Value) -> Result<Self, String> {
         let object = result_object(value)?;
@@ -281,12 +462,17 @@ impl CanonicalNotePage {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CanonicalNoteReservation {
     pub state_root: [u8; 32],
+    pub accepted_height: u64,
     pub hold_id: [u8; 32],
     pub escrow_note_id: [u8; 32],
     pub asset_id: [u8; 32],
     pub amount_commitment: [u8; 32],
     pub proof_digest: [u8; 32],
     pub delegation_digest: [u8; 32],
+    /// Canonical statement that created the reservation.  This remains stable
+    /// while `settlement_digest` is zero for an active hold, so clients can
+    /// safely recover the original reserve receipt after a retry or restart.
+    pub reserve_receipt_digest: [u8; 32],
     pub status: String,
     pub settlement_digest: [u8; 32],
 }
@@ -300,14 +486,163 @@ impl CanonicalNoteReservation {
         }
         Ok(Self {
             state_root: result_hex32(object, "stateRoot")?,
+            accepted_height: result_u64(object, "acceptedHeight")?,
             hold_id: result_hex32(object, "holdID")?,
             escrow_note_id: result_hex32(object, "escrowNoteID")?,
             asset_id: result_hex32(object, "assetID")?,
             amount_commitment: result_hex32(object, "amountCommitment")?,
             proof_digest: result_hex32(object, "proofDigest")?,
             delegation_digest: result_hex32(object, "delegationDigest")?,
+            reserve_receipt_digest: result_hex32(object, "reserveReceiptDigest")?,
             status,
             settlement_digest: result_hex32(object, "settlementDigest")?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalStandingNotePool {
+    pub state_root: [u8; 32],
+    pub pool_id: [u8; 32],
+    pub venue_id: [u8; 32],
+    pub defmi_id: [u8; 32],
+    pub entity_commitment: [u8; 32],
+    pub policy_digest: [u8; 32],
+    pub mandate_digest: [u8; 32],
+    pub asset_id: [u8; 32],
+    pub direction: u8,
+    pub maximum_amount_commitment: [u8; 32],
+    pub current_pool_note_id: [u8; 32],
+    pub delegation_digest: [u8; 32],
+    pub committee_epoch: u64,
+    pub valid_until: u64,
+    pub sequence: u64,
+    pub status: String,
+    pub statement: [u8; 32],
+}
+
+impl CanonicalStandingNotePool {
+    fn parse(value: &Value) -> Result<Self, String> {
+        let object = result_object(value)?;
+        let status = result_string(object, "status")?.to_string();
+        if status != "active" {
+            return Err("L1 snapshot contains an invalid standing-note-pool status".into());
+        }
+        let direction = result_u64(object, "direction")?;
+        Ok(Self {
+            state_root: result_hex32(object, "stateRoot")?,
+            pool_id: result_hex32(object, "poolID")?,
+            venue_id: result_hex32(object, "venueID")?,
+            defmi_id: result_hex32(object, "defmiID")?,
+            entity_commitment: result_hex32(object, "entityCommitment")?,
+            policy_digest: result_hex32(object, "policyDigest")?,
+            mandate_digest: result_hex32(object, "mandateDigest")?,
+            asset_id: result_hex32(object, "assetID")?,
+            direction: direction
+                .try_into()
+                .map_err(|_| "standing-note-pool direction exceeds u8".to_string())?,
+            maximum_amount_commitment: result_hex32(object, "maximumAmountCommitment")?,
+            current_pool_note_id: result_hex32(object, "currentPoolNoteID")?,
+            delegation_digest: result_hex32(object, "delegationDigest")?,
+            committee_epoch: result_u64(object, "committeeEpoch")?,
+            valid_until: result_u64(object, "validUntil")?,
+            sequence: result_u64(object, "sequence")?,
+            status,
+            statement: result_hex32(object, "statement")?,
+        })
+    }
+}
+
+/// Read-only result of replaying one standing-pool allocation against the
+/// current canonical root. The VM has not committed any of these fields; the
+/// result exists solely to bind the final typed zkPI to the exact intermediate
+/// root that the atomic settlement transaction will reproduce.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StandingNotePoolAllocationPreview {
+    pub before_state_root: [u8; 32],
+    pub after_state_root: [u8; 32],
+    pub statement: [u8; 32],
+    pub pool_id: [u8; 32],
+    pub current_pool_note_id: [u8; 32],
+    pub pool_sequence: u64,
+    pub reservation_hold_id: [u8; 32],
+    pub escrow_note_id: [u8; 32],
+    pub reservation_asset_id: [u8; 32],
+    pub reservation_amount_commitment: [u8; 32],
+    pub reservation_proof_digest: [u8; 32],
+    pub reservation_delegation_digest: [u8; 32],
+    pub reserve_receipt_digest: [u8; 32],
+    pub reservation_status: String,
+    pub hold_facility_id: [u8; 32],
+    pub hold_query_commitment: [u8; 32],
+    pub hold_amount_commitment: [u8; 32],
+    pub hold_expires_at: u64,
+    pub hold_status: String,
+    pub facility: CreditFacilitySnapshot,
+}
+
+impl StandingNotePoolAllocationPreview {
+    fn parse(value: &Value) -> Result<Self, String> {
+        let object = result_object(value)?;
+        let pool = object
+            .get("pool")
+            .ok_or_else(|| "L1 allocation preview is missing pool".to_string())
+            .and_then(result_object)?;
+        let reservation = object
+            .get("reservation")
+            .ok_or_else(|| "L1 allocation preview is missing reservation".to_string())
+            .and_then(result_object)?;
+        let hold = object
+            .get("hold")
+            .ok_or_else(|| "L1 allocation preview is missing hold".to_string())
+            .and_then(result_object)?;
+        let facility = object
+            .get("facility")
+            .ok_or_else(|| "L1 allocation preview is missing facility".to_string())
+            .and_then(result_object)?;
+        let reservation_status = result_string(reservation, "status")?.to_string();
+        let hold_status = result_string(hold, "status")?.to_string();
+        if reservation_status != "active" || hold_status != "active" {
+            return Err("L1 allocation preview did not produce active Maker covenants".into());
+        }
+        let snapshot = CreditFacilitySnapshot {
+            facility_id: result_hex32(facility, "facilityID")?,
+            guarantor_id: result_hex32(facility, "guarantorID")?,
+            beneficiary_commitment: result_hex32(facility, "beneficiaryCommitment")?,
+            rail_asset_id: result_hex32(facility, "railAssetID")?,
+            cap_commitment: result_hex32(facility, "capCommitment")?,
+            available_commitment: result_hex32(facility, "availableCommitment")?,
+            held_commitment: result_hex32(facility, "heldCommitment")?,
+            outstanding_commitment: result_hex32(facility, "outstandingCommitment")?,
+            overlimit_commitment: result_hex32(facility, "overlimitCommitment")?,
+            collateral_commitment: result_hex32(facility, "collateralCommitment")?,
+            risk_policy_digest: result_hex32(facility, "riskPolicyDigest")?,
+            valid_from: result_u64(facility, "validFrom")?,
+            valid_until: result_u64(facility, "validUntil")?,
+            status: CreditFacilityStatus::parse(result_string(facility, "status")?)?,
+            sequence: result_u64(facility, "sequence")?,
+        };
+        Ok(Self {
+            before_state_root: result_hex32(object, "beforeStateRoot")?,
+            after_state_root: result_hex32(object, "afterStateRoot")?,
+            statement: result_hex32(object, "statement")?,
+            pool_id: result_hex32(pool, "poolID")?,
+            current_pool_note_id: result_hex32(pool, "currentPoolNoteID")?,
+            pool_sequence: result_u64(pool, "sequence")?,
+            reservation_hold_id: result_hex32(reservation, "holdID")?,
+            escrow_note_id: result_hex32(reservation, "escrowNoteID")?,
+            reservation_asset_id: result_hex32(reservation, "assetID")?,
+            reservation_amount_commitment: result_hex32(reservation, "amountCommitment")?,
+            reservation_proof_digest: result_hex32(reservation, "proofDigest")?,
+            reservation_delegation_digest: result_hex32(reservation, "delegationDigest")?,
+            reserve_receipt_digest: result_hex32(reservation, "reserveReceiptDigest")?,
+            reservation_status,
+            hold_facility_id: result_hex32(hold, "facilityID")?,
+            hold_query_commitment: result_hex32(hold, "queryCommitment")?,
+            hold_amount_commitment: result_hex32(hold, "amountCommitment")?,
+            hold_expires_at: result_u64(hold, "expiresAt")?,
+            hold_status,
+            facility: snapshot,
         })
     }
 }
@@ -389,6 +724,64 @@ impl CanonicalNoteClaim {
             opening_envelope,
         })
     }
+
+    /// Reconstruct the public claim statement stored by DeFMI.  The canonical
+    /// snapshot carries lifecycle metadata in addition to these immutable
+    /// fields; callers use this projection when verifying recipient-side
+    /// materialization without trusting a coordinator-supplied claim.
+    pub fn claim(&self) -> Result<NoteClaim, String> {
+        let claim = NoteClaim {
+            claim_id: self.claim_id,
+            asset_id: self.asset_id,
+            value_commitment: self.value_commitment,
+            recipient_commitment: self.recipient_commitment,
+            source_hold_id: self.source_hold_id,
+            kind: self.kind,
+            opening_envelope: self.opening_envelope.clone(),
+        };
+        claim.validate()?;
+        Ok(claim)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalNoteClaimPage {
+    pub state_root: [u8; 32],
+    pub claims: Vec<CanonicalNoteClaim>,
+    pub next: Option<[u8; 32]>,
+}
+
+impl CanonicalNoteClaimPage {
+    fn parse(value: &Value) -> Result<Self, String> {
+        let object = result_object(value)?;
+        let state_root = result_hex32(object, "stateRoot")?;
+        let values = object
+            .get("claims")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "L1 note-claim page has no claim array".to_string())?;
+        let mut claims = Vec::with_capacity(values.len());
+        for value in values {
+            let claim = CanonicalNoteClaim::parse(value)?;
+            if claim.state_root != state_root {
+                return Err("L1 note-claim page mixes different state roots".into());
+            }
+            claims.push(claim);
+        }
+        let next = match object.get("next").and_then(Value::as_str) {
+            None | Some("") => None,
+            Some(value) => Some(
+                hex::decode(value)
+                    .map_err(|_| "L1 note-claim cursor is not hexadecimal".to_string())?
+                    .try_into()
+                    .map_err(|_| "L1 note-claim cursor is not 32 bytes".to_string())?,
+            ),
+        };
+        Ok(Self {
+            state_root,
+            claims,
+            next,
+        })
+    }
 }
 
 impl AcceptedTransition {
@@ -439,6 +832,191 @@ fn approval_json(approval: &QuorumApproval) -> Value {
             "nodeID": signed.node_id,
             "signature": hex::encode(signed.signature.to_bytes()),
         })).collect::<Vec<_>>(),
+    })
+}
+
+fn entity_approval_json(approval: &EntityApproval) -> Value {
+    json!({
+        "participantID": hex::encode(approval.participant_id),
+        "keyPurpose": approval.key_purpose,
+        "keyEpoch": approval.key_epoch,
+        "statement": hex::encode(approval.statement),
+        "signature": hex::encode(&approval.signature),
+    })
+}
+
+fn registry_configuration_json(configuration: &RegistryConfiguration) -> Value {
+    json!({
+        "operationID": hex::encode(configuration.operation_id),
+        "domainID": hex::encode(configuration.domain_id),
+        "templateDigest": hex::encode(configuration.template_digest),
+        "schemaDigest": hex::encode(configuration.schema_digest),
+        "templateVersion": configuration.template_version,
+    })
+}
+
+fn register_participant_json(registration: &RegisterParticipant) -> Value {
+    let purpose_key = |key: &crate::participant::PurposeKey| {
+        json!({
+            "publicKey": hex::encode(key.public_key),
+            "epoch": key.epoch,
+        })
+    };
+    let participant = &registration.participant;
+    json!({
+        "operationID": hex::encode(registration.operation_id),
+        "participant": {
+            "participantID": hex::encode(participant.participant_id),
+            "legalEntityCredentialCommitment": hex::encode(participant.legal_entity_credential_commitment),
+            "credentialIssuerID": hex::encode(participant.credential_issuer_id),
+            "credentialSchemeDigest": hex::encode(participant.credential_scheme_digest),
+            "jurisdiction": participant.jurisdiction,
+            "roles": participant.roles,
+            "keys": {
+                "admin": purpose_key(&participant.keys.admin),
+                "settlement": purpose_key(&participant.keys.settlement),
+                "quote": purpose_key(&participant.keys.quote),
+                "mpcInput": purpose_key(&participant.keys.mpc_input),
+                "emergency": purpose_key(&participant.keys.emergency),
+            },
+            "policyDigest": hex::encode(participant.policy_digest),
+            "validFrom": participant.valid_from,
+            "validUntil": participant.valid_until,
+        },
+    })
+}
+
+fn participant_control_json(control: &ParticipantControl) -> Value {
+    json!({
+        "operationID": hex::encode(control.operation_id),
+        "participantID": hex::encode(control.participant_id),
+        "expectedSequence": control.expected_sequence,
+        "kind": control.kind,
+        "reasonDigest": hex::encode(control.reason_digest),
+    })
+}
+
+fn participant_key_rotation_json(rotation: &RotateParticipantKey) -> Value {
+    json!({
+        "operationID": hex::encode(rotation.operation_id),
+        "participantID": hex::encode(rotation.participant_id),
+        "expectedSequence": rotation.expected_sequence,
+        "purpose": rotation.purpose,
+        "newKey": {
+            "publicKey": hex::encode(rotation.new_key.public_key),
+            "epoch": rotation.new_key.epoch,
+        },
+    })
+}
+
+fn mpc_service_json(service: &MpcService) -> Value {
+    json!({
+        "operationID": hex::encode(service.operation_id),
+        "serviceID": hex::encode(service.service_id),
+        "kind": service.kind,
+        "programDigest": hex::encode(service.program_digest),
+        "schemaDigest": hex::encode(service.schema_digest),
+        "committeeEpoch": service.committee_epoch,
+        "threshold": service.threshold,
+        "members": service.members.iter().map(|member| json!({
+            "nodeID": hex::encode(member.node_id),
+            "operatorParticipantID": hex::encode(member.operator_participant_id),
+            "publicKey": hex::encode(member.public_key),
+        })).collect::<Vec<_>>(),
+        "validFrom": service.valid_from,
+        "validUntil": service.valid_until,
+    })
+}
+
+fn account_binding_json(binding: &AccountBinding) -> Value {
+    json!({
+        "operationID": hex::encode(binding.operation_id),
+        "bindingID": hex::encode(binding.binding_id),
+        "participantID": hex::encode(binding.participant_id),
+        "accountCommitment": hex::encode(binding.account_commitment),
+        "assetID": hex::encode(binding.asset_id),
+        "kind": binding.kind,
+        "controlProofDigest": hex::encode(binding.control_proof_digest),
+        "validFrom": binding.valid_from,
+        "validUntil": binding.valid_until,
+        "expectedParticipantSequence": binding.expected_participant_sequence,
+    })
+}
+
+fn participant_service_binding_json(binding: &ParticipantServiceBinding) -> Value {
+    json!({
+        "operationID": hex::encode(binding.operation_id),
+        "bindingID": hex::encode(binding.binding_id),
+        "participantID": hex::encode(binding.participant_id),
+        "serviceID": hex::encode(binding.service_id),
+        "serviceEpoch": binding.service_epoch,
+        "inputPublicKey": hex::encode(binding.input_public_key),
+        "capabilityDigest": hex::encode(binding.capability_digest),
+        "validFrom": binding.valid_from,
+        "validUntil": binding.valid_until,
+        "expectedParticipantSequence": binding.expected_participant_sequence,
+    })
+}
+
+fn standing_mandate_json(mandate: &StandingMandate) -> Value {
+    json!({
+        "operationID": hex::encode(mandate.operation_id),
+        "mandateID": hex::encode(mandate.mandate_id),
+        "participantID": hex::encode(mandate.participant_id),
+        "serviceID": hex::encode(mandate.service_id),
+        "serviceBindingID": hex::encode(mandate.service_binding_id),
+        "role": mandate.role,
+        "accountBindingIDs": mandate.account_binding_ids.iter().map(hex::encode).collect::<Vec<_>>(),
+        "permittedAssetIDs": mandate.permitted_asset_ids.iter().map(hex::encode).collect::<Vec<_>>(),
+        "permittedDestinationDomains": mandate.permitted_destination_domains.iter().map(hex::encode).collect::<Vec<_>>(),
+        "limitCommitment": hex::encode(mandate.limit_commitment),
+        "limitPolicyDigest": hex::encode(mandate.limit_policy_digest),
+        "settlementPolicyDigest": hex::encode(mandate.settlement_policy_digest),
+        "maxActiveReservations": mandate.max_active_reservations,
+        "validFrom": mandate.valid_from,
+        "validUntil": mandate.valid_until,
+        "expectedParticipantSequence": mandate.expected_participant_sequence,
+        "automaticSettlement": mandate.automatic_settlement,
+    })
+}
+
+fn mandate_control_json(control: &MandateControl) -> Value {
+    json!({
+        "operationID": hex::encode(control.operation_id),
+        "mandateID": hex::encode(control.mandate_id),
+        "expectedMandateSequence": control.expected_mandate_sequence,
+        "kind": control.kind,
+        "reasonDigest": hex::encode(control.reason_digest),
+    })
+}
+
+fn mandate_reservation_json(reservation: &MandateReservation) -> Value {
+    json!({
+        "operationID": hex::encode(reservation.operation_id),
+        "reservationID": hex::encode(reservation.reservation_id),
+        "mandateID": hex::encode(reservation.mandate_id),
+        "serviceID": hex::encode(reservation.service_id),
+        "serviceEpoch": reservation.service_epoch,
+        "accountBindingID": hex::encode(reservation.account_binding_id),
+        "assetID": hex::encode(reservation.asset_id),
+        "amountCommitment": hex::encode(reservation.amount_commitment),
+        "underlyingReservationDigest": hex::encode(reservation.underlying_reservation_digest),
+        "admissionReceiptDigest": hex::encode(reservation.admission_receipt_digest),
+        "limitProofDigest": hex::encode(reservation.limit_proof_digest),
+        "zkpiDigest": hex::encode(reservation.zkpi_digest),
+        "expiresAt": reservation.expires_at,
+        "expectedMandateSequence": reservation.expected_mandate_sequence,
+    })
+}
+
+fn mandate_reservation_transition_json(transition: &MandateReservationTransition) -> Value {
+    json!({
+        "operationID": hex::encode(transition.operation_id),
+        "reservationID": hex::encode(transition.reservation_id),
+        "expectedMandateSequence": transition.expected_mandate_sequence,
+        "kind": transition.kind,
+        "settlementDigest": hex::encode(transition.settlement_digest),
+        "transitionProofDigest": hex::encode(transition.transition_proof_digest),
     })
 }
 
@@ -621,7 +1199,7 @@ fn reservation_authorization_json(authorization: &ReservationAuthorization) -> V
 }
 
 fn admission_batch_json(plan: &AdmissionBatchPlan) -> Value {
-    json!({
+    let mut value = json!({
         "operationID": hex::encode(plan.operation_id),
         "batchID": hex::encode(plan.batch_id),
         "venueID": hex::encode(plan.venue_id),
@@ -631,7 +1209,14 @@ fn admission_batch_json(plan: &AdmissionBatchPlan) -> Value {
         "orderDigest": hex::encode(plan.order_digest),
         "admissionDigests": plan.admission_digests.iter().map(hex::encode).collect::<Vec<_>>(),
         "expiresAt": plan.expires_at,
-    })
+    });
+    if plan.first_sequence != 1 {
+        value
+            .as_object_mut()
+            .expect("admission batch wire value is an object")
+            .insert("firstSequence".into(), json!(plan.first_sequence));
+    }
+    value
 }
 
 fn admission_committee_json(plan: &AdmissionCommitteePlan) -> Value {
@@ -809,7 +1394,7 @@ fn note_issuance_json(issuance: &NoteIssuance) -> Value {
 }
 
 fn note_order_json(order: &NoteSettlementOrder) -> Value {
-    json!({
+    let mut value = json!({
         "operationID": hex::encode(order.operation_id),
         "nullifier": hex::encode(order.nullifier),
         "deadline": order.deadline,
@@ -817,7 +1402,14 @@ fn note_order_json(order: &NoteSettlementOrder) -> Value {
         "marketStatementDigest": hex::encode(order.market_statement_digest),
         "dvpProofDigest": hex::encode(order.dvp_proof_digest),
         "spends": order.spends.iter().map(note_spend_json).collect::<Vec<_>>(),
-    })
+    });
+    if let Some(output) = &order.consolidated_output {
+        value
+            .as_object_mut()
+            .expect("note settlement wire value is an object")
+            .insert("consolidatedOutput".into(), note_output_json(output));
+    }
+    value
 }
 
 fn note_claim_json(claim: &NoteClaim) -> Value {
@@ -882,6 +1474,44 @@ fn note_reservation_escrow_json(escrow: &NoteReservationEscrow) -> Value {
     })
 }
 
+fn standing_note_pool_registration_json(registration: &StandingNotePoolRegistration) -> Value {
+    json!({
+        "operationID": hex::encode(registration.operation_id),
+        "poolID": hex::encode(registration.pool_id),
+        "venueID": hex::encode(registration.venue_id),
+        "defmiID": hex::encode(registration.defmi_id),
+        "entityCommitment": hex::encode(registration.entity_commitment),
+        "policyDigest": hex::encode(registration.policy_digest),
+        "mandateDigest": hex::encode(registration.mandate_digest),
+        "assetID": hex::encode(registration.asset_id),
+        "direction": registration.direction,
+        "maximumAmountCommitment": hex::encode(registration.maximum_amount_commitment),
+        "poolNoteID": hex::encode(registration.pool_note_id),
+        "delegationDigest": hex::encode(registration.delegation_digest),
+        "committeeEpoch": registration.committee_epoch,
+        "validUntil": registration.valid_until,
+        "spend": note_spend_json(&registration.spend),
+    })
+}
+
+fn standing_note_pool_allocation_json(allocation: &StandingNotePoolAllocation) -> Value {
+    json!({
+        "poolID": hex::encode(allocation.pool_id),
+        "delegationDigest": hex::encode(allocation.delegation_digest),
+        "committeeEpoch": allocation.committee_epoch,
+        "expectedPoolSequence": allocation.expected_pool_sequence,
+        "previousPoolNoteID": hex::encode(allocation.previous_pool_note_id),
+        "previousAmountCommitment": hex::encode(allocation.previous_amount_commitment),
+        "escrowNote": note_output_json(&allocation.escrow_note),
+        "remainderNote": note_output_json(&allocation.remainder_note),
+        "proofJobID": hex::encode(allocation.proof_job_id),
+        "quoteProofDigest": hex::encode(allocation.quote_proof_digest),
+        "dvpProofDigest": hex::encode(allocation.dvp_proof_digest),
+        "remainderRangeProofDigest": hex::encode(allocation.remainder_range_proof_digest),
+        "committeeSignature": hex::encode(&allocation.committee_signature),
+    })
+}
+
 fn note_product_release_json(order: &ProductNoteReleaseOrder) -> Value {
     json!({
         "transition": credit_transition_json(&order.transition),
@@ -894,6 +1524,25 @@ fn note_product_release_json(order: &ProductNoteReleaseOrder) -> Value {
         "assetLinkProofDigest": hex::encode(order.asset_link_proof_digest),
         "escrowNoteID": hex::encode(order.escrow_note_id),
         "spend": note_spend_json(&order.spend),
+    })
+}
+
+fn note_product_no_fill_release_json(order: &ProductNoteNoFillReleaseOrder) -> Value {
+    json!({
+        "release": note_product_release_json(&order.release),
+        "venueID": hex::encode(order.venue_id),
+        "defmiID": hex::encode(order.defmi_id),
+        "admissionEpoch": order.admission_epoch,
+        "admissionSequence": order.admission_sequence,
+        "noFillEvidenceDigest": hex::encode(order.no_fill_evidence_digest),
+    })
+}
+
+fn no_fill_evidence_json(evidence: &MpcNoFillEvidence) -> Value {
+    json!({
+        "signedTakerMandate": BASE64.encode(&evidence.signed_taker_mandate),
+        "publicResultAttestations": BASE64.encode(&evidence.public_result_attestations),
+        "fillMask": evidence.fill_mask,
     })
 }
 
@@ -1135,6 +1784,45 @@ pub struct AvalancheRpcClient {
     transport: Arc<Transport>,
 }
 
+/// Opt-in audit journal of every state-changing transition this process
+/// issues to the L1.  When `QOMM_DEFMI_JOURNAL_DIR` names a directory, each
+/// `defmivm.issue*` request is written there verbatim (method and params) as
+/// `<unix-ms>-<counter>-<method>.json` before it is sent.  Everything in it
+/// is what the chain receives, so nothing here is secret; the record lets an
+/// operator or an acceptance run re-present a transition to the L1 and show
+/// it refuses a second application (the compare-and-swap on the pool note,
+/// the hold, and the admission cursor are only observable that way from
+/// outside the process that issued them).
+fn journal_issued_transition(method: &str, params: &Value) {
+    if !method.starts_with("defmivm.issue") {
+        return;
+    }
+    let Ok(directory) = std::env::var("QOMM_DEFMI_JOURNAL_DIR") else {
+        return;
+    };
+    if directory.is_empty() {
+        return;
+    }
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    let path =
+        std::path::Path::new(&directory).join(format!("{millis:013}-{counter:06}-{method}.json"));
+    let record = json!({"method": method, "params": params});
+    if std::fs::create_dir_all(&directory).is_err()
+        || std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&record).unwrap_or_default(),
+        )
+        .is_err()
+    {
+        eprintln!("qomm-defmi: could not journal {method} under {directory}");
+    }
+}
+
 impl AvalancheRpcClient {
     pub fn new(
         endpoint: &str,
@@ -1181,6 +1869,7 @@ impl AvalancheRpcClient {
             "params": params,
         }))
         .map_err(|error| error.to_string())?;
+        journal_issued_transition(method, &params);
         let raw = (self.transport)(&body, self.timeout)?;
         if raw.len() > MAX_RESPONSE {
             return Err("Avalanche RPC response exceeded one MiB".into());
@@ -1210,10 +1899,312 @@ impl AvalancheRpcClient {
             .map(str::to_string)
             .ok_or_else(|| "L1 did not return a transaction identifier".to_string())
     }
+
+    pub fn participant_registry_snapshot(&self) -> Result<Value, String> {
+        self.call("defmivm.participantRegistry", json!({}))
+    }
+
+    pub fn participant_snapshot(&self, participant_id: [u8; 32]) -> Result<Value, String> {
+        self.call(
+            "defmivm.participant",
+            json!({"participantID": hex::encode(participant_id)}),
+        )
+    }
+
+    pub fn mpc_service_snapshot(&self, service_id: [u8; 32]) -> Result<Value, String> {
+        self.call(
+            "defmivm.mpcService",
+            json!({"serviceID": hex::encode(service_id)}),
+        )
+    }
+
+    pub fn participant_account_binding_snapshot(
+        &self,
+        binding_id: [u8; 32],
+    ) -> Result<Value, String> {
+        self.call(
+            "defmivm.participantAccountBinding",
+            json!({"bindingID": hex::encode(binding_id)}),
+        )
+    }
+
+    pub fn participant_service_binding_snapshot(
+        &self,
+        binding_id: [u8; 32],
+    ) -> Result<Value, String> {
+        self.call(
+            "defmivm.participantServiceBinding",
+            json!({"bindingID": hex::encode(binding_id)}),
+        )
+    }
+
+    pub fn standing_mandate_snapshot(&self, mandate_id: [u8; 32]) -> Result<Value, String> {
+        self.call(
+            "defmivm.standingMandate",
+            json!({"mandateID": hex::encode(mandate_id)}),
+        )
+    }
+
+    pub fn mandate_reservation_snapshot(&self, reservation_id: [u8; 32]) -> Result<Value, String> {
+        self.call(
+            "defmivm.mandateReservation",
+            json!({"reservationID": hex::encode(reservation_id)}),
+        )
+    }
+
+    pub fn issue_participant_registry(
+        &self,
+        configuration: &RegistryConfiguration,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueParticipantRegistry",
+            json!({
+                "configuration": registry_configuration_json(configuration),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    pub fn issue_participant(
+        &self,
+        registration: &RegisterParticipant,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueParticipant",
+            json!({
+                "registration": register_participant_json(registration),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    pub fn issue_participant_control(
+        &self,
+        control: &ParticipantControl,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueParticipantControl",
+            json!({
+                "control": participant_control_json(control),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    pub fn issue_participant_key_rotation(
+        &self,
+        rotation: &RotateParticipantKey,
+        entity_approval: &EntityApproval,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueParticipantKeyRotation",
+            json!({
+                "rotation": participant_key_rotation_json(rotation),
+                "entityApproval": entity_approval_json(entity_approval),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    pub fn issue_mpc_service(
+        &self,
+        service: &MpcService,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueMpcService",
+            json!({
+                "service": mpc_service_json(service),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    pub fn issue_participant_account_binding(
+        &self,
+        binding: &AccountBinding,
+        entity_approval: &EntityApproval,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueParticipantAccountBinding",
+            json!({
+                "binding": account_binding_json(binding),
+                "entityApproval": entity_approval_json(entity_approval),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    pub fn issue_participant_service_binding(
+        &self,
+        binding: &ParticipantServiceBinding,
+        entity_approval: &EntityApproval,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueParticipantServiceBinding",
+            json!({
+                "binding": participant_service_binding_json(binding),
+                "entityApproval": entity_approval_json(entity_approval),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    pub fn issue_standing_mandate(
+        &self,
+        mandate: &StandingMandate,
+        entity_approval: &EntityApproval,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueStandingMandate",
+            json!({
+                "mandate": standing_mandate_json(mandate),
+                "entityApproval": entity_approval_json(entity_approval),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    pub fn issue_standing_mandate_control(
+        &self,
+        control: &MandateControl,
+        entity_approval: &EntityApproval,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueStandingMandateControl",
+            json!({
+                "control": mandate_control_json(control),
+                "entityApproval": entity_approval_json(entity_approval),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    pub fn issue_mandate_reservation(
+        &self,
+        reservation: &MandateReservation,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueMandateReservation",
+            json!({
+                "reservation": mandate_reservation_json(reservation),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    pub fn issue_mandate_reservation_transition(
+        &self,
+        transition: &MandateReservationTransition,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueMandateReservationTransition",
+            json!({
+                "transition": mandate_reservation_transition_json(transition),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn issue_participant_product_reservation(
+        &self,
+        transition: &CreditFacilityTransition,
+        authorization: &ReservationAuthorization,
+        escrow: &ReservationEscrow,
+        mandate_reservation: &MandateReservation,
+        underlying_approval: &QuorumApproval,
+        mandate_approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+        expected_after_underlying_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueParticipantProductReservation",
+            json!({
+                "underlying": {
+                    "transition": credit_transition_json(transition),
+                    "authorization": reservation_authorization_json(authorization),
+                    "escrow": reservation_escrow_json(escrow),
+                },
+                "mandateReservation": mandate_reservation_json(mandate_reservation),
+                "underlyingApproval": approval_json(underlying_approval),
+                "mandateApproval": approval_json(mandate_approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+                "expectedAfterUnderlyingRoot": hex::encode(expected_after_underlying_root),
+            }),
+        )?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn issue_participant_note_product_reservation(
+        &self,
+        transition: &CreditFacilityTransition,
+        authorization: &ReservationAuthorization,
+        escrow: &NoteReservationEscrow,
+        mandate_reservation: &MandateReservation,
+        underlying_approval: &QuorumApproval,
+        mandate_approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+        expected_after_underlying_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueParticipantNoteProductReservation",
+            json!({
+                "underlying": {
+                    "transition": credit_transition_json(transition),
+                    "authorization": reservation_authorization_json(authorization),
+                    "escrow": note_reservation_escrow_json(escrow),
+                },
+                "mandateReservation": mandate_reservation_json(mandate_reservation),
+                "underlyingApproval": approval_json(underlying_approval),
+                "mandateApproval": approval_json(mandate_approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+                "expectedAfterUnderlyingRoot": hex::encode(expected_after_underlying_root),
+            }),
+        )?)
+    }
 }
 
 pub trait AvalancheClient: Send + Sync {
     fn state_root(&self) -> Result<[u8; 32], String>;
+    fn asset_snapshot(&self, _asset_id: [u8; 32]) -> Result<CanonicalAsset, String> {
+        Err("Avalanche client does not support canonical asset reads".into())
+    }
+    fn guarantor_snapshot(&self, _guarantor_id: [u8; 32]) -> Result<CanonicalGuarantor, String> {
+        Err("Avalanche client does not support canonical guarantor reads".into())
+    }
     fn credit_facility_snapshot(
         &self,
         _facility_id: [u8; 32],
@@ -1229,6 +2220,9 @@ pub trait AvalancheClient: Send + Sync {
     fn note_snapshot(&self, _note_id: [u8; 32]) -> Result<CanonicalNote, String> {
         Err("Avalanche client does not support canonical note reads".into())
     }
+    fn note_serial_snapshot(&self, _serial_point: [u8; 32]) -> Result<CanonicalNoteSerial, String> {
+        Err("Avalanche client does not support canonical note serial reads".into())
+    }
     fn note_page(
         &self,
         _asset_id: [u8; 32],
@@ -1243,8 +2237,44 @@ pub trait AvalancheClient: Send + Sync {
     ) -> Result<CanonicalNoteReservation, String> {
         Err("Avalanche client does not support canonical note reservations".into())
     }
+    fn standing_note_pool_snapshot(
+        &self,
+        _pool_id: [u8; 32],
+    ) -> Result<CanonicalStandingNotePool, String> {
+        Err("Avalanche client does not support canonical standing note pools".into())
+    }
+    fn settlement_verifier_snapshot(
+        &self,
+        _venue_id: [u8; 32],
+        _epoch: u64,
+    ) -> Result<CanonicalSettlementVerifier, String> {
+        Err("Avalanche client does not support canonical settlement verifier reads".into())
+    }
+    fn admission_cursor(
+        &self,
+        _venue_id: [u8; 32],
+        _epoch: u64,
+    ) -> Result<CanonicalAdmissionCursor, String> {
+        Err("Avalanche client does not support canonical admission cursor reads".into())
+    }
     fn note_claim_snapshot(&self, _claim_id: [u8; 32]) -> Result<CanonicalNoteClaim, String> {
         Err("Avalanche client does not support canonical note claims".into())
+    }
+    fn note_claim_page(
+        &self,
+        _source_hold_id: [u8; 32],
+        _after: Option<[u8; 32]>,
+        _limit: u32,
+    ) -> Result<CanonicalNoteClaimPage, String> {
+        Err("Avalanche client does not support canonical note-claim pages".into())
+    }
+    fn note_claim_recipient_page(
+        &self,
+        _recipient_view: [u8; 32],
+        _after: Option<[u8; 32]>,
+        _limit: u32,
+    ) -> Result<CanonicalNoteClaimPage, String> {
+        Err("Avalanche client does not support recipient note-claim pages".into())
     }
     fn issue_asset(
         &self,
@@ -1358,6 +2388,35 @@ pub trait AvalancheClient: Send + Sync {
         Err("Avalanche client does not support product reservations".into())
     }
 
+    fn issue_standing_note_pool(
+        &self,
+        _registration: &StandingNotePoolRegistration,
+        _approval: &QuorumApproval,
+        _expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Err("Avalanche client does not support standing note pools".into())
+    }
+    fn issue_standing_note_pool_allocation(
+        &self,
+        _transition: &CreditFacilityTransition,
+        _authorization: &ReservationAuthorization,
+        _allocation: &StandingNotePoolAllocation,
+        _approval: &QuorumApproval,
+        _expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Err("Avalanche client does not support standing note pool allocations".into())
+    }
+    fn preview_standing_note_pool_allocation(
+        &self,
+        _transition: &CreditFacilityTransition,
+        _authorization: &ReservationAuthorization,
+        _allocation: &StandingNotePoolAllocation,
+        _approval: &QuorumApproval,
+        _expected_before_root: [u8; 32],
+    ) -> Result<StandingNotePoolAllocationPreview, String> {
+        Err("Avalanche client does not support standing note pool previews".into())
+    }
+
     fn issue_note_product_reservation(
         &self,
         _transition: &CreditFacilityTransition,
@@ -1384,6 +2443,15 @@ pub trait AvalancheClient: Send + Sync {
         _expected_before_root: [u8; 32],
     ) -> Result<String, String> {
         Err("Avalanche client does not support anonymous reservation releases".into())
+    }
+    fn issue_note_product_no_fill_release(
+        &self,
+        _order: &ProductNoteNoFillReleaseOrder,
+        _evidence: &MpcNoFillEvidence,
+        _approval: &QuorumApproval,
+        _expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Err("Avalanche client does not support MPC no-fill reservation releases".into())
     }
     fn issue_credit_control(
         &self,
@@ -1441,6 +2509,14 @@ pub trait AvalancheClient: Send + Sync {
     ) -> Result<String, String> {
         Err("Avalanche client does not support anonymous product settlements".into())
     }
+    fn issue_standing_pool_product_settlement(
+        &self,
+        _request: StandingPoolProductSettlementRequest<'_>,
+        _approval: &QuorumApproval,
+        _expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Err("Avalanche client does not support atomic standing-pool settlements".into())
+    }
     fn issue_note_product_settlement_batch(
         &self,
         _batch: &ProductNoteSettlementBatch,
@@ -1472,6 +2548,19 @@ impl AvalancheClient for AvalancheRpcClient {
             .map_err(|_| "L1 state root must be 32 bytes".to_string())
     }
 
+    fn asset_snapshot(&self, asset_id: [u8; 32]) -> Result<CanonicalAsset, String> {
+        CanonicalAsset::parse(
+            &self.call("defmivm.asset", json!({"assetID": hex::encode(asset_id)}))?,
+        )
+    }
+
+    fn guarantor_snapshot(&self, guarantor_id: [u8; 32]) -> Result<CanonicalGuarantor, String> {
+        CanonicalGuarantor::parse(&self.call(
+            "defmivm.guarantor",
+            json!({"guarantorID": hex::encode(guarantor_id)}),
+        )?)
+    }
+
     fn credit_facility_snapshot(
         &self,
         facility_id: [u8; 32],
@@ -1498,6 +2587,13 @@ impl AvalancheClient for AvalancheRpcClient {
 
     fn note_snapshot(&self, note_id: [u8; 32]) -> Result<CanonicalNote, String> {
         CanonicalNote::parse(&self.call("defmivm.note", json!({"noteID": hex::encode(note_id)}))?)
+    }
+
+    fn note_serial_snapshot(&self, serial_point: [u8; 32]) -> Result<CanonicalNoteSerial, String> {
+        CanonicalNoteSerial::parse(&self.call(
+            "defmivm.noteSerial",
+            json!({"serialPoint": hex::encode(serial_point)}),
+        )?)
     }
 
     fn note_page(
@@ -1529,10 +2625,84 @@ impl AvalancheClient for AvalancheRpcClient {
         )?)
     }
 
+    fn standing_note_pool_snapshot(
+        &self,
+        pool_id: [u8; 32],
+    ) -> Result<CanonicalStandingNotePool, String> {
+        CanonicalStandingNotePool::parse(&self.call(
+            "defmivm.standingNotePool",
+            json!({"poolID": hex::encode(pool_id)}),
+        )?)
+    }
+
+    fn settlement_verifier_snapshot(
+        &self,
+        venue_id: [u8; 32],
+        epoch: u64,
+    ) -> Result<CanonicalSettlementVerifier, String> {
+        CanonicalSettlementVerifier::parse(&self.call(
+            "defmivm.settlementVerifier",
+            json!({"venueID": hex::encode(venue_id), "epoch": epoch}),
+        )?)
+    }
+
+    fn admission_cursor(
+        &self,
+        venue_id: [u8; 32],
+        epoch: u64,
+    ) -> Result<CanonicalAdmissionCursor, String> {
+        let cursor = CanonicalAdmissionCursor::parse(&self.call(
+            "defmivm.admissionCursor",
+            json!({"venueID": hex::encode(venue_id), "epoch": epoch}),
+        )?)?;
+        if cursor.venue_id != venue_id || cursor.epoch != epoch {
+            return Err("L1 admission cursor belongs to another venue or epoch".into());
+        }
+        Ok(cursor)
+    }
+
     fn note_claim_snapshot(&self, claim_id: [u8; 32]) -> Result<CanonicalNoteClaim, String> {
         CanonicalNoteClaim::parse(&self.call(
             "defmivm.noteClaim",
             json!({"claimID": hex::encode(claim_id)}),
+        )?)
+    }
+
+    fn note_claim_page(
+        &self,
+        source_hold_id: [u8; 32],
+        after: Option<[u8; 32]>,
+        limit: u32,
+    ) -> Result<CanonicalNoteClaimPage, String> {
+        if source_hold_id == [0; 32] || limit == 0 || limit > 256 {
+            return Err("canonical note-claim page parameters are outside product bounds".into());
+        }
+        CanonicalNoteClaimPage::parse(&self.call(
+            "defmivm.listNoteClaims",
+            json!({
+                "sourceHoldID": hex::encode(source_hold_id),
+                "after": after.map(hex::encode).unwrap_or_default(),
+                "limit": limit,
+            }),
+        )?)
+    }
+
+    fn note_claim_recipient_page(
+        &self,
+        recipient_view: [u8; 32],
+        after: Option<[u8; 32]>,
+        limit: u32,
+    ) -> Result<CanonicalNoteClaimPage, String> {
+        if recipient_view == [0; 32] || limit == 0 || limit > 256 {
+            return Err("recipient note-claim page parameters are outside product bounds".into());
+        }
+        CanonicalNoteClaimPage::parse(&self.call(
+            "defmivm.listNoteClaims",
+            json!({
+                "recipientView": hex::encode(recipient_view),
+                "after": after.map(hex::encode).unwrap_or_default(),
+                "limit": limit,
+            }),
         )?)
     }
 
@@ -1670,6 +2840,62 @@ impl AvalancheClient for AvalancheRpcClient {
         )?)
     }
 
+    fn issue_standing_note_pool(
+        &self,
+        registration: &StandingNotePoolRegistration,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueStandingNotePool",
+            json!({
+                "registration": standing_note_pool_registration_json(registration),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    fn issue_standing_note_pool_allocation(
+        &self,
+        transition: &CreditFacilityTransition,
+        authorization: &ReservationAuthorization,
+        allocation: &StandingNotePoolAllocation,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueStandingNotePoolAllocation",
+            json!({
+                "transition": credit_transition_json(transition),
+                "authorization": reservation_authorization_json(authorization),
+                "allocation": standing_note_pool_allocation_json(allocation),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    fn preview_standing_note_pool_allocation(
+        &self,
+        transition: &CreditFacilityTransition,
+        authorization: &ReservationAuthorization,
+        allocation: &StandingNotePoolAllocation,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<StandingNotePoolAllocationPreview, String> {
+        StandingNotePoolAllocationPreview::parse(&self.call(
+            "defmivm.previewStandingNotePoolAllocation",
+            json!({
+                "transition": credit_transition_json(transition),
+                "authorization": reservation_authorization_json(authorization),
+                "allocation": standing_note_pool_allocation_json(allocation),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
     fn issue_note_product_reservation(
         &self,
         transition: &CreditFacilityTransition,
@@ -1716,6 +2942,24 @@ impl AvalancheClient for AvalancheRpcClient {
             "defmivm.issueNoteProductRelease",
             json!({
                 "order": note_product_release_json(order),
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
+    fn issue_note_product_no_fill_release(
+        &self,
+        order: &ProductNoteNoFillReleaseOrder,
+        evidence: &MpcNoFillEvidence,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueNoteProductNoFillRelease",
+            json!({
+                "order": note_product_no_fill_release_json(order),
+                "evidence": no_fill_evidence_json(evidence),
                 "approval": approval_json(approval),
                 "expectedBeforeRoot": hex::encode(expected_before_root),
             }),
@@ -1934,6 +3178,27 @@ impl AvalancheClient for AvalancheRpcClient {
         )?)
     }
 
+    fn issue_standing_pool_product_settlement(
+        &self,
+        request: StandingPoolProductSettlementRequest<'_>,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueStandingPoolProductSettlement",
+            json!({
+                "allocationTransition": credit_transition_json(request.allocation_transition),
+                "allocationAuthorization": reservation_authorization_json(request.allocation_authorization),
+                "allocation": standing_note_pool_allocation_json(request.allocation),
+                "allocationApproval": approval_json(request.allocation_approval),
+                "order": note_product_order_json(request.order),
+                "evidence": product_settlement_evidence_json(request.evidence)?,
+                "approval": approval_json(approval),
+                "expectedBeforeRoot": hex::encode(expected_before_root),
+            }),
+        )?)
+    }
+
     fn issue_note_product_settlement_batch(
         &self,
         batch: &ProductNoteSettlementBatch,
@@ -2043,10 +3308,29 @@ impl<'a, C: AvalancheClient> AvalancheNoteBridge<'a, C> {
         Ok(snapshot)
     }
 
+    pub fn note_serial(&self, serial_point: [u8; 32]) -> Result<CanonicalNoteSerial, String> {
+        let snapshot = self.client.note_serial_snapshot(serial_point)?;
+        if snapshot.serial_point != serial_point {
+            return Err("Avalanche returned a different confidential-note serial".into());
+        }
+        Ok(snapshot)
+    }
+
     pub fn note_reservation(&self, hold_id: [u8; 32]) -> Result<CanonicalNoteReservation, String> {
         let snapshot = self.client.note_reservation_snapshot(hold_id)?;
         if snapshot.hold_id != hold_id {
             return Err("Avalanche returned a different anonymous reservation".into());
+        }
+        Ok(snapshot)
+    }
+
+    pub fn standing_note_pool(
+        &self,
+        pool_id: [u8; 32],
+    ) -> Result<CanonicalStandingNotePool, String> {
+        let snapshot = self.client.standing_note_pool_snapshot(pool_id)?;
+        if snapshot.pool_id != pool_id || self.client.state_root()? != snapshot.state_root {
+            return Err("canonical standing note pool is stale or names another pool".into());
         }
         Ok(snapshot)
     }
@@ -2301,6 +3585,80 @@ impl<'a, C: AvalancheClient> AvalancheNoteBridge<'a, C> {
         })
     }
 
+    pub fn register_standing_note_pool(
+        &self,
+        registration: &StandingNotePoolRegistration,
+        approval: &QuorumApproval,
+    ) -> Result<AcceptedTransition, String> {
+        let statement = registration.statement()?;
+        self.submit(statement, approval, |client, approval, before| {
+            client.issue_standing_note_pool(registration, approval, before)
+        })
+    }
+
+    pub fn allocate_standing_note_pool(
+        &self,
+        transition: &CreditFacilityTransition,
+        authorization: &ReservationAuthorization,
+        allocation: &StandingNotePoolAllocation,
+        approval: &QuorumApproval,
+    ) -> Result<AcceptedTransition, String> {
+        if allocation.statement(transition, authorization)? != authorization.escrow_digest {
+            return Err("standing allocation differs from the reservation authorization".into());
+        }
+        let statement = authorization.statement(transition)?;
+        self.submit(statement, approval, |client, approval, before| {
+            client.issue_standing_note_pool_allocation(
+                transition,
+                authorization,
+                allocation,
+                approval,
+                before,
+            )
+        })
+    }
+
+    pub fn preview_standing_note_pool_allocation(
+        &self,
+        transition: &CreditFacilityTransition,
+        authorization: &ReservationAuthorization,
+        allocation: &StandingNotePoolAllocation,
+        approval: &QuorumApproval,
+    ) -> Result<StandingNotePoolAllocationPreview, String> {
+        if allocation.statement(transition, authorization)? != authorization.escrow_digest {
+            return Err("standing allocation differs from the reservation authorization".into());
+        }
+        let statement = authorization.statement(transition)?;
+        if !self
+            .authorizer
+            .verify(&statement, &approval.before_root, approval)
+        {
+            return Err("standing allocation preview has an invalid approval".into());
+        }
+        let preview = self.client.preview_standing_note_pool_allocation(
+            transition,
+            authorization,
+            allocation,
+            approval,
+            approval.before_root,
+        )?;
+        if preview.before_state_root != approval.before_root
+            || preview.statement != statement
+            || preview.pool_id != allocation.pool_id
+            || preview.current_pool_note_id != allocation.remainder_note.note_id
+            || preview.pool_sequence != allocation.expected_pool_sequence.saturating_add(1)
+            || preview.reservation_hold_id != transition.hold_id
+            || preview.escrow_note_id != allocation.escrow_note.note_id
+            || preview.reservation_amount_commitment != transition.amount_commitment
+            || preview.reserve_receipt_digest != statement
+            || preview.hold_facility_id != transition.facility_id
+            || preview.facility.facility_id != transition.facility_id
+        {
+            return Err("L1 preview produced another standing-pool successor".into());
+        }
+        Ok(preview)
+    }
+
     pub fn reserve_product(
         &self,
         transition: &CreditFacilityTransition,
@@ -2335,6 +3693,22 @@ impl<'a, C: AvalancheClient> AvalancheNoteBridge<'a, C> {
         })
     }
 
+    pub fn release_product_no_fill(
+        &self,
+        order: &ProductNoteNoFillReleaseOrder,
+        evidence: &MpcNoFillEvidence,
+        approval: &QuorumApproval,
+    ) -> Result<AcceptedTransition, String> {
+        evidence.validate_encoding()?;
+        if evidence.digest()? != order.no_fill_evidence_digest {
+            return Err("no-fill release order carries another evidence digest".into());
+        }
+        let statement = order.statement()?;
+        self.submit(statement, approval, |client, approval, before| {
+            client.issue_note_product_no_fill_release(order, evidence, approval, before)
+        })
+    }
+
     pub fn settle(
         &self,
         order: &NoteSettlementOrder,
@@ -2355,6 +3729,43 @@ impl<'a, C: AvalancheClient> AvalancheNoteBridge<'a, C> {
         let statement = order.statement()?;
         self.submit(statement, approval, |client, approval, before| {
             client.issue_note_product_settlement(order, evidence, approval, before)
+        })
+    }
+
+    pub fn settle_standing_pool_product(
+        &self,
+        request: StandingPoolProductSettlementRequest<'_>,
+        approval: &QuorumApproval,
+    ) -> Result<AcceptedTransition, String> {
+        request.evidence.validate_encoding()?;
+        if request.allocation.statement(
+            request.allocation_transition,
+            request.allocation_authorization,
+        )? != request.allocation_authorization.escrow_digest
+        {
+            return Err("atomic settlement allocation differs from its authorization".into());
+        }
+        let allocation_statement = request
+            .allocation_authorization
+            .statement(request.allocation_transition)?;
+        if request.allocation_approval.before_root != approval.before_root
+            || !self.authorizer.verify(
+                &allocation_statement,
+                &request.allocation_approval.before_root,
+                request.allocation_approval,
+            )
+        {
+            return Err("atomic settlement has an invalid allocation approval".into());
+        }
+        let statement = standing_pool_product_settlement_statement(
+            request.allocation_transition,
+            request.allocation_authorization,
+            request.allocation,
+            request.order,
+            request.evidence.digest()?,
+        )?;
+        self.submit(statement, approval, |client, approval, before| {
+            client.issue_standing_pool_product_settlement(request, approval, before)
         })
     }
 

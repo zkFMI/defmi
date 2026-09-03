@@ -315,6 +315,8 @@ fn run() -> Result<(), (i32, String)> {
         user_limit: cli.user_limit,
         user_limit_blinding: 1,
         user_qty_blinding: 1,
+        response_mask: None,
+        fill_mask: None,
         check_coefficients: &cli.config.check_coefficients,
         check_repeats: cli.config.check_repeats,
         policies: policies.as_deref(),

@@ -10,7 +10,10 @@
 //! The quorum signature is FROST rather than the threshold sigma protocol the
 //! audit behind it; there was no reason to keep a hand-rolled one.
 
+pub mod cross_domain_dvp;
 pub mod handles;
+pub mod receivable;
+pub mod receivable_wire;
 pub mod typed;
 pub mod typed_wire;
 pub mod wire;

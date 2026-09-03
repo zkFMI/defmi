@@ -125,6 +125,10 @@ pub struct InputConfig<'a> {
     /// Taker mandate. Production accepts the full scalar as a tenth frame
     /// field; deterministic fixtures use this compact value.
     pub user_qty_blinding: i128,
+    /// Optional one-time masks supplied by a pre-signed resident RFQ. Other
+    /// callers leave these unset and retain deterministic fixture generation.
+    pub response_mask: Option<i128>,
+    pub fill_mask: Option<i128>,
     pub check_coefficients: &'a [i128],
     pub check_repeats: usize,
     pub policies: Option<&'a [Policy]>,
@@ -318,7 +322,22 @@ pub fn build_inputs(config: &InputConfig<'_>) -> Result<GeneratedInputs, InputEr
         None,
     )?;
 
-    let mask = share_rng.randrange_power_of_two(config.value_bits);
+    let configured_mask = |value: Option<i128>, name: &str| -> Result<Option<BigNat>, InputError> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let maximum = 1_u128
+            .checked_shl(config.value_bits)
+            .ok_or_else(|| InputError(format!("{name} width exceeds u128")))?;
+        if value <= 0 || value as u128 >= maximum {
+            return Err(InputError(format!(
+                "{name} must be positive and fit the configured value width"
+            )));
+        }
+        Ok(Some(BigNat::from_u128(value as u128)))
+    };
+    let mask = configured_mask(config.response_mask, "response mask")?
+        .unwrap_or_else(|| share_rng.randrange_power_of_two(config.value_bits));
     deal_value(
         config,
         prime.as_ref(),
@@ -355,6 +374,7 @@ pub fn build_inputs(config: &InputConfig<'_>) -> Result<GeneratedInputs, InputEr
             )?;
         }
     }
+    let mut fill_mask = BigNat::zero();
     if config.binding_limit {
         deal_value(
             config,
@@ -372,13 +392,14 @@ pub fn build_inputs(config: &InputConfig<'_>) -> Result<GeneratedInputs, InputEr
             BigInt::from_i128(config.user_limit_blinding),
             None,
         )?;
-        let fill_mask = share_rng.randrange_power_of_two(config.value_bits);
+        fill_mask = configured_mask(config.fill_mask, "fill mask")?
+            .unwrap_or_else(|| share_rng.randrange_power_of_two(config.value_bits));
         deal_value(
             config,
             prime.as_ref(),
             &mut share_rng,
             &mut per_party,
-            BigInt::positive(fill_mask),
+            BigInt::positive(fill_mask.clone()),
             None,
         )?;
         deal_value(
@@ -482,7 +503,7 @@ pub fn build_inputs(config: &InputConfig<'_>) -> Result<GeneratedInputs, InputEr
         }
     }
 
-    let reference = cleartext_reference(config, policies, mask)?;
+    let reference = cleartext_reference(config, policies, mask, fill_mask)?;
     Ok(GeneratedInputs {
         per_party,
         reference,
@@ -581,6 +602,7 @@ fn cleartext_reference(
     config: &InputConfig<'_>,
     policies: Vec<Policy>,
     mask: BigNat,
+    fill_mask: BigNat,
 ) -> Result<ClearReference, InputError> {
     let mut best_cost = None;
     let mut best_mm = None;
@@ -661,6 +683,7 @@ fn cleartext_reference(
         best_price,
         bid_key: None,
         eligible_count,
+        fill_mask,
         is_real: 0,
         mask,
         mode: "",
@@ -770,6 +793,7 @@ struct ClearReference {
     best_price: Option<i128>,
     bid_key: Option<i128>,
     eligible_count: usize,
+    fill_mask: BigNat,
     is_real: i128,
     mask: BigNat,
     mode: &'static str,
@@ -826,6 +850,7 @@ impl ClearReference {
             self.eligible_count.to_string(),
             true,
         );
+        json_line(&mut out, 1, "fill_mask", self.fill_mask.to_string(), true);
         json_line(&mut out, 1, "is_real", self.is_real.to_string(), true);
         json_line(&mut out, 1, "mask", self.mask.to_string(), true);
         json_line(&mut out, 1, "mode", format!("\"{}\"", self.mode), true);

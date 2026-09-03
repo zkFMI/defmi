@@ -22,16 +22,29 @@ fn generated_circuit_persists_the_complete_dvp_witness_after_the_zkpi_witness() 
         "selected_maker_cash_reserve = winner_flags[0]",
         "dvp_direction = req_dir[0]",
         "dvp_securities_reserve = dvp_direction.if_else(dvp_taker_securities_reserve,",
-        "dvp_cash_reserve = dvp_direction.if_else(selected_maker_cash_reserve,",
+        // The Taker's cash reserve is the priced amount when the Taker buys and
+        // its signed cash reserve when it sells; the Maker's side is carried as
+        // its own pool-before opening (V8, see program_parity.rs).
+        "dvp_cash_reserve = dvp_direction.if_else(dvp_cash,",
         "dvp_securities_remainder = dvp_securities_reserve - W_qty[0]",
         "dvp_cash_remainder = dvp_cash_reserve - dvp_cash",
+        "dvp_maker_pool_before = dvp_direction.if_else(selected_maker_cash_reserve,",
+        "dvp_maker_delivery = dvp_direction.if_else(dvp_cash, W_qty[0])",
+        "dvp_maker_pool_remainder = dvp_maker_pool_before - dvp_maker_delivery",
         "dvp_securities_remainder.bit_decompose(DVP_REMAINDER_BITS)",
         "dvp_cash_remainder.bit_decompose(DVP_REMAINDER_BITS)",
+        "dvp_maker_pool_remainder.bit_decompose(DVP_REMAINDER_BITS)",
         "wires += [dvp_cash, dvp_cash_blinding,",
+        "wires += [dvp_maker_pool_remainder, dvp_maker_pool_remainder_blinding]",
     ] {
         assert!(
             source.contains(required),
-            "missing generated line: {required}"
+            "missing generated line: {required}\n--- generated DvP block ---\n{}",
+            source
+                .lines()
+                .filter(|line| line.contains("dvp_") || line.contains("selected_maker"))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
     assert!(
@@ -68,6 +81,8 @@ fn input_config(dvp: Option<DvpInputs>) -> InputConfig<'static> {
         user_limit: 100_000,
         user_limit_blinding: 1,
         user_qty_blinding: 1,
+        response_mask: None,
+        fill_mask: None,
         check_coefficients: &[],
         check_repeats: 7,
         policies: None,

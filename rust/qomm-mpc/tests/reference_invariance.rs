@@ -32,6 +32,8 @@ fn answer(reference: i128, direction: i128, seed: i128, use_ref: i128) -> Value 
         user_limit: 100_000,
         user_limit_blinding: 1,
         user_qty_blinding: 1,
+        response_mask: None,
+        fill_mask: None,
         check_coefficients: &[],
         check_repeats: 7,
         policies: None,

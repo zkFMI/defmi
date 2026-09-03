@@ -33,7 +33,8 @@ use crate::proof_codec::{
     encode_quote_verification, encode_threshold_range, QuoteVerificationBundle,
 };
 
-pub const HANDOFF_VERSION: u8 = 6;
+pub const HANDOFF_VERSION: u8 = 7;
+const MAX_PRIVATE_RECORD_BYTES: usize = 64 << 20;
 
 pub struct SettlementHandoff {
     pub job_id: [u8; 32],
@@ -59,6 +60,10 @@ pub struct SettlementHandoff {
     pub cash_remainder: RistrettoPoint,
     pub securities_reserve: RistrettoPoint,
     pub cash_reserve: RistrettoPoint,
+    /// Selected Maker's standing parent pool after this RFQ's exact child
+    /// reserve has been removed. This is distinct from either DvP refund.
+    pub maker_pool_remainder: RistrettoPoint,
+    pub maker_pool_remainder_proof: ThresholdRangeProof,
     pub securities_delivery_opening: OpeningEnvelope,
     pub securities_refund_opening: OpeningEnvelope,
     pub cash_delivery_opening: OpeningEnvelope,
@@ -263,6 +268,8 @@ struct WireRecord {
     cash_remainder: String,
     securities_reserve: String,
     cash_reserve: String,
+    maker_pool_remainder: String,
+    maker_pool_remainder_proof: String,
     securities_delivery_opening: WireOpeningEnvelope,
     securities_refund_opening: WireOpeningEnvelope,
     cash_delivery_opening: WireOpeningEnvelope,
@@ -456,6 +463,9 @@ fn encode_record(value: &SettlementHandoff) -> Result<WireRecord, String> {
         cash_remainder: hex32(value.cash_remainder.compress().to_bytes()),
         securities_reserve: hex32(value.securities_reserve.compress().to_bytes()),
         cash_reserve: hex32(value.cash_reserve.compress().to_bytes()),
+        maker_pool_remainder: hex32(value.maker_pool_remainder.compress().to_bytes()),
+        maker_pool_remainder_proof: BASE64
+            .encode(encode_threshold_range(&value.maker_pool_remainder_proof)?),
         securities_delivery_opening: encode_opening_envelope(&value.securities_delivery_opening)?,
         securities_refund_opening: encode_opening_envelope(&value.securities_refund_opening)?,
         cash_delivery_opening: encode_opening_envelope(&value.cash_delivery_opening)?,
@@ -474,6 +484,28 @@ fn encode_record(value: &SettlementHandoff) -> Result<WireRecord, String> {
             )
         }),
     })
+}
+
+/// Canonical private encoding for one verifier-complete settlement record.
+///
+/// This is used by the live Docker coordinator between the MPC proof stage and
+/// DeFMI pre-trade finalization.  It is intentionally not a public settlement
+/// transaction: admission and execution attestations are added to the bundle
+/// before validators can accept it.
+pub fn encode_private_record(value: &SettlementHandoff) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(&encode_record(value)?).map_err(|error| error.to_string())
+}
+
+pub fn decode_private_record(raw: &[u8]) -> Result<SettlementHandoff, String> {
+    if raw.is_empty() || raw.len() > MAX_PRIVATE_RECORD_BYTES {
+        return Err("private settlement record size is outside its bound".into());
+    }
+    let wire: WireRecord = serde_json::from_slice(raw).map_err(|error| error.to_string())?;
+    let value = decode_record(wire)?;
+    if encode_private_record(&value)? != raw {
+        return Err("private settlement record is not canonically encoded".into());
+    }
+    Ok(value)
 }
 
 fn decode_record(value: WireRecord) -> Result<SettlementHandoff, String> {
@@ -551,6 +583,12 @@ fn decode_record(value: WireRecord) -> Result<SettlementHandoff, String> {
         cash_remainder: parse_point(&value.cash_remainder, "cash_remainder")?,
         securities_reserve: parse_point(&value.securities_reserve, "securities_reserve")?,
         cash_reserve: parse_point(&value.cash_reserve, "cash_reserve")?,
+        maker_pool_remainder: parse_point(&value.maker_pool_remainder, "maker_pool_remainder")?,
+        maker_pool_remainder_proof: decode_threshold_range(
+            &BASE64
+                .decode(&value.maker_pool_remainder_proof)
+                .map_err(|_| "maker_pool_remainder_proof is not valid base64")?,
+        )?,
         securities_delivery_opening: decode_opening_envelope(value.securities_delivery_opening)?,
         securities_refund_opening: decode_opening_envelope(value.securities_refund_opening)?,
         cash_delivery_opening: decode_opening_envelope(value.cash_delivery_opening)?,

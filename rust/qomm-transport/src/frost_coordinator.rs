@@ -10,7 +10,8 @@ use base64::Engine;
 use qomm_zkpi::frost;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Public and recipient-encrypted transcript required for the final DKG step.
 /// It contains no clear signing share and can be journaled before any node is
@@ -26,6 +27,22 @@ pub fn distributed_frost_setup<T: ProofPartyRpc>(
     parties: &mut [T],
     session: [u8; 32],
 ) -> Result<frost::keys::PublicKeyPackage, String> {
+    if let Some(public) = recall_frost_group(parties, session)? {
+        return Ok(public);
+    }
+    let plan = prepare_frost_dkg(parties, session)?;
+    finalize_frost_dkg(parties, &plan)
+}
+
+/// The durable FROST group the seven parties already hold for `session`, or
+/// `None` when no party holds one yet (a DKG is then needed).  This is the
+/// retrieval half of `distributed_frost_setup`: it only reads each party's
+/// status, so a caller may run it with a short timeout to learn quickly
+/// whether the committee is reachable at all.
+pub fn recall_frost_group<T: ProofPartyRpc>(
+    parties: &mut [T],
+    session: [u8; 32],
+) -> Result<Option<frost::keys::PublicKeyPackage>, String> {
     if parties.len() != 7 {
         return Err("FROST deployment requires exactly seven proof parties".into());
     }
@@ -66,11 +83,10 @@ pub fn distributed_frost_setup<T: ProofPartyRpc>(
             return Err("FROST durable nodes disagree on the group public key".into());
         }
         return frost::keys::PublicKeyPackage::deserialize(&encoded[0])
+            .map(Some)
             .map_err(|_| "FROST durable public key cannot be decoded".into());
     }
-
-    let plan = prepare_frost_dkg(parties, session)?;
-    finalize_frost_dkg(parties, &plan)
+    Ok(None)
 }
 
 pub fn prepare_frost_dkg<T: ProofPartyRpc>(
@@ -200,4 +216,121 @@ pub fn finalize_frost_dkg<T: ProofPartyRpc>(
     }
     frost::keys::PublicKeyPackage::deserialize(&encoded_public[0])
         .map_err(|_| "FROST group public key cannot be decoded".into())
+}
+
+/// Stable, domain-separated identifier for one threshold-signing job.
+///
+/// Proof parties use this identifier to reserve a nonce exactly once.  It is
+/// deliberately derived from the complete message, so the coordinator cannot
+/// reuse one authorization for different settlement bytes.
+pub fn frost_signing_job(message: &[u8]) -> [u8; 32] {
+    Sha256::new()
+        .chain_update(b"QOMM:FROST:SIGNING-JOB:v1")
+        .chain_update(message)
+        .finalize()
+        .into()
+}
+
+/// Produce one FROST signature without ever collecting a signing-key share.
+///
+/// `selected` contains one-based committee identifiers.  Every state-changing
+/// call is made once; the final replay probe is expected to fail and proves
+/// that the chosen proof party consumed its nonce.
+pub fn distributed_frost_sign<T: ProofPartyRpc>(
+    parties: &mut [T],
+    selected: &[usize],
+    message: &[u8],
+    public: &frost::keys::PublicKeyPackage,
+) -> Result<frost::Signature, String> {
+    if selected.len() < 3
+        || selected
+            .iter()
+            .any(|party| !(1..=parties.len()).contains(party))
+    {
+        return Err("FROST signing quorum is outside the configured node set".into());
+    }
+    let signing_job = frost_signing_job(message);
+    let encoded_message = BASE64.encode(message);
+    let commitments = selected
+        .iter()
+        .map(|party| {
+            parties[*party - 1].call(
+                "frost_commit",
+                json!({
+                    "job_id": hex::encode(signing_job),
+                    "message": encoded_message,
+                }),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut decoded_commitments = BTreeMap::new();
+    for commitment in &commitments {
+        let party = commitment
+            .get("party")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+            .ok_or_else(|| "FROST commitment party is invalid".to_string())?;
+        let raw = BASE64
+            .decode(
+                commitment
+                    .get("commitments")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "FROST commitment is absent".to_string())?,
+            )
+            .map_err(|_| "FROST commitment is malformed")?;
+        decoded_commitments.insert(
+            frost::Identifier::try_from(party).map_err(|_| "FROST identifier is invalid")?,
+            frost::round1::SigningCommitments::deserialize(&raw)
+                .map_err(|_| "FROST commitment cannot be decoded")?,
+        );
+    }
+    let commitment_values = Value::Array(commitments.clone());
+    let shares = selected
+        .iter()
+        .map(|party| {
+            parties[*party - 1].call(
+                "frost_sign",
+                json!({
+                    "job_id": hex::encode(signing_job),
+                    "message": encoded_message,
+                    "commitments": commitment_values.clone(),
+                }),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let replay = parties[selected[0] - 1].call(
+        "frost_sign",
+        json!({
+            "job_id": hex::encode(signing_job),
+            "message": encoded_message,
+            "commitments": commitment_values,
+        }),
+    );
+    if replay.is_ok() {
+        return Err("FROST node reused a consumed signing nonce".into());
+    }
+    let mut decoded_shares = BTreeMap::new();
+    for share in shares {
+        let party = share
+            .get("party")
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok())
+            .ok_or_else(|| "FROST signature-share party is invalid".to_string())?;
+        let raw = BASE64
+            .decode(
+                share
+                    .get("share")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "FROST signature share is absent".to_string())?,
+            )
+            .map_err(|_| "FROST signature share is malformed")?;
+        decoded_shares.insert(
+            frost::Identifier::try_from(party).map_err(|_| "FROST identifier is invalid")?,
+            frost::round2::SignatureShare::deserialize(&raw)
+                .map_err(|_| "FROST signature share cannot be decoded")?,
+        );
+    }
+    let package = frost::SigningPackage::new(decoded_commitments, message);
+    frost::aggregate(&package, &decoded_shares, public)
+        .map_err(|_| "FROST aggregation rejected a node response".into())
 }

@@ -93,6 +93,24 @@ fn a_spend_verifies_and_the_payee_finds_its_note() {
 }
 
 #[test]
+fn verifier_complete_spend_proof_round_trips_canonically() {
+    let mut rng = OsRng;
+    let p = pool(&mut rng);
+    let (ring, proof, _) = spend(&p, &mut rng, 3, 17).unwrap();
+    let digest = proof.digest();
+    let wire = encode_spend_proof(&proof).unwrap();
+    let decoded = decode_spend_proof(&wire).unwrap();
+    assert_eq!(decoded.digest(), digest);
+    assert_eq!(
+        p.ledger.check_spend(&ring, &decoded, b"ctx", &mut rng),
+        Ok(())
+    );
+    let mut trailing = wire;
+    trailing.push(0);
+    assert!(decode_spend_proof(&trailing).is_err());
+}
+
+#[test]
 fn a_hidden_input_can_be_bound_to_one_reservation_lock_class() {
     let mut rng = OsRng;
     let p = pool(&mut rng);

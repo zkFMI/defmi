@@ -2,6 +2,7 @@ use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::{Signature, SigningKey};
 use qomm_transport::mandate::{Direction, TakerExecutionMandate};
+use qomm_transport::mpc_result::fill_mask_scalar_commitment;
 use qomm_transport::rfq_frame::{
     ResidentRfqCatalogBinding, ResidentRfqInput, ResidentRfqOpenings, RESIDENT_RFQ_FIELDS,
 };
@@ -45,6 +46,7 @@ fn fixture(
     let signing = SigningKey::from_bytes(&digest("rfq-frame-taker-key"));
     let traded_asset_id = digest("rfq-frame-security");
     let cash_asset_id = digest("rfq-frame-cash");
+    let fill_mask = high_scalar(13);
     let mandate = TakerExecutionMandate {
         venue_id: digest("rfq-frame-venue"),
         defmi_id: digest("rfq-frame-defmi"),
@@ -80,6 +82,7 @@ fn fixture(
         kyb_presentation_digest: digest("rfq-frame-kyb"),
         admission_ticket_id: digest("rfq-frame-ticket"),
         admission_slot: 11,
+        fill_mask_commitment: fill_mask_scalar_commitment(fill_mask.to_bytes()),
         deadline: 100,
         allow_partial: false,
         auto_settle: true,
@@ -105,7 +108,7 @@ fn fixture(
             reserve_amount,
             reserve_blinding,
             response_mask: high_scalar(11),
-            fill_mask: high_scalar(13),
+            fill_mask,
         },
     )
 }

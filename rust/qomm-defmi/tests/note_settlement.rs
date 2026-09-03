@@ -538,9 +538,15 @@ fn threshold_dvp_projects_to_predelegated_claims_without_a_post_quote_wallet_spe
         threshold_instruction(&w, rng, 45, QTY, PRICE, quote);
     let cash_value = QTY.checked_mul(PRICE).unwrap();
     let cash_blinding = Scalar::random(rng);
-    let securities_reserve_blinding = Scalar::random(rng);
+    let securities_reserve_blinding = amount_blinding;
     let cash_reserve_blinding = Scalar::random(rng);
-    let securities_reserve = w.key.commit_u64(SEC_NOTE, &securities_reserve_blinding);
+    // The Maker reserves exactly the traded quantity. This is the production
+    // edge case in which the securities refund commitment is the Ristretto
+    // identity rather than a non-zero point.
+    let securities_reserve_value = QTY;
+    let securities_reserve = w
+        .key
+        .commit_u64(securities_reserve_value, &securities_reserve_blinding);
     let cash_reserve = w.key.commit_u64(CASH_NOTE, &cash_reserve_blinding);
     let cash_commitment = w.key.commit_u64(cash_value, &cash_blinding);
     let parties = [1usize, 2, 3, 4, 5, 6, 7];
@@ -575,7 +581,7 @@ fn threshold_dvp_projects_to_predelegated_claims_without_a_post_quote_wallet_spe
         .collect::<BTreeMap<_, _>>();
     let securities_remainder = deal_bits(
         &w.key,
-        SEC_NOTE - QTY,
+        securities_reserve_value - QTY,
         &(securities_reserve_blinding - amount_blinding),
         BITS,
         &parties,
@@ -792,6 +798,12 @@ fn threshold_dvp_projects_to_predelegated_claims_without_a_post_quote_wallet_spe
                 .claims
                 .iter()
                 .any(|claim| claim.kind == NoteClaimKind::Refund)
+    }));
+    assert!(order.settlement.spends.iter().any(|spend| {
+        spend
+            .claims
+            .iter()
+            .any(|claim| claim.kind == NoteClaimKind::Refund && claim.value_commitment == ZERO)
     }));
     assert_eq!(order.dvp_proof_digest, package.digest());
     assert_ne!(order.statement().unwrap(), ZERO);

@@ -113,6 +113,36 @@ fn the_nullifier_is_the_same_across_wallets_and_different_across_scopes() {
 }
 
 #[test]
+fn rerandomized_proofs_share_one_durable_scope_binding() {
+    let (issuer, credentials) = issuer_with(3);
+    let cohort = cohort_id("JP", "bank", 2);
+    let registry = issuer.publish(&cohort, 1, 10_000).unwrap();
+    let first = present(&credentials[0], &registry, SCOPE, CTX, &mut OsRng).unwrap();
+    let second = present(&credentials[0], &registry, SCOPE, CTX, &mut OsRng).unwrap();
+
+    assert_ne!(
+        first.digest(),
+        second.digest(),
+        "fresh membership proofs must not reuse a transcript"
+    );
+    assert_eq!(
+        first.binding_digest(),
+        second.binding_digest(),
+        "one legal entity must not gain another reserve by presenting again"
+    );
+
+    let other_scope = present(
+        &credentials[0],
+        &registry,
+        b"another/venue",
+        CTX,
+        &mut OsRng,
+    )
+    .unwrap();
+    assert_ne!(first.binding_digest(), other_scope.binding_digest());
+}
+
+#[test]
 fn a_presentation_does_not_carry_to_another_scope_or_context() {
     let (issuer, credentials) = issuer_with(4);
     let cohort = cohort_id("JP", "bank", 2);

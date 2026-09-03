@@ -167,6 +167,199 @@ pub struct SpendProof {
     pub tag: RistrettoPoint,
 }
 
+const SPEND_PROOF_WIRE_MAGIC: &[u8] = b"QOMMNSP1";
+const MAX_SPEND_PROOF_WIRE: usize = 2 << 20;
+const MAX_SPEND_VECTOR: usize = 64;
+
+/// Canonical transport for a verifier-complete anonymous note spend.  The
+/// wire contains only public proof material; wallet openings and long-lived
+/// view/spend scalars are never serialized.
+pub fn encode_spend_proof(proof: &SpendProof) -> Result<Vec<u8>, String> {
+    fn push_point(out: &mut Vec<u8>, point: &RistrettoPoint) {
+        out.extend_from_slice(point.compress().as_bytes());
+    }
+    fn push_scalar(out: &mut Vec<u8>, scalar: &Scalar) {
+        out.extend_from_slice(&scalar.to_bytes());
+    }
+    fn push_points(out: &mut Vec<u8>, values: &[RistrettoPoint]) -> Result<(), String> {
+        if values.len() > MAX_SPEND_VECTOR {
+            return Err("note-spend proof point vector exceeds its bound".into());
+        }
+        out.extend_from_slice(&(values.len() as u32).to_be_bytes());
+        for value in values {
+            push_point(out, value);
+        }
+        Ok(())
+    }
+    fn push_scalars(out: &mut Vec<u8>, values: &[Scalar]) -> Result<(), String> {
+        if values.len() > MAX_SPEND_VECTOR {
+            return Err("note-spend proof scalar vector exceeds its bound".into());
+        }
+        out.extend_from_slice(&(values.len() as u32).to_be_bytes());
+        for value in values {
+            push_scalar(out, value);
+        }
+        Ok(())
+    }
+
+    let mut out = Vec::new();
+    out.extend_from_slice(SPEND_PROOF_WIRE_MAGIC);
+    push_point(&mut out, &proof.serial_point);
+    push_point(&mut out, &proof.serial_proof.t);
+    push_scalar(&mut out, &proof.serial_proof.z);
+    push_point(&mut out, &proof.pseudo);
+    push_points(&mut out, &proof.ring.cl)?;
+    push_points(&mut out, &proof.ring.ca)?;
+    push_points(&mut out, &proof.ring.cb)?;
+    push_points(&mut out, &proof.ring.gk)?;
+    push_scalars(&mut out, &proof.ring.f)?;
+    push_scalars(&mut out, &proof.ring.za)?;
+    push_scalars(&mut out, &proof.ring.zb)?;
+    push_scalar(&mut out, &proof.ring.zd);
+    push_points(&mut out, &proof.outputs)?;
+    let range = proof.output_range.to_bytes();
+    if range.is_empty() || range.len() > MAX_SPEND_PROOF_WIRE {
+        return Err("note-spend range proof exceeds its bound".into());
+    }
+    out.extend_from_slice(&(range.len() as u32).to_be_bytes());
+    out.extend_from_slice(&range);
+    if proof.output_range_commitments.len() > MAX_SPEND_VECTOR {
+        return Err("note-spend range commitments exceed their bound".into());
+    }
+    out.extend_from_slice(&(proof.output_range_commitments.len() as u32).to_be_bytes());
+    for commitment in &proof.output_range_commitments {
+        out.extend_from_slice(commitment.as_bytes());
+    }
+    push_point(&mut out, &proof.balance.t);
+    push_scalar(&mut out, &proof.balance.z_value);
+    push_scalar(&mut out, &proof.balance.z_blinding);
+    push_point(&mut out, &proof.tag);
+    if out.len() > MAX_SPEND_PROOF_WIRE {
+        return Err("note-spend proof wire exceeds its bound".into());
+    }
+    Ok(out)
+}
+
+pub fn decode_spend_proof(raw: &[u8]) -> Result<SpendProof, String> {
+    struct Reader<'a> {
+        raw: &'a [u8],
+        at: usize,
+    }
+    impl<'a> Reader<'a> {
+        fn take(&mut self, length: usize) -> Result<&'a [u8], String> {
+            if self.raw.len().saturating_sub(self.at) < length {
+                return Err("note-spend proof wire is truncated".into());
+            }
+            let value = &self.raw[self.at..self.at + length];
+            self.at += length;
+            Ok(value)
+        }
+        fn count(&mut self) -> Result<usize, String> {
+            let count = u32::from_be_bytes(
+                self.take(4)?
+                    .try_into()
+                    .expect("four-byte note-spend count"),
+            ) as usize;
+            if count > MAX_SPEND_VECTOR {
+                return Err("note-spend proof vector exceeds its bound".into());
+            }
+            Ok(count)
+        }
+        fn point(&mut self) -> Result<RistrettoPoint, String> {
+            let encoded: [u8; 32] = self
+                .take(32)?
+                .try_into()
+                .expect("thirty-two-byte Ristretto encoding");
+            CompressedRistretto(encoded)
+                .decompress()
+                .ok_or_else(|| "note-spend proof contains a non-canonical point".into())
+        }
+        fn scalar(&mut self) -> Result<Scalar, String> {
+            let encoded: [u8; 32] = self
+                .take(32)?
+                .try_into()
+                .expect("thirty-two-byte scalar encoding");
+            Option::<Scalar>::from(Scalar::from_canonical_bytes(encoded))
+                .ok_or_else(|| "note-spend proof contains a non-canonical scalar".into())
+        }
+        fn points(&mut self) -> Result<Vec<RistrettoPoint>, String> {
+            let count = self.count()?;
+            (0..count).map(|_| self.point()).collect()
+        }
+        fn scalars(&mut self) -> Result<Vec<Scalar>, String> {
+            let count = self.count()?;
+            (0..count).map(|_| self.scalar()).collect()
+        }
+    }
+
+    if raw.len() > MAX_SPEND_PROOF_WIRE || !raw.starts_with(SPEND_PROOF_WIRE_MAGIC) {
+        return Err("note-spend proof wire has an invalid header or length".into());
+    }
+    let mut reader = Reader {
+        raw,
+        at: SPEND_PROOF_WIRE_MAGIC.len(),
+    };
+    let serial_point = reader.point()?;
+    let serial_proof = SerialProof {
+        t: reader.point()?,
+        z: reader.scalar()?,
+    };
+    let pseudo = reader.point()?;
+    let ring = GkProof {
+        cl: reader.points()?,
+        ca: reader.points()?,
+        cb: reader.points()?,
+        gk: reader.points()?,
+        f: reader.scalars()?,
+        za: reader.scalars()?,
+        zb: reader.scalars()?,
+        zd: reader.scalar()?,
+    };
+    let outputs = reader.points()?;
+    let range_length = u32::from_be_bytes(
+        reader
+            .take(4)?
+            .try_into()
+            .expect("four-byte range-proof length"),
+    ) as usize;
+    if range_length == 0 || range_length > MAX_SPEND_PROOF_WIRE {
+        return Err("note-spend range proof length is invalid".into());
+    }
+    let output_range = RangeProof::from_bytes(reader.take(range_length)?)
+        .map_err(|_| "note-spend range proof is malformed".to_string())?;
+    let commitment_count = reader.count()?;
+    let output_range_commitments = (0..commitment_count)
+        .map(|_| {
+            Ok(CompressedRistretto(
+                reader
+                    .take(32)?
+                    .try_into()
+                    .expect("thirty-two-byte range commitment"),
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let balance = OpeningProof {
+        t: reader.point()?,
+        z_value: reader.scalar()?,
+        z_blinding: reader.scalar()?,
+    };
+    let tag = reader.point()?;
+    if reader.at != raw.len() {
+        return Err("note-spend proof wire has trailing bytes".into());
+    }
+    Ok(SpendProof {
+        serial_point,
+        serial_proof,
+        pseudo,
+        ring,
+        outputs,
+        output_range,
+        output_range_commitments,
+        balance,
+        tag,
+    })
+}
+
 impl SpendProof {
     /// Stable identifier for the complete verifier input carried off chain.
     /// The Avalanche statement binds this digest together with the ring root,

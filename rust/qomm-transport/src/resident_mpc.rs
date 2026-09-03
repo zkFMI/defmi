@@ -10,8 +10,15 @@ use crate::key_management::{
     decrypt_authenticated, derive_secret_key, encrypt_authenticated, FileLock,
 };
 use crate::wire::{FieldElement, Frame, FRAME_BYTES};
+use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
+use curve25519_dalek::scalar::Scalar;
+use curve25519_dalek::traits::Identity;
 use qomm_mpc::inputs::DvpInputs;
-use qomm_mpc::persistence::FieldElement as DecimalFieldElement;
+use qomm_mpc::persistence::{
+    read_local_dvp_handoff_from_quote, FieldElement as DecimalFieldElement,
+};
+use qomm_mpc::program::ed25519_lagrange_at_zero;
+use qomm_zk::pedersen::Pedersen;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -80,16 +87,56 @@ pub struct MpcSecretState {
     /// circuits; complete quote-proof circuits require exactly this vector.
     #[serde(default)]
     pub quote_policy_blinding_input_shares: Vec<String>,
+    /// Which canonical DeFMI standing pool each Maker reserve slot mirrors.
+    /// The coordinator compares these against DeFMI before every execution;
+    /// a slot without a binding is either padding or not yet registered.
+    #[serde(default)]
+    pub standing_pool_bindings: Vec<StandingPoolBinding>,
+}
+
+/// The DeFMI standing pool one Maker slot of the resident state currently
+/// mirrors. `pool_sequence` is the canonical pool sequence whose remainder
+/// opening this node's shares (together with the other nodes') reconstruct.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StandingPoolBinding {
+    pub maker: usize,
+    /// `0`: securities pool used when the Taker buys; `1`: cash pool used when
+    /// the Taker sells.  This is the circuit's rail order, not a trade side.
+    pub direction: u8,
+    #[serde(with = "hex32")]
+    pub pool_id: [u8; 32],
+    pub pool_sequence: u64,
+}
+
+/// How the compiled circuit combines the seven party inputs of one secret.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputSharing {
+    /// `secret_input()` multiplies party `p`'s input by its Lagrange
+    /// coefficient, so the state stores raw Shamir evaluations.
+    Shamir,
+    /// `secret_input()` sums the party inputs, so the state stores each Shamir
+    /// evaluation already scaled by the node's Lagrange coefficient. Summing the
+    /// seven stored values reconstructs the secret exactly as the Lagrange
+    /// circuit would, without any node learning more than its own share.
+    Additive,
 }
 
 impl MpcSecretState {
     pub fn verify(&self, node: u16, source_sha256: &str, n_mm: usize) -> Result<(), String> {
+        // Maker policies are either resident (ten shares per padded Maker, as
+        // in the WAN deployment) or delivered per RFQ as mandate-bound inputs
+        // (the Docker demo). The blinding vector may only exist alongside
+        // resident policies.
+        let resident_policies = !self.policy_input_shares.is_empty();
         if self.version != 1
             || self.node != node
             || self.source_sha256 != source_sha256
             || !is_digest(&self.source_sha256)
             || self.dvp_input_shares.len() != DvpInputs::standing_value_count(n_mm)
-            || self.policy_input_shares.len() != n_mm.saturating_mul(POLICY_FIELDS)
+            || (resident_policies
+                && self.policy_input_shares.len() != n_mm.saturating_mul(POLICY_FIELDS))
+            || (!resident_policies && !self.quote_policy_blinding_input_shares.is_empty())
             || !(self.quote_policy_blinding_input_shares.is_empty()
                 || self.quote_policy_blinding_input_shares.len()
                     == n_mm.saturating_mul(QUOTE_POLICY_BLINDING_FIELDS))
@@ -104,8 +151,204 @@ impl MpcSecretState {
                 "encrypted MPC state does not match the approved node/circuit shape".into(),
             );
         }
+        let mut seen = std::collections::BTreeSet::new();
+        for binding in &self.standing_pool_bindings {
+            if binding.maker >= n_mm
+                || binding.direction > 1
+                || binding.pool_id == [0; 32]
+                || !seen.insert((binding.maker, binding.direction))
+            {
+                return Err(
+                    "encrypted MPC state names an invalid or duplicate standing pool".into(),
+                );
+            }
+        }
         Ok(())
     }
+
+    /// True when every Maker policy is a resident share rather than a per-RFQ
+    /// input.  The WAN runner requires this; the Docker demo does not use it.
+    pub fn has_resident_policies(&self) -> bool {
+        !self.policy_input_shares.is_empty()
+    }
+
+    /// Index of the amount share for one Maker rail inside `dvp_input_shares`.
+    /// The blinding share follows it immediately.
+    pub fn standing_share_offset(maker: usize, direction: u8) -> Result<usize, String> {
+        if direction > 1 {
+            return Err("standing pool direction is outside its rail bound".into());
+        }
+        maker
+            .checked_mul(5)
+            .and_then(|value| value.checked_add(usize::from(direction) * 2))
+            .ok_or_else(|| "standing-pool MPC state offset overflowed".to_string())
+    }
+
+    pub fn standing_pool_binding(
+        &self,
+        maker: usize,
+        direction: u8,
+    ) -> Option<&StandingPoolBinding> {
+        self.standing_pool_bindings
+            .iter()
+            .find(|binding| binding.maker == maker && binding.direction == direction)
+    }
+
+    /// Pedersen commitment to this node's stored (amount, blinding) share pair
+    /// for one Maker rail under the DeFMI settlement key.  Combining the seven
+    /// nodes' values with [`combine_partial_commitments`] yields the commitment
+    /// of the reconstructed opening, so the coordinator can audit that the
+    /// resident state still equals the canonical DeFMI pool note without any
+    /// node revealing its share or the coordinator learning the opening.
+    pub fn standing_pool_partial_commitment(
+        &self,
+        maker: usize,
+        direction: u8,
+    ) -> Result<[u8; 32], String> {
+        let offset = Self::standing_share_offset(maker, direction)?;
+        let amount = self
+            .dvp_input_shares
+            .get(offset)
+            .ok_or_else(|| "standing-pool amount share is outside node state".to_string())?;
+        let blinding = self
+            .dvp_input_shares
+            .get(offset + 1)
+            .ok_or_else(|| "standing-pool blinding share is outside node state".to_string())?;
+        Ok(Pedersen::new(b"qomm:defmi:v1")
+            .commit(&decimal_to_scalar(amount)?, &decimal_to_scalar(blinding)?)
+            .compress()
+            .to_bytes())
+    }
+
+    fn set_standing_pool_binding(&mut self, binding: StandingPoolBinding) {
+        match self.standing_pool_bindings.iter_mut().find(|existing| {
+            existing.maker == binding.maker && existing.direction == binding.direction
+        }) {
+            Some(existing) => *existing = binding,
+            None => self.standing_pool_bindings.push(binding),
+        }
+        self.standing_pool_bindings
+            .sort_by_key(|binding| (binding.maker, binding.direction));
+    }
+}
+
+/// Lagrange coefficient at zero for MP-SPDZ party `node`, whose Shamir
+/// evaluation point is `node + 1`.  This is the same convention the proof
+/// parties use (`party = node + 1`) when they combine range-proof shares.
+pub fn node_lagrange_coefficient(node: u16, n_parties: u16) -> Result<Scalar, String> {
+    let coefficients =
+        ed25519_lagrange_at_zero(usize::from(n_parties)).map_err(|error| error.to_string())?;
+    coefficients
+        .get(usize::from(node))
+        .map(|value| decimal_to_scalar(value))
+        .ok_or_else(|| "MPC node index is outside the Lagrange coefficient table".to_string())?
+}
+
+/// Parse a canonical decimal field element (optionally negative) into the
+/// Ed25519 scalar field, which is the MP-SPDZ prime used by every QOMM circuit.
+pub fn decimal_to_scalar(value: &str) -> Result<Scalar, String> {
+    if !is_decimal(value) {
+        return Err("field element is not a canonical decimal".into());
+    }
+    let (negative, digits) = match value.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, value),
+    };
+    let mut limbs = [0_u64; 8];
+    for digit in digits.bytes() {
+        let mut carry = u128::from(digit - b'0');
+        for limb in limbs.iter_mut() {
+            let wide = u128::from(*limb) * 10 + carry;
+            *limb = wide as u64;
+            carry = wide >> 64;
+        }
+        if carry != 0 {
+            return Err("field element exceeds 512 bits".into());
+        }
+    }
+    let mut bytes = [0_u8; 64];
+    for (index, limb) in limbs.iter().enumerate() {
+        bytes[index * 8..index * 8 + 8].copy_from_slice(&limb.to_le_bytes());
+    }
+    let scalar = Scalar::from_bytes_mod_order_wide(&bytes);
+    Ok(if negative { -scalar } else { scalar })
+}
+
+/// Canonical (reduced, non-negative) decimal rendering of a scalar.
+pub fn scalar_to_decimal(value: &Scalar) -> String {
+    DecimalFieldElement::from_bytes_le(&value.to_bytes()).to_string()
+}
+
+/// Convert one Shamir evaluation read from this node's MP-SPDZ persistence
+/// into the value the resident state must store for the configured circuit.
+pub fn resident_share_from_evaluation(
+    node: u16,
+    n_parties: u16,
+    sharing: InputSharing,
+    evaluation: &DecimalFieldElement,
+) -> Result<String, String> {
+    let evaluation = decimal_to_scalar(&evaluation.to_string())?;
+    Ok(match sharing {
+        InputSharing::Shamir => scalar_to_decimal(&evaluation),
+        InputSharing::Additive => {
+            scalar_to_decimal(&(node_lagrange_coefficient(node, n_parties)? * evaluation))
+        }
+    })
+}
+
+/// Combine the seven nodes' partial commitments of one Maker rail into the
+/// commitment of the reconstructed opening.
+pub fn combine_partial_commitments(
+    partials: &[[u8; 32]],
+    sharing: InputSharing,
+    n_parties: u16,
+) -> Result<[u8; 32], String> {
+    if partials.len() != usize::from(n_parties) {
+        return Err("partial commitment set does not cover every MPC node".into());
+    }
+    let mut total = RistrettoPoint::identity();
+    for (node, partial) in partials.iter().enumerate() {
+        let point = CompressedRistretto(*partial).decompress().ok_or_else(|| {
+            format!("MPC node {node} returned a non-canonical partial commitment")
+        })?;
+        total += match sharing {
+            InputSharing::Additive => point,
+            InputSharing::Shamir => {
+                point
+                    * node_lagrange_coefficient(
+                        u16::try_from(node).map_err(|_| "node index exceeds u16")?,
+                        n_parties,
+                    )?
+            }
+        };
+    }
+    Ok(total.compress().to_bytes())
+}
+
+/// Offset of the standing Maker segment inside one party input file: six
+/// public/admission values, then the four per-RFQ Taker reserve values.  This
+/// is the order `qomm_mpc::inputs::build_inputs` deals and the circuit reads.
+pub const STANDING_SHARES_OFFSET: usize = REQUEST_PUBLIC_AND_ADMISSION_VALUES + 4;
+
+/// Replace the standing Maker segment of a coordinator-dealt party input with
+/// this node's resident shares.  The coordinator's copy of that segment is
+/// ignored, so a restarted coordinator cannot re-inject an initial balance.
+pub fn splice_standing_maker_shares(
+    inputs: &mut [String],
+    state: &MpcSecretState,
+    n_mm: usize,
+) -> Result<(), String> {
+    let count = DvpInputs::standing_value_count(n_mm);
+    if state.dvp_input_shares.len() != count {
+        return Err("resident Maker state does not match the circuit's Maker population".into());
+    }
+    let segment = inputs
+        .get_mut(STANDING_SHARES_OFFSET..STANDING_SHARES_OFFSET + count)
+        .ok_or_else(|| "party input is shorter than its standing Maker segment".to_string())?;
+    for (slot, share) in segment.iter_mut().zip(&state.dvp_input_shares) {
+        *slot = share.clone();
+    }
+    Ok(())
 }
 
 fn is_digest(value: &str) -> bool {
@@ -160,6 +403,16 @@ impl EncryptedMpcStateStore {
 
     pub fn load(&self) -> Result<MpcSecretState, String> {
         let _lock = FileLock::acquire(&self.path)?;
+        self.load_unlocked()
+    }
+
+    /// Whether a state file exists at all.  A node without one has never been
+    /// seeded; it must refuse to execute rather than invent Maker inputs.
+    pub fn exists(&self) -> bool {
+        self.path.is_file()
+    }
+
+    fn load_unlocked(&self) -> Result<MpcSecretState, String> {
         let metadata = self.path.metadata().map_err(|error| error.to_string())?;
         let mode = metadata.permissions().mode() & 0o777;
         if mode & 0o077 != 0 {
@@ -177,14 +430,45 @@ impl EncryptedMpcStateStore {
         let nonce: &[u8; NONCE_BYTES] = raw[nonce_start..nonce_start + NONCE_BYTES]
             .try_into()
             .expect("fixed nonce");
-        let clear = decrypt_authenticated(
+        let mut clear = decrypt_authenticated(
             &derive_secret_key(&self.passphrase, salt)?,
             nonce,
             STATE_AAD,
             &raw[nonce_start + NONCE_BYTES..],
         )?;
-        serde_json::from_slice(&clear)
-            .map_err(|_| "MPC-state authentication succeeded but its payload is malformed".into())
+        let decoded = serde_json::from_slice(&clear)
+            .map_err(|_| "MPC-state authentication succeeded but its payload is malformed".into());
+        clear.fill(0);
+        decoded
+    }
+
+    /// Atomically replace one node's secret-share state after an accepted
+    /// DeFMI transition. The expected generation is a compare-and-swap guard:
+    /// two RFQs proved against the same parent state cannot both advance it.
+    pub fn compare_and_swap(
+        &self,
+        expected_generation: u64,
+        next: &MpcSecretState,
+    ) -> Result<(), String> {
+        let _lock = FileLock::acquire(&self.path)?;
+        let current = self.load_unlocked()?;
+        if current.generation != expected_generation {
+            return Err("MPC secret-state generation changed before commit".into());
+        }
+        if next.generation
+            != expected_generation
+                .checked_add(1)
+                .ok_or_else(|| "MPC secret-state generation overflowed before commit".to_string())?
+            || next.version != current.version
+            || next.node != current.node
+            || next.source_sha256 != current.source_sha256
+            || next.dvp_input_shares.len() != current.dvp_input_shares.len()
+            || next.policy_input_shares != current.policy_input_shares
+            || next.quote_policy_blinding_input_shares != current.quote_policy_blinding_input_shares
+        {
+            return Err("MPC secret-state update changed its circuit, identity, or policy".into());
+        }
+        self.write_unlocked(next)
     }
 
     fn write_unlocked(&self, state: &MpcSecretState) -> Result<(), String> {
@@ -207,6 +491,284 @@ impl EncryptedMpcStateStore {
         raw.extend_from_slice(&encrypted);
         atomic_private_write(&self.path, &raw)
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StandingPoolStateReceipt {
+    pub node: u16,
+    pub maker: usize,
+    pub direction: u8,
+    pub before_generation: u64,
+    pub after_generation: u64,
+    #[serde(with = "hex32")]
+    pub proof_job_id: [u8; 32],
+    #[serde(with = "hex32")]
+    pub allocation_statement: [u8; 32],
+    #[serde(with = "hex32")]
+    pub persistence_digest: [u8; 32],
+    #[serde(with = "hex32")]
+    pub receipt_digest: [u8; 32],
+}
+
+impl StandingPoolStateReceipt {
+    fn unsigned_digest(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(b"QOMM:MPC:STANDING-POOL-STATE-RECEIPT:v1");
+        hash.update(self.node.to_be_bytes());
+        hash.update((self.maker as u64).to_be_bytes());
+        hash.update([self.direction]);
+        hash.update(self.before_generation.to_be_bytes());
+        hash.update(self.after_generation.to_be_bytes());
+        hash.update(self.proof_job_id);
+        hash.update(self.allocation_statement);
+        hash.update(self.persistence_digest);
+        hash.finalize().into()
+    }
+
+    pub fn verify(&self) -> Result<(), String> {
+        if self.direction > 1
+            || self.before_generation == 0
+            || self.after_generation != self.before_generation.saturating_add(1)
+            || self.proof_job_id == [0; 32]
+            || self.allocation_statement == [0; 32]
+            || self.persistence_digest == [0; 32]
+            || self.receipt_digest != self.unsigned_digest()
+        {
+            return Err("standing-pool MPC state receipt is incomplete".into());
+        }
+        Ok(())
+    }
+}
+
+/// Commit the selected Maker parent-pool remainder into one node's encrypted
+/// long-lived MPC state. `direction=0` updates the securities pool used when
+/// the Taker buys; `direction=1` updates the cash pool used when the Taker
+/// sells. The clear remainder is never reconstructed here or returned.
+///
+/// This is the WAN-runner entry point: the resident circuit reconstructs its
+/// inputs with Lagrange coefficients, so raw Shamir evaluations are stored and
+/// the pool binding is tracked by the deployment manifest instead.
+#[allow(clippy::too_many_arguments)]
+pub fn commit_standing_pool_remainder(
+    config: &ResidentMpcConfig,
+    persistence_path: &Path,
+    maker: usize,
+    direction: u8,
+    expected_generation: u64,
+    proof_job_id: [u8; 32],
+    allocation_statement: [u8; 32],
+    amount_bits: usize,
+    price_bits: usize,
+    remainder_bits: usize,
+    eligibility_bits: usize,
+    span_bits: usize,
+) -> Result<StandingPoolStateReceipt, String> {
+    let mut passphrase = read_private_secret(&config.passphrase_file)?;
+    let store = EncryptedMpcStateStore::new(&config.state_store, &passphrase)?;
+    passphrase.fill(0);
+    commit_standing_pool_remainder_with_store(StandingPoolCommitRequest {
+        store: &store,
+        node: config.node,
+        n_parties: config.n_parties,
+        n_mm: config.n_mm,
+        source_sha256: &config.source_sha256,
+        sharing: InputSharing::Shamir,
+        persistence_path,
+        maker,
+        direction,
+        expected_generation,
+        proof_job_id,
+        allocation_statement,
+        binding: None,
+        amount_bits,
+        price_bits,
+        remainder_bits,
+        eligibility_bits,
+        span_bits,
+    })
+}
+
+/// One node-local standing-pool commit.  Every field is public or node-local;
+/// the only secret material involved is the node's own persistence file and
+/// its own encrypted state.
+pub struct StandingPoolCommitRequest<'a> {
+    pub store: &'a EncryptedMpcStateStore,
+    pub node: u16,
+    pub n_parties: u16,
+    pub n_mm: usize,
+    pub source_sha256: &'a str,
+    pub sharing: InputSharing,
+    pub persistence_path: &'a Path,
+    pub maker: usize,
+    pub direction: u8,
+    /// Compare-and-swap guard: the state generation the accepted execution
+    /// was proved against.
+    pub expected_generation: u64,
+    pub proof_job_id: [u8; 32],
+    /// Canonical DeFMI identifier of the accepted allocation.  The Docker demo
+    /// passes the remainder note id, which binds the proof job and the new pool
+    /// commitment and is readable from canonical DeFMI after any outage.
+    pub allocation_statement: [u8; 32],
+    /// Pool the committed remainder now mirrors.  `None` leaves the slot's
+    /// binding untouched for deployments that track pools elsewhere.
+    pub binding: Option<StandingPoolBinding>,
+    pub amount_bits: usize,
+    pub price_bits: usize,
+    pub remainder_bits: usize,
+    pub eligibility_bits: usize,
+    pub span_bits: usize,
+}
+
+pub fn commit_standing_pool_remainder_with_store(
+    request: StandingPoolCommitRequest<'_>,
+) -> Result<StandingPoolStateReceipt, String> {
+    let StandingPoolCommitRequest {
+        store,
+        node,
+        n_parties,
+        n_mm,
+        source_sha256,
+        sharing,
+        persistence_path,
+        maker,
+        direction,
+        expected_generation,
+        proof_job_id,
+        allocation_statement,
+        binding,
+        amount_bits,
+        price_bits,
+        remainder_bits,
+        eligibility_bits,
+        span_bits,
+    } = request;
+    if maker >= n_mm
+        || direction > 1
+        || expected_generation == 0
+        || proof_job_id == [0; 32]
+        || allocation_statement == [0; 32]
+        || binding.as_ref().is_some_and(|binding| {
+            binding.maker != maker || binding.direction != direction || binding.pool_id == [0; 32]
+        })
+    {
+        return Err("standing-pool MPC state commit is outside its bound".into());
+    }
+    protected_persistence(persistence_path)?;
+    let persistence_digest: [u8; 32] =
+        Sha256::digest(fs::read(persistence_path).map_err(|error| error.to_string())?).into();
+    let handoff = read_local_dvp_handoff_from_quote(
+        persistence_path,
+        usize::from(node),
+        n_mm,
+        amount_bits,
+        price_bits,
+        remainder_bits,
+        eligibility_bits,
+        span_bits,
+        -1,
+    )
+    .map_err(|error| error.to_string())?;
+    if handoff.party != usize::from(node) {
+        return Err("standing-pool handoff belongs to another MPC node".into());
+    }
+    let mut next = store.load()?;
+    next.verify(node, source_sha256, n_mm)?;
+    if next.generation != expected_generation {
+        return Err("standing-pool commit was proved from a stale MPC generation".into());
+    }
+    let offset = MpcSecretState::standing_share_offset(maker, direction)?;
+    let amount = resident_share_from_evaluation(
+        node,
+        n_parties,
+        sharing,
+        &handoff.maker_pool_remainder.value_share,
+    )?;
+    let blinding = resident_share_from_evaluation(
+        node,
+        n_parties,
+        sharing,
+        &handoff.maker_pool_remainder.blinding_share,
+    )?;
+    *next
+        .dvp_input_shares
+        .get_mut(offset)
+        .ok_or_else(|| "standing-pool amount share is outside node state".to_string())? = amount;
+    *next
+        .dvp_input_shares
+        .get_mut(offset + 1)
+        .ok_or_else(|| "standing-pool blinding share is outside node state".to_string())? =
+        blinding;
+    if let Some(binding) = binding {
+        next.set_standing_pool_binding(binding);
+    }
+    next.generation = expected_generation
+        .checked_add(1)
+        .ok_or_else(|| "standing-pool MPC generation overflowed".to_string())?;
+    store.compare_and_swap(expected_generation, &next)?;
+    let mut receipt = StandingPoolStateReceipt {
+        node,
+        maker,
+        direction,
+        before_generation: expected_generation,
+        after_generation: next.generation,
+        proof_job_id,
+        allocation_statement,
+        persistence_digest,
+        receipt_digest: [0; 32],
+    };
+    receipt.receipt_digest = receipt.unsigned_digest();
+    receipt.verify()?;
+    Ok(receipt)
+}
+
+/// Point one Maker rail of the resident state at a freshly registered DeFMI
+/// pool whose opening the registering party dealt.  This is the only path
+/// that replaces a slot with coordinator-supplied shares, and it is limited to
+/// pools at sequence zero: a pool that has already been allocated from can
+/// only be reached through [`commit_standing_pool_remainder_with_store`].
+#[allow(clippy::too_many_arguments)]
+pub fn rebind_standing_pool(
+    store: &EncryptedMpcStateStore,
+    node: u16,
+    n_mm: usize,
+    source_sha256: &str,
+    expected_generation: u64,
+    binding: StandingPoolBinding,
+    amount_share: &str,
+    blinding_share: &str,
+) -> Result<MpcSecretState, String> {
+    if binding.maker >= n_mm
+        || binding.direction > 1
+        || binding.pool_id == [0; 32]
+        || binding.pool_sequence != 0
+        || expected_generation == 0
+        || !is_decimal(amount_share)
+        || !is_decimal(blinding_share)
+    {
+        return Err("standing-pool rebind is outside its bound".into());
+    }
+    let mut next = store.load()?;
+    next.verify(node, source_sha256, n_mm)?;
+    if next.generation != expected_generation {
+        return Err("standing-pool rebind was prepared from a stale MPC generation".into());
+    }
+    let offset = MpcSecretState::standing_share_offset(binding.maker, binding.direction)?;
+    *next
+        .dvp_input_shares
+        .get_mut(offset)
+        .ok_or_else(|| "standing-pool amount share is outside node state".to_string())? =
+        amount_share.to_string();
+    *next
+        .dvp_input_shares
+        .get_mut(offset + 1)
+        .ok_or_else(|| "standing-pool blinding share is outside node state".to_string())? =
+        blinding_share.to_string();
+    next.set_standing_pool_binding(binding);
+    next.generation = expected_generation
+        .checked_add(1)
+        .ok_or_else(|| "standing-pool MPC generation overflowed".to_string())?;
+    store.compare_and_swap(expected_generation, &next)?;
+    Ok(next)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -551,10 +1113,14 @@ pub fn execute_resident_party(
     sealed: &[u8],
 ) -> Result<ResidentExecutionReceipt, String> {
     config.verify(source_digest)?;
-    let passphrase = read_private_secret(&config.passphrase_file)?;
+    let mut passphrase = read_private_secret(&config.passphrase_file)?;
     let state_store = EncryptedMpcStateStore::new(&config.state_store, &passphrase)?;
+    passphrase.fill(0);
     let state = state_store.load()?;
     state.verify(config.node, source_digest, config.n_mm)?;
+    if !state.has_resident_policies() {
+        return Err("resident WAN execution requires resident Maker policy shares".into());
+    }
     let frames = decode_sealed_batch(sealed, config.node, slot, &batch_digest)?;
     let request = request_shares_for_lane(&frames, lane)?;
     let inputs = assemble_party_input(&request, &state, config.n_mm)?;
@@ -844,6 +1410,7 @@ mod tests {
             dvp_input_shares: (100..105).map(|value| value.to_string()).collect(),
             policy_input_shares: (200..210).map(|value| value.to_string()).collect(),
             quote_policy_blinding_input_shares: Vec::new(),
+            standing_pool_bindings: Vec::new(),
         };
         let assembled = assemble_party_input(&request, &state, 1).unwrap();
         let expected = [
@@ -856,6 +1423,192 @@ mod tests {
         .map(|value| value.to_string())
         .to_vec();
         assert_eq!(assembled, expected);
+    }
+
+    #[test]
+    fn secret_state_compare_and_swap_rejects_a_second_same_generation_rfq() {
+        let root = tempfile::tempdir().unwrap();
+        let store =
+            EncryptedMpcStateStore::new(root.path().join("state.qms"), b"test-passphrase").unwrap();
+        let initial = MpcSecretState {
+            version: 1,
+            node: 0,
+            generation: 7,
+            source_sha256: "11".repeat(32),
+            dvp_input_shares: (100..105).map(|value| value.to_string()).collect(),
+            policy_input_shares: (200..210).map(|value| value.to_string()).collect(),
+            quote_policy_blinding_input_shares: (300..309).map(|value| value.to_string()).collect(),
+            standing_pool_bindings: Vec::new(),
+        };
+        store.initialize(&initial).unwrap();
+        let mut winner = initial.clone();
+        winner.generation = 8;
+        winner.dvp_input_shares[0] = "91".into();
+        winner.dvp_input_shares[1] = "92".into();
+        store.compare_and_swap(7, &winner).unwrap();
+        assert_eq!(store.load().unwrap(), winner);
+
+        let mut stale = initial.clone();
+        stale.generation = 8;
+        stale.dvp_input_shares[0] = "81".into();
+        assert_eq!(
+            store.compare_and_swap(7, &stale),
+            Err("MPC secret-state generation changed before commit".into())
+        );
+        assert_eq!(store.load().unwrap(), winner);
+    }
+
+    #[test]
+    fn additive_resident_shares_reconstruct_a_shamir_dealt_secret() {
+        // Degree-two polynomial through the secret, evaluated at the MP-SPDZ
+        // party points 1..=7.  The additive form must sum to the secret and the
+        // Shamir form must combine to it through the coefficient table.
+        let secret = Scalar::from(4_900_u64);
+        let (a1, a2) = (Scalar::from(31_u64), Scalar::from(77_u64));
+        let evaluations = (1..=7_u64)
+            .map(|x| {
+                let x = Scalar::from(x);
+                secret + a1 * x + a2 * x * x
+            })
+            .collect::<Vec<_>>();
+        let mut additive_sum = Scalar::ZERO;
+        let mut shamir_sum = Scalar::ZERO;
+        for (node, evaluation) in evaluations.iter().enumerate() {
+            let element = DecimalFieldElement::from_bytes_le(&evaluation.to_bytes());
+            let additive =
+                resident_share_from_evaluation(node as u16, 7, InputSharing::Additive, &element)
+                    .unwrap();
+            let shamir =
+                resident_share_from_evaluation(node as u16, 7, InputSharing::Shamir, &element)
+                    .unwrap();
+            assert!(is_decimal(&additive) && is_decimal(&shamir));
+            additive_sum += decimal_to_scalar(&additive).unwrap();
+            shamir_sum += node_lagrange_coefficient(node as u16, 7).unwrap()
+                * decimal_to_scalar(&shamir).unwrap();
+        }
+        assert_eq!(additive_sum, secret);
+        assert_eq!(shamir_sum, secret);
+        assert_eq!(decimal_to_scalar("-1").unwrap(), -Scalar::ONE);
+        assert_eq!(scalar_to_decimal(&Scalar::from(10_u64)), "10");
+    }
+
+    #[test]
+    fn partial_commitments_combine_to_the_reconstructed_opening() {
+        let key = Pedersen::new(b"qomm:defmi:v1");
+        let value = Scalar::from(4_900_u64);
+        let blinding = Scalar::from(123_456_789_u64);
+        let mut value_shares = (0..6)
+            .map(|i| Scalar::from(1_000 + i as u64))
+            .collect::<Vec<_>>();
+        let mut blinding_shares = (0..6)
+            .map(|i| Scalar::from(2_000 + i as u64))
+            .collect::<Vec<_>>();
+        value_shares.push(value - value_shares.iter().sum::<Scalar>());
+        blinding_shares.push(blinding - blinding_shares.iter().sum::<Scalar>());
+        let partials = value_shares
+            .iter()
+            .zip(&blinding_shares)
+            .enumerate()
+            .map(|(node, (v, r))| {
+                let mut shares = vec!["0".to_string(); 10];
+                shares[5] = scalar_to_decimal(v);
+                shares[6] = scalar_to_decimal(r);
+                let state = MpcSecretState {
+                    version: 1,
+                    node: node as u16,
+                    generation: 1,
+                    source_sha256: "22".repeat(32),
+                    dvp_input_shares: shares,
+                    policy_input_shares: Vec::new(),
+                    quote_policy_blinding_input_shares: Vec::new(),
+                    standing_pool_bindings: vec![StandingPoolBinding {
+                        maker: 1,
+                        direction: 0,
+                        pool_id: [9; 32],
+                        pool_sequence: 3,
+                    }],
+                };
+                state.verify(node as u16, &"22".repeat(32), 2).unwrap();
+                state.standing_pool_partial_commitment(1, 0).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let combined = combine_partial_commitments(&partials, InputSharing::Additive, 7).unwrap();
+        assert_eq!(
+            combined,
+            key.commit(&value, &blinding).compress().to_bytes()
+        );
+        assert!(combine_partial_commitments(&partials[..6], InputSharing::Additive, 7).is_err());
+    }
+
+    #[test]
+    fn splice_replaces_only_the_standing_maker_segment() {
+        let n_mm = 2;
+        let mut inputs = (0..40).map(|value| value.to_string()).collect::<Vec<_>>();
+        let state = MpcSecretState {
+            version: 1,
+            node: 3,
+            generation: 4,
+            source_sha256: "33".repeat(32),
+            dvp_input_shares: (500..510).map(|value| value.to_string()).collect(),
+            policy_input_shares: Vec::new(),
+            quote_policy_blinding_input_shares: Vec::new(),
+            standing_pool_bindings: Vec::new(),
+        };
+        splice_standing_maker_shares(&mut inputs, &state, n_mm).unwrap();
+        for (index, value) in inputs.iter().enumerate() {
+            let expected = if (STANDING_SHARES_OFFSET..STANDING_SHARES_OFFSET + 10).contains(&index)
+            {
+                (500 + index - STANDING_SHARES_OFFSET).to_string()
+            } else {
+                index.to_string()
+            };
+            assert_eq!(*value, expected, "index {index}");
+        }
+        assert!(splice_standing_maker_shares(&mut inputs[..12], &state, n_mm).is_err());
+    }
+
+    #[test]
+    fn rebind_is_limited_to_fresh_pools_and_advances_the_generation() {
+        let root = tempfile::tempdir().unwrap();
+        let store =
+            EncryptedMpcStateStore::new(root.path().join("state.qms"), b"test-passphrase").unwrap();
+        assert!(!store.exists());
+        let source = "44".repeat(32);
+        store
+            .initialize(&MpcSecretState {
+                version: 1,
+                node: 2,
+                generation: 1,
+                source_sha256: source.clone(),
+                dvp_input_shares: vec!["0".into(); 5],
+                policy_input_shares: Vec::new(),
+                quote_policy_blinding_input_shares: Vec::new(),
+                standing_pool_bindings: Vec::new(),
+            })
+            .unwrap();
+        assert!(store.exists());
+        let binding = StandingPoolBinding {
+            maker: 0,
+            direction: 1,
+            pool_id: [7; 32],
+            pool_sequence: 0,
+        };
+        let next =
+            rebind_standing_pool(&store, 2, 1, &source, 1, binding.clone(), "12", "34").unwrap();
+        assert_eq!(next.generation, 2);
+        assert_eq!(next.dvp_input_shares, vec!["0", "0", "12", "34", "0"]);
+        assert_eq!(next.standing_pool_binding(0, 1), Some(&binding));
+        assert_eq!(store.load().unwrap(), next);
+        let mut consumed = binding.clone();
+        consumed.pool_sequence = 1;
+        assert!(rebind_standing_pool(&store, 2, 1, &source, 2, consumed, "1", "2").is_err());
+        assert!(rebind_standing_pool(&store, 2, 1, &source, 1, binding, "1", "2").is_err());
+        // Legacy state files without bindings still load.
+        let legacy: MpcSecretState = serde_json::from_str(
+            r#"{"version":1,"node":2,"generation":1,"source_sha256":"00","dvp_input_shares":[],"policy_input_shares":[]}"#,
+        )
+        .unwrap();
+        assert!(legacy.standing_pool_bindings.is_empty());
     }
 
     #[test]

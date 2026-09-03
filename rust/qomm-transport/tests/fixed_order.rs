@@ -1,9 +1,11 @@
 use ed25519_dalek::{Signer, SigningKey};
 use qomm_transport::order::{
-    admission_principal_digest, cluster_batch_digest, decode_execution_attestations,
-    encode_execution_attestations, principal_ticket_id, prove_omission, verify_execution_lane,
-    AdmissionAuthority, AdmissionTicket, BatchManifest, FixedSlotSealer, NodeExecutionAttestation,
-    OrderedAdmission, RandomnessBeacon, ZERO,
+    admission_principal_digest, cluster_batch_digest, decode_admission_attestations,
+    decode_execution_attestations, decode_node_execution_attestation,
+    encode_admission_attestations, encode_execution_attestations,
+    encode_node_execution_attestation, principal_ticket_id, prove_omission, verify_admission_lane,
+    verify_execution_lane, AdmissionAuthority, AdmissionTicket, BatchManifest, FixedSlotSealer,
+    NodeAdmissionAttestation, NodeExecutionAttestation, OrderedAdmission, RandomnessBeacon, ZERO,
 };
 use qomm_transport::wire::{Frame, FRAME_BYTES, PAYLOAD_BYTES};
 use rand_core::OsRng;
@@ -241,8 +243,59 @@ fn signed_execution_lane_binds_every_persistence_file_to_the_admitted_batch() {
         certified
     );
 
+    let node_wire = encode_node_execution_attestation(&attestations[3]).unwrap();
+    let node_attestation = decode_node_execution_attestation(&node_wire).unwrap();
+    assert_eq!(node_attestation.node, 3);
+    assert_eq!(
+        encode_node_execution_attestation(&node_attestation).unwrap(),
+        node_wire
+    );
+    assert!(decode_execution_attestations(&node_wire).is_err());
+    assert!(encode_execution_attestations(&attestations[..1]).is_err());
+
     attestations[3].persistence_digest[0] ^= 1;
     assert!(verify_execution_lane(&attestations, &trusted, [9; 32]).is_err());
+}
+
+#[test]
+fn signed_admission_lane_round_trips_without_exposing_the_principal() {
+    let keys = (0..7)
+        .map(|_| SigningKey::generate(&mut OsRng))
+        .collect::<Vec<_>>();
+    let principal_digest = admission_principal_digest("LEI-TAKER-1").unwrap();
+    let attestations = keys
+        .iter()
+        .enumerate()
+        .map(|(node, key)| {
+            NodeAdmissionAttestation {
+                node: node as u16,
+                slot: 12,
+                sequence: 4,
+                principal_digest,
+                ticket_id: [2; 32],
+                claim_digest: [3; 32],
+                batch_digest: [node as u8 + 10; 32],
+                order_digest: [5; 32],
+                signature: ed25519_dalek::Signature::from_bytes(&[0; 64]),
+            }
+            .sign(key)
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let trusted = keys
+        .iter()
+        .map(SigningKey::verifying_key)
+        .collect::<Vec<_>>();
+    let certified = verify_admission_lane(&attestations, &trusted).unwrap();
+    let wire = encode_admission_attestations(&attestations).unwrap();
+    assert!(!wire
+        .windows("LEI-TAKER-1".len())
+        .any(|part| part == b"LEI-TAKER-1"));
+    let decoded = decode_admission_attestations(&wire).unwrap();
+    assert_eq!(
+        verify_admission_lane(&decoded, &trusted).unwrap(),
+        certified
+    );
 }
 
 #[test]

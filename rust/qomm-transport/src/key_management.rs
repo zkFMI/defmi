@@ -3,6 +3,8 @@
 use crate::selective_disclosure::X25519PrivateKey;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
+use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use openssl::asn1::Asn1Time;
 use openssl::bn::{BigNum, MsbOption};
@@ -38,6 +40,9 @@ const NONCE_BYTES: usize = 12;
 pub enum KeyKind {
     Ed25519,
     X25519,
+    /// A Ristretto scalar used as an anonymous legal-entity credential.
+    /// Its public field is the corresponding compressed base-point multiple.
+    Ristretto,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -110,6 +115,7 @@ pub struct PublicSnapshot {
 pub enum StoredPrivateKey {
     Ed25519(Box<SigningKey>),
     X25519(X25519PrivateKey),
+    Ristretto(Scalar),
 }
 
 impl fmt::Debug for StoredPrivateKey {
@@ -117,6 +123,7 @@ impl fmt::Debug for StoredPrivateKey {
         formatter.write_str(match self {
             Self::Ed25519(_) => "StoredPrivateKey::Ed25519([redacted])",
             Self::X25519(_) => "StoredPrivateKey::X25519([redacted])",
+            Self::Ristretto(_) => "StoredPrivateKey::Ristretto([redacted])",
         })
     }
 }
@@ -126,13 +133,21 @@ impl StoredPrivateKey {
         match self {
             Self::Ed25519(key) => Ok(key.to_bytes()),
             Self::X25519(key) => key.raw_private_key(),
+            Self::Ristretto(secret) => Ok(secret.to_bytes()),
         }
     }
 
     pub fn ed25519(&self) -> Option<&SigningKey> {
         match self {
             Self::Ed25519(key) => Some(key),
-            Self::X25519(_) => None,
+            Self::X25519(_) | Self::Ristretto(_) => None,
+        }
+    }
+
+    pub fn ristretto_scalar(&self) -> Option<&Scalar> {
+        match self {
+            Self::Ristretto(secret) => Some(secret),
+            Self::Ed25519(_) | Self::X25519(_) => None,
         }
     }
 }
@@ -432,6 +447,13 @@ impl EncryptedKeyStore {
                 let key = X25519PrivateKey::generate()?;
                 (key.public_key()?.raw_public_key()?, key.raw_private_key()?)
             }
+            KeyKind::Ristretto => {
+                let secret = Scalar::random(&mut OsRng);
+                (
+                    (RISTRETTO_BASEPOINT_POINT * secret).compress().to_bytes(),
+                    secret.to_bytes(),
+                )
+            }
         };
         self.mutate(|data| {
             let generation = data
@@ -539,6 +561,12 @@ impl EncryptedKeyStore {
                 &raw,
             )))),
             KeyKind::X25519 => Ok(StoredPrivateKey::X25519(X25519PrivateKey::from_raw(&raw)?)),
+            KeyKind::Ristretto => {
+                let secret = Option::<Scalar>::from(Scalar::from_canonical_bytes(raw))
+                    .filter(|secret| *secret != Scalar::ZERO)
+                    .ok_or_else(|| "stored Ristretto scalar is not canonical".to_string())?;
+                Ok(StoredPrivateKey::Ristretto(secret))
+            }
         }
     }
 
@@ -598,6 +626,9 @@ impl EncryptedKeyStore {
         let (id, raw) = match key {
             StoredPrivateKey::Ed25519(key) => (Id::ED25519, key.to_bytes()),
             StoredPrivateKey::X25519(key) => (Id::X25519, key.raw_private_key()?),
+            StoredPrivateKey::Ristretto(_) => {
+                return Err("Ristretto credentials cannot be materialized as PKCS#8".into())
+            }
         };
         let pkey = PKey::private_key_from_raw_bytes(&raw, id).map_err(|error| error.to_string())?;
         let pem = pkey

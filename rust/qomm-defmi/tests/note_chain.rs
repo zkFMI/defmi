@@ -49,6 +49,25 @@ fn claim(label: &str, asset: [u8; 32], hold: [u8; 32], kind: NoteClaimKind) -> N
     value
 }
 
+#[test]
+fn exact_reserve_accepts_a_zero_refund_but_not_a_zero_delivery() {
+    let asset = id("zero-refund-asset");
+    let hold = id("zero-refund-hold");
+
+    let mut refund = claim("zero-refund", asset, hold, NoteClaimKind::Refund);
+    refund.value_commitment = [0; 32];
+    refund.claim_id = refund.derived_id().unwrap();
+    refund.validate().unwrap();
+
+    let mut delivery = claim("zero-delivery", asset, hold, NoteClaimKind::Delivery);
+    delivery.value_commitment = [0; 32];
+    delivery.claim_id = delivery.derived_id().unwrap();
+    assert_eq!(
+        delivery.validate().unwrap_err(),
+        "note claim delivery commitment cannot be zero"
+    );
+}
+
 fn expected(value: [u8; 32], encoded: &str) {
     assert_eq!(hex::encode(value), encoded);
 }
@@ -164,6 +183,7 @@ fn account_free_consensus_timestamps_fit_sqlites_signed_integer_domain() {
             proof_digest: id("timestamp-note-spend-proof"),
             outputs: vec![spend_output.clone()],
         }],
+        consolidated_output: None,
     };
     note_settlement(max).body().unwrap();
     assert!(note_settlement(overflow).body().is_err());
@@ -222,6 +242,83 @@ fn account_free_consensus_timestamps_fit_sqlites_signed_integer_domain() {
     };
     delegated(max).body().unwrap();
     assert!(delegated(overflow).body().is_err());
+}
+
+#[test]
+fn note_consolidation_preserves_the_exact_commitment_sum() {
+    let asset = id("note-consolidation-asset");
+    let output = |label: &str, value_commitment: [u8; 32]| {
+        let mut output = NoteOutput {
+            note_id: [0; 32],
+            asset_id: asset,
+            one_time: id(&format!("{label}:one-time")),
+            value_commitment,
+            ephemeral: id(&format!("{label}:ephemeral")),
+            masked_value: id(&format!("{label}:masked-value")),
+            masked_blinding: id(&format!("{label}:masked-blinding")),
+            lock_id: [0; 32],
+        };
+        output.note_id = output.derived_id().unwrap();
+        output
+    };
+    let ring = vec![
+        id("note-consolidation-ring-a"),
+        id("note-consolidation-ring-b"),
+    ];
+    let first_output = output(
+        "note-consolidation-first",
+        (G * Scalar::from(11_u64)).compress().to_bytes(),
+    );
+    let second_output = output(
+        "note-consolidation-second",
+        (G * Scalar::from(29_u64)).compress().to_bytes(),
+    );
+    let spends = vec![
+        NoteSpend {
+            asset_id: asset,
+            ring: ring.clone(),
+            ring_root: note_ring_root(asset, &ring).unwrap(),
+            serial_point: (G * Scalar::from(41_u64)).compress().to_bytes(),
+            input_lock_id: [0; 32],
+            proof_digest: id("note-consolidation-first-proof"),
+            outputs: vec![first_output],
+        },
+        NoteSpend {
+            asset_id: asset,
+            ring: ring.clone(),
+            ring_root: note_ring_root(asset, &ring).unwrap(),
+            serial_point: (G * Scalar::from(43_u64)).compress().to_bytes(),
+            input_lock_id: [0; 32],
+            proof_digest: id("note-consolidation-second-proof"),
+            outputs: vec![second_output],
+        },
+    ];
+    let final_output = output(
+        "note-consolidation-final",
+        (G * Scalar::from(40_u64)).compress().to_bytes(),
+    );
+    let order = NoteSettlementOrder {
+        operation_id: id("note-consolidation-operation"),
+        nullifier: id("note-consolidation-nullifier"),
+        deadline: 999,
+        payment_instruction_digest: id("note-consolidation-instruction"),
+        market_statement_digest: id("note-consolidation-market"),
+        dvp_proof_digest: id("note-consolidation-proof"),
+        spends,
+        consolidated_output: Some(final_output),
+    };
+    let body = order.body().unwrap();
+    assert!(body.get("consolidated_output").is_some());
+
+    let mut wrong = order;
+    wrong.consolidated_output = Some(output(
+        "note-consolidation-wrong",
+        (G * Scalar::from(39_u64)).compress().to_bytes(),
+    ));
+    assert!(wrong
+        .body()
+        .unwrap_err()
+        .contains("changes the committed value"));
 }
 
 #[test]
@@ -289,6 +386,7 @@ fn account_free_note_statements_match_the_pinned_consensus_vectors() {
             proof_digest: id("note-compat-spend-proof"),
             outputs: vec![spend_output],
         }],
+        consolidated_output: None,
     };
     expected(
         settlement.statement().unwrap(),

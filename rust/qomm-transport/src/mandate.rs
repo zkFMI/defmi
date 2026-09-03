@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 
 const MAKER_DOMAIN: &[u8] = b"QOMM:MAKER:POLICY-MANDATE:v1";
 const TAKER_DOMAIN: &[u8] = b"QOMM:TAKER:EXECUTION-MANDATE:v1";
+const MAKER_WIRE_MAGIC: &[u8] = b"QOMM:MAKER-MANDATE:WIRE:v1";
+const TAKER_WIRE_MAGIC: &[u8] = b"QOMM:TAKER-MANDATE:WIRE:v1";
 pub const ZERO: [u8; 32] = [0; 32];
 
 fn push_bytes(output: &mut Vec<u8>, value: &[u8]) {
@@ -104,6 +106,9 @@ pub struct MakerPolicyMandate {
     pub maximum_amount_commitment: [u8; 32],
     pub maker_handle: [u8; 32],
     pub entity_commitment: [u8; 32],
+    /// Stable venue-scope binding of a freshly verified KYB presentation.
+    /// It excludes the re-randomized proof transcript so restarting a
+    /// participant cannot allocate another reserve for the same legal entity.
     pub kyb_presentation_digest: [u8; 32],
     pub valid_from: u64,
     pub valid_until: u64,
@@ -242,7 +247,7 @@ impl MakerPolicyMandate {
             required_cohort,
         )
         .map_err(|error| format!("Maker KYB presentation failed: {error:?}"))?;
-        if self.kyb_presentation_digest != presentation.digest()
+        if self.kyb_presentation_digest != presentation.binding_digest()
             || self.entity_commitment != presentation.entity_commitment()
         {
             return Err("Maker mandate is bound to another legal entity proof".into());
@@ -252,6 +257,15 @@ impl MakerPolicyMandate {
             .verify(&self.unsigned()?, &self.signature)
             .map_err(|_| "Maker policy mandate signature is invalid".to_string())
     }
+}
+
+pub fn encode_maker_mandate(value: &MakerPolicyMandate) -> Result<Vec<u8>, String> {
+    encode_signed_mandate(MAKER_WIRE_MAGIC, &value.unsigned()?, &value.signature)
+}
+
+pub fn decode_maker_mandate(raw: &[u8]) -> Result<MakerPolicyMandate, String> {
+    let (body, signature) = decode_signed_mandate(MAKER_WIRE_MAGIC, raw)?;
+    MakerPolicyMandate::from_signed_bytes(body, signature)
 }
 
 #[derive(Clone, Debug)]
@@ -275,12 +289,17 @@ pub struct TakerExecutionMandate {
     pub reserve_id: [u8; 32],
     pub taker_handle: [u8; 32],
     pub entity_commitment: [u8; 32],
+    /// Stable venue-scope binding of a freshly verified KYB presentation.
     pub kyb_presentation_digest: [u8; 32],
     /// Pre-issued admission ticket signed by the Taker before the opaque RFQ
     /// frame is submitted. The later ordering receipt deliberately is not part
     /// of this mandate; including it would be a circular signature dependency.
     pub admission_ticket_id: [u8; 32],
     pub admission_slot: u64,
+    /// Hash commitment to the one-time mask used for the public fill bit.
+    /// Opening it after a no-fill leaks no quote or limit, but lets DeFMI
+    /// distinguish a genuine zero result from a Taker refusing a valid fill.
+    pub fill_mask_commitment: [u8; 32],
     pub deadline: u64,
     pub allow_partial: bool,
     pub auto_settle: bool,
@@ -310,6 +329,7 @@ impl TakerExecutionMandate {
             kyb_presentation_digest: reader.take("KYB presentation")?,
             admission_ticket_id: reader.take("admission ticket")?,
             admission_slot: reader.u64("admission slot")?,
+            fill_mask_commitment: reader.take("fill mask commitment")?,
             deadline: reader.u64("deadline")?,
             allow_partial: reader.boolean("allow partial")?,
             auto_settle: reader.boolean("auto settle")?,
@@ -356,6 +376,7 @@ impl TakerExecutionMandate {
                 &self.entity_commitment,
                 &self.kyb_presentation_digest,
                 &self.admission_ticket_id,
+                &self.fill_mask_commitment,
                 &self.taker_public,
             ])
         {
@@ -386,6 +407,7 @@ impl TakerExecutionMandate {
             body.extend_from_slice(value);
         }
         body.extend_from_slice(&self.admission_slot.to_be_bytes());
+        body.extend_from_slice(&self.fill_mask_commitment);
         body.extend_from_slice(&self.deadline.to_be_bytes());
         body.push(u8::from(self.allow_partial));
         body.push(u8::from(self.auto_settle));
@@ -433,7 +455,7 @@ impl TakerExecutionMandate {
             required_cohort,
         )
         .map_err(|error| format!("Taker KYB presentation failed: {error:?}"))?;
-        if self.kyb_presentation_digest != presentation.digest()
+        if self.kyb_presentation_digest != presentation.binding_digest()
             || self.entity_commitment != presentation.entity_commitment()
         {
             return Err("Taker mandate is bound to another legal entity proof".into());
@@ -443,6 +465,50 @@ impl TakerExecutionMandate {
             .verify(&self.unsigned()?, &self.signature)
             .map_err(|_| "Taker execution mandate signature is invalid".to_string())
     }
+}
+
+pub fn encode_taker_mandate(value: &TakerExecutionMandate) -> Result<Vec<u8>, String> {
+    encode_signed_mandate(TAKER_WIRE_MAGIC, &value.unsigned()?, &value.signature)
+}
+
+pub fn decode_taker_mandate(raw: &[u8]) -> Result<TakerExecutionMandate, String> {
+    let (body, signature) = decode_signed_mandate(TAKER_WIRE_MAGIC, raw)?;
+    TakerExecutionMandate::from_signed_bytes(body, signature)
+}
+
+fn encode_signed_mandate(
+    magic: &[u8],
+    body: &[u8],
+    signature: &Signature,
+) -> Result<Vec<u8>, String> {
+    let length = u32::try_from(body.len())
+        .map_err(|_| "mandate body exceeds the canonical wire length".to_string())?;
+    let mut wire = Vec::with_capacity(magic.len() + 4 + body.len() + 64);
+    wire.extend_from_slice(magic);
+    wire.extend_from_slice(&length.to_be_bytes());
+    wire.extend_from_slice(body);
+    wire.extend_from_slice(&signature.to_bytes());
+    Ok(wire)
+}
+
+fn decode_signed_mandate<'a>(magic: &[u8], raw: &'a [u8]) -> Result<(&'a [u8], [u8; 64]), String> {
+    let header = magic.len() + 4;
+    if raw.len() < header + 64 || !raw.starts_with(magic) {
+        return Err("mandate wire has an invalid header".into());
+    }
+    let body_len = u32::from_be_bytes(
+        raw[magic.len()..header]
+            .try_into()
+            .expect("four-byte mandate length"),
+    ) as usize;
+    if raw.len() != header + body_len + 64 {
+        return Err("mandate wire has a non-canonical length".into());
+    }
+    let body = &raw[header..header + body_len];
+    let signature = raw[header + body_len..]
+        .try_into()
+        .expect("checked 64-byte mandate signature");
+    Ok((body, signature))
 }
 
 /// Digest arbitrary signed admission evidence without teaching this module a

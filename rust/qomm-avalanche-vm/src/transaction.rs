@@ -6,6 +6,24 @@ use crate::id::Id;
 pub const MAX_JSON_DEPTH: usize = 64;
 
 pub const ISSUE_METHODS: &[&str] = &[
+    "defmivm.issueAethelProvider",
+    "defmivm.issueAethelStream",
+    "defmivm.issueAethelStreamTransition",
+    "defmivm.issueAethelSeries",
+    "defmivm.issueAethelCredentialIssuer",
+    "defmivm.issueAethelCredentialStatus",
+    "defmivm.issueAethelCreditDecision",
+    "defmivm.issueAethelGuarantee",
+    "defmivm.issueAethelFundingQuote",
+    "defmivm.issueAethelReceivable",
+    "defmivm.issueAethelDefault",
+    "defmivm.issueAethelGuaranteeClaim",
+    "defmivm.issueAethelGuaranteeRelease",
+    "defmivm.issueAethelProviderKeyRotation",
+    "defmivm.issueAethelProviderStatus",
+    "defmivm.issueDeccpClearingBook",
+    "defmivm.issueDeccpMember",
+    "defmivm.issueDeccpGuaranteeFacility",
     "defmivm.issueAsset",
     "defmivm.issueCSDIssuer",
     "defmivm.issueCSDIssuerControl",
@@ -14,9 +32,13 @@ pub const ISSUE_METHODS: &[&str] = &[
     "defmivm.issueAdmissionBatch",
     "defmivm.issueAdmissionAdvance",
     "defmivm.issueProductReservation",
+    "defmivm.issueStandingNotePool",
+    "defmivm.issueStandingNotePoolAllocation",
+    "defmivm.issueStandingPoolProductSettlement",
     "defmivm.issueNoteProductReservation",
     "defmivm.issueProductRelease",
     "defmivm.issueNoteProductRelease",
+    "defmivm.issueNoteProductNoFillRelease",
     "defmivm.issueAccount",
     "defmivm.issueNote",
     "defmivm.issueNoteClaimMaterialization",
@@ -31,6 +53,37 @@ pub const ISSUE_METHODS: &[&str] = &[
     "defmivm.issueProductSettlementBatch",
     "defmivm.issueNoteProductSettlement",
     "defmivm.issueNoteProductSettlementBatch",
+    "defmivm.issueCrossDomainDomain",
+    "defmivm.issueCrossDomainCommittee",
+    "defmivm.issueCrossDomainPrepare",
+    "defmivm.issueCrossDomainArm",
+    "defmivm.issueCrossDomainClaim",
+    "defmivm.issueCrossDomainRefund",
+    "defmivm.issueCrossDomainObserveClaim",
+    "defmivm.issueBojParticipant",
+    "defmivm.issueBojCollateralPledge",
+    "defmivm.issueBojCollateralRevalue",
+    "defmivm.issueBojIntradayReserve",
+    "defmivm.issueBojIntradayRelease",
+    "defmivm.issueBojCollateralReturn",
+    "defmivm.issueBojFundsReceipt",
+    "defmivm.issueBojOtherExposure",
+    "defmivm.issueBojSimultaneousDvp",
+    "defmivm.issueBojEndOfDay",
+    "defmivm.issueBojOpenBusinessDay",
+    "defmivm.issueParticipantRegistry",
+    "defmivm.issueParticipant",
+    "defmivm.issueParticipantControl",
+    "defmivm.issueParticipantKeyRotation",
+    "defmivm.issueMpcService",
+    "defmivm.issueParticipantAccountBinding",
+    "defmivm.issueParticipantServiceBinding",
+    "defmivm.issueStandingMandate",
+    "defmivm.issueStandingMandateControl",
+    "defmivm.issueMandateReservation",
+    "defmivm.issueMandateReservationTransition",
+    "defmivm.issueParticipantProductReservation",
+    "defmivm.issueParticipantNoteProductReservation",
 ];
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -145,5 +198,11 @@ mod tests {
     fn rejects_float_and_non_issue_method() {
         assert!(TransactionEnvelope::new("defmivm.stateRoot", json!({})).is_err());
         assert!(TransactionEnvelope::new("defmivm.issueAsset", json!({"x": 1.5})).is_err());
+    }
+
+    #[test]
+    fn accepts_atomic_standing_pool_product_settlement_method() {
+        TransactionEnvelope::new("defmivm.issueStandingPoolProductSettlement", json!({}))
+            .expect("atomic standing-pool settlement is a consensus issue method");
     }
 }

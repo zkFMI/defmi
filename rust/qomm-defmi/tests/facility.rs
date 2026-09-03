@@ -2,14 +2,16 @@ use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::{Signature, Signer, SigningKey};
 use qomm_defmi::facility::{
-    build_threshold_dvp_consumption, reserve_handle_for, AccountOpening, AdmissionBatchPlan,
-    AdmissionCommitteePlan, AdmissionSlotAdvance, AssetDefinition, AssetKind, CreditAmendmentMode,
-    CreditControlAction, CreditFacilityAmendment, CreditFacilityAmendmentProof,
-    CreditFacilityControl, CreditFacilityGrant, CreditFacilityRelationProof, CreditFacilityStatus,
-    CreditFacilityTransition, CreditTransitionKind, DefmiFacility, GuarantorDefinition,
-    GuarantorKind, ProductReleaseOrder, ProductSettlementBatch, ProductSettlementBatchMember,
-    ProductSettlementOrder, QuorumApproval, QuorumAuthorizer, ReservationAuthorization,
-    ReservationConsumption, ReservationEscrow, ReservationRole, SettlementOrder, StateLeg, ZERO,
+    build_threshold_dvp_consumption, build_threshold_dvp_consumption_from_snapshot,
+    reserve_handle_for, AccountOpening, AdmissionBatchPlan, AdmissionCommitteePlan,
+    AdmissionSlotAdvance, AssetDefinition, AssetKind, CreditAmendmentMode, CreditControlAction,
+    CreditFacilityAmendment, CreditFacilityAmendmentProof, CreditFacilityControl,
+    CreditFacilityGrant, CreditFacilityRelationProof, CreditFacilityStatus,
+    CreditFacilityTransition, CreditHoldSnapshot, CreditTransitionKind, DefmiFacility,
+    GuarantorDefinition, GuarantorKind, ProductReleaseOrder, ProductSettlementBatch,
+    ProductSettlementBatchMember, ProductSettlementOrder, QuorumApproval, QuorumAuthorizer,
+    ReservationAuthorization, ReservationConsumption, ReservationEscrow, ReservationRole,
+    SettlementOrder, StateLeg, ZERO,
 };
 use qomm_defmi::ledger::Ledger;
 use qomm_defmi::product::{
@@ -283,19 +285,36 @@ fn approve(
         .unwrap()
 }
 
-fn certified_admission_population(
-    label: &str,
+/// One admitted population: the lanes (claims and tickets in lane order)
+/// a certified committee attests to for one venue, epoch, slot and order.
+struct AdmissionPopulation<'a> {
+    label: &'a str,
     venue_id: [u8; 32],
     epoch: u64,
     slot: u64,
-    claims: &[[u8; 32]],
-    tickets: &[[u8; 32]],
+    first_sequence: u64,
+    claims: &'a [[u8; 32]],
+    tickets: &'a [[u8; 32]],
     order_digest: [u8; 32],
+}
+
+fn certified_admission_population(
+    population: AdmissionPopulation<'_>,
 ) -> (
     AdmissionCommitteePlan,
     AdmissionBatchPlan,
     Vec<Vec<NodeAdmissionAttestation>>,
 ) {
+    let AdmissionPopulation {
+        label,
+        venue_id,
+        epoch,
+        slot,
+        first_sequence,
+        claims,
+        tickets,
+        order_digest,
+    } = population;
     assert_eq!(claims.len(), tickets.len());
     let node_keys = (0..7)
         .map(|_| SigningKey::generate(&mut OsRng))
@@ -315,7 +334,7 @@ fn certified_admission_population(
                     NodeAdmissionAttestation {
                         node: node as u16,
                         slot,
-                        sequence: lane as u64 + 1,
+                        sequence: first_sequence + lane as u64,
                         principal_digest: h(&format!("{label}:principal:{lane}")),
                         ticket_id: *ticket,
                         claim_digest: *claim,
@@ -354,6 +373,7 @@ fn certified_admission_population(
         slot,
         batch_digest,
         order_digest,
+        first_sequence: certified[0].sequence,
         admission_digests: certified
             .iter()
             .map(|lane| lane.digest(venue_id, epoch).unwrap())
@@ -501,6 +521,7 @@ fn consensus_timestamps_fit_sqlites_signed_integer_domain() {
         slot: 0,
         batch_digest: h("timestamp-batch-digest"),
         order_digest: h("timestamp-order-digest"),
+        first_sequence: 1,
         admission_digests: vec![h("timestamp-admission")],
         expires_at: max,
     };
@@ -827,6 +848,32 @@ fn bound_hold_transition(
     )
     .unwrap();
     (transition, proof)
+}
+
+#[test]
+fn credit_relation_proof_wire_round_trips_and_rejects_malformed_frames() {
+    let cap_blinding = Scalar::from(41_u64);
+    let (transition, proof) = bound_hold_transition(
+        h("wire-facility"),
+        "wire",
+        h("wire-authorization"),
+        cap_blinding,
+        17,
+        Scalar::from(9_u64),
+    );
+    let wire = proof.to_bytes().unwrap();
+    CreditFacilityRelationProof::from_bytes(&wire)
+        .unwrap()
+        .verify(&transition)
+        .unwrap();
+
+    let mut wrong_magic = wire.clone();
+    wrong_magic[0] ^= 1;
+    assert!(CreditFacilityRelationProof::from_bytes(&wrong_magic).is_err());
+    assert!(CreditFacilityRelationProof::from_bytes(&wire[..wire.len() - 1]).is_err());
+    let mut trailing = wire;
+    trailing.push(0);
+    assert!(CreditFacilityRelationProof::from_bytes(&trailing).is_err());
 }
 
 fn release_transition(
@@ -1738,10 +1785,11 @@ fn simultaneous_rfqs_for(kind: GuarantorKind) {
 }
 
 #[test]
-fn simultaneous_rfqs_across_connections_enforce_one_cap_for_ccp_bank_and_self_guarantee() {
+fn simultaneous_rfqs_enforce_one_cap_for_ccp_bank_credit_provider_and_self_guarantee() {
     for kind in [
         GuarantorKind::CentralCounterparty,
         GuarantorKind::Bank,
+        GuarantorKind::CreditProvider,
         GuarantorKind::SelfGuaranteed,
     ] {
         simultaneous_rfqs_for(kind);
@@ -2358,7 +2406,7 @@ fn expired_product_reservation_restores_asset_and_credit_atomically_without_owne
         maximum_amount_commitment: hold.amount_commitment,
         maker_handle: maker_handle.compress().to_bytes(),
         entity_commitment: entity,
-        kyb_presentation_digest: presentation.digest(),
+        kyb_presentation_digest: presentation.binding_digest(),
         valid_from: 1,
         valid_until: 1_000,
         auto_execute: true,
@@ -2900,7 +2948,7 @@ fn product_settlement_for(kind: GuarantorKind) {
             .to_bytes(),
         maker_handle: maker_handle.compress().to_bytes(),
         entity_commitment: maker_entity,
-        kyb_presentation_digest: maker_presentation.digest(),
+        kyb_presentation_digest: maker_presentation.binding_digest(),
         valid_from: 1,
         valid_until: 1_000,
         auto_execute: true,
@@ -2930,9 +2978,10 @@ fn product_settlement_for(kind: GuarantorKind) {
         reserve_id: taker_hold_id,
         taker_handle: taker_handle.compress().to_bytes(),
         entity_commitment: taker_entity,
-        kyb_presentation_digest: taker_presentation.digest(),
+        kyb_presentation_digest: taker_presentation.binding_digest(),
         admission_ticket_id,
         admission_slot: 12,
+        fill_mask_commitment: h("product:fill-mask-commitment"),
         deadline: 1_000,
         allow_partial: false,
         auto_settle: true,
@@ -2942,15 +2991,17 @@ fn product_settlement_for(kind: GuarantorKind) {
     .sign(&taker_signing_key)
     .unwrap();
     let taker_mandate_digest = taker_mandate.digest().unwrap();
-    let (admission_committee, admission_plan, admission_lanes) = certified_admission_population(
-        "product-admission",
-        venue_id,
-        9,
-        taker_mandate.admission_slot,
-        &[h("admission-cover-claim:product"), taker_mandate_digest],
-        &[h("admission-cover-ticket:product"), admission_ticket_id],
-        h("admission-order:product"),
-    );
+    let (admission_committee, admission_plan, admission_lanes) =
+        certified_admission_population(AdmissionPopulation {
+            label: "product-admission",
+            venue_id,
+            epoch: 9,
+            slot: taker_mandate.admission_slot,
+            first_sequence: 1,
+            claims: &[h("admission-cover-claim:product"), taker_mandate_digest],
+            tickets: &[h("admission-cover-ticket:product"), admission_ticket_id],
+            order_digest: h("admission-order:product"),
+        });
     let ordered_admission = OrderedAdmission {
         venue_id,
         epoch: admission_plan.epoch,
@@ -3703,9 +3754,9 @@ fn product_settlement_for(kind: GuarantorKind) {
         .credit_facility(&taker_grant.facility_id)
         .unwrap()
         .unwrap();
-    let taker_consume = build_threshold_dvp_consumption(
+    let taker_consume = build_threshold_dvp_consumption_from_snapshot(
         h("product:consume-operation:taker"),
-        &taker_hold,
+        &CreditHoldSnapshot::from(&taker_hold),
         &taker_before,
         ReservationRole::Taker,
         dvp_package.instruction.amount_commitment,
@@ -3819,10 +3870,11 @@ fn product_settlement_for(kind: GuarantorKind) {
 }
 
 #[test]
-fn product_reserve_and_threshold_dvp_support_ccp_bank_and_self_guarantee() {
+fn product_reserve_and_threshold_dvp_support_ccp_bank_credit_provider_and_self_guarantee() {
     for kind in [
         GuarantorKind::CentralCounterparty,
         GuarantorKind::Bank,
+        GuarantorKind::CreditProvider,
         GuarantorKind::SelfGuaranteed,
     ] {
         product_settlement_for(kind);
@@ -3832,23 +3884,24 @@ fn product_reserve_and_threshold_dvp_support_ccp_bank_and_self_guarantee() {
 #[test]
 fn admission_batches_force_every_real_or_cover_lane_through_the_signed_order() {
     let fixture = credit_fixture();
-    let (committee, plan, lanes) = certified_admission_population(
-        "ordered-batch",
-        h("ordered-batch:venue"),
-        17,
-        29,
-        &[
+    let (committee, plan, lanes) = certified_admission_population(AdmissionPopulation {
+        label: "ordered-batch",
+        venue_id: h("ordered-batch:venue"),
+        epoch: 17,
+        slot: 29,
+        first_sequence: 1,
+        claims: &[
             h("ordered-batch:claim-1"),
             h("ordered-batch:claim-2"),
             h("ordered-batch:claim-3"),
         ],
-        &[
+        tickets: &[
             h("ordered-batch:ticket-1"),
             h("ordered-batch:ticket-2"),
             h("ordered-batch:ticket-3"),
         ],
-        h("ordered-batch:order"),
-    );
+        order_digest: h("ordered-batch:order"),
+    });
     fixture
         .facility
         .register_admission_committee(

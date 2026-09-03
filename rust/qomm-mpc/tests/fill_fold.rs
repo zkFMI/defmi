@@ -65,6 +65,7 @@ fn request_batch_size_never_changes_the_packed_price_scale() {
     })
     .unwrap();
     assert!(source.contains("return cost * M + index_vec"));
-    assert!(source.contains("limit_key = u_limit * M + (M - 1)"));
+    assert!(source.contains("cost_limit = u_dir.if_else(-u_limit, u_limit)"));
+    assert!(source.contains("limit_key = cost_limit * M + (M - 1)"));
     assert!(!source.contains("limit_key = u_limit * WIDE"));
 }

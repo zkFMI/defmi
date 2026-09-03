@@ -220,168 +220,182 @@ const PROFILES: [Profile; 9] = [
 // lane cannot become an unmasked free quote. Each
 // digest covers exit status, stdout, stderr, and every sorted output filename
 // and byte.
-const GENERATOR_V7_ALL_FILES_CONTRACT: [(&str, usize, usize, &str); 27] = [
+// V8 (reissued 2026-09-03): the DvP witness now carries the winning Maker's
+// own pool-before opening (`dvp_maker_pool_before`, `dvp_maker_delivery`,
+// `dvp_maker_pool_remainder` with its range-proof bits) so the persisted
+// remainder conserves the canonical parent pool note the resident Maker state
+// opens, and the Taker's cash reserve for a buy is the priced amount
+// (`dvp_cash`) rather than the selected Maker's cash reserve.  The same
+// generator revision (rust/qomm-mpc/src/{program.rs,bin/gen.rs,inputs.rs},
+// working tree of 2026-09-01, the resident-Maker-state work recorded in
+// .codex/project-memory/worklog.jsonl as QOMM-RESIDENT-MAKER-STATE-2026-09-02)
+// added the DvP and quote-proof input fields and blindings to every emitted
+// input and reference file, which is why every V7 tree grew by a few bytes.
+// V7 is retained above as history; the V8 triples were taken from the
+// generator's own output on the remote gate host (softbank) and checked
+// against an independent run on the OmenX gate host.
+const GENERATOR_V8_ALL_FILES_CONTRACT: [(&str, usize, usize, &str); 27] = [
     (
         "rfq_baseline",
         9,
-        17_826,
-        "d4aeffd35f5ab5e91296091dbed1bbe1558d3824f5d9e56a958ebe9d37361e61",
+        17_844,
+        "d24c2123103dbe57c2884ca28e07f7ee8575fd513afb2151523b6a89ed97f776",
     ),
     (
         "rfm_baseline",
         9,
-        17_217,
-        "5228941d67f6bad1cc941d57e9b37edd0947a174d7194d8efc9ce427a5884cbd",
+        17_235,
+        "35ce479de5611619ab6de372e7a412449696a2ad898e479800eb9693738187d0",
     ),
     (
         "rfs_baseline",
         9,
-        17_632,
-        "709a7d5bb593de8daa1f1218db523c8cf9ecee0c0f47c7fc36dd6ce547a59dc3",
+        17_650,
+        "58c6b29aadbc91dd6bcf3fcbf523604ec141a27e2a881180f33e8783a5802668",
     ),
     (
         "rfq_persist_shamir",
         9,
-        103_376,
-        "2f59e3fcdbb65aaaf806e053d6035600151952b5a56de05f171abc437ba8ad82",
+        103_394,
+        "70d83ff0d1e74091f217043c18173d9f3623b25b4f56271b53e9cb9a5468ca9e",
     ),
     (
         "rfm_persist_shamir",
         9,
-        100_419,
-        "bb8504415977e89b9391fa6fc1c9acccff2fb611fae7b5e5acc9f29051c97719",
+        100_437,
+        "4d9fefe932a477432150c0ecdd90b20dec4616a6e98f95ccc81be254a9c92646",
     ),
     (
         "rfs_persist_shamir",
         9,
-        100_834,
-        "04a0f2753b8ac1f59e4ef0508c7d0cdb91b3f5ed3143382f89e7b7121b65f980",
+        100_852,
+        "c3cc9a638850a16a60248d448485f1e03f16cbfd0eb947be247ab06ed24388ca",
     ),
     (
         "rfq_binding_check_audit",
         9,
-        25_280,
-        "1fba1a01e475bfe3aba9c73a00d28e052e75666ff1a08fd4eb63646998537174",
+        25_472,
+        "1af0b4ce0ea74e5f117e9470039b865a10ec3a1db097f9d15b4d92dc67c81b3e",
     ),
     (
         "rfm_binding_check_audit",
         9,
-        23_641,
-        "c55a63f2048f624d42078e74f729cdbc2c8a77d362632133fd27f13418798ef0",
+        23_668,
+        "f52eb38e96ebcfbf1920d6216deb431983816c6782e1636c84a8a34864fb0067",
     ),
     (
         "rfs_binding_check_audit",
         9,
-        24_056,
-        "29afa818a536c5f7f666f7c717c019d17b62117c1aefbf89d42b434ad121e9c1",
+        24_083,
+        "5db20f2c648ed73abcc4cb9a60ef98fbb235b70cd6556a78fdb3e4385f5e6a9c",
     ),
     (
         "rfq_all_on_shamir",
         9,
-        112_770,
-        "578320e3004e9046b34b4e3dcd483e4994d800e3cff881efa0a592cb6e2406e0",
+        112_962,
+        "d012a701e20d5249fc947eec3231b60a272f5f9424fe6237145b5dd227908806",
     ),
     (
         "rfm_all_on_shamir",
         9,
-        108_783,
-        "2c1490384227c84437fb10dea7c32f08ce130909f0bbf810420b83745cf794f5",
+        108_810,
+        "94853140815ffa6b94db6e3ea4dea7b1164c870038ab698a29ef46e42593a8a7",
     ),
     (
         "rfs_all_on_shamir",
         9,
-        109_198,
-        "37612c7bfbd40fbd66a4035f7206a9a28deabf4436d98d8a1f2c7e400de7e178",
+        109_225,
+        "8d756744995f100384d56e4851453cb3911eb4d88fa19f711bbdbd639a3a6a54",
     ),
     (
         "rfq_padded_non_power",
         9,
-        20_171,
-        "3db4df51e7005afb42dd554365b97dd83891462efcd5d42041c9e2d6815ce3ad",
+        20_189,
+        "7479645d41dedd3b75870e63b5e507fdd81eb9e1da646fbc103fb15b66aa1d89",
     ),
     (
         "rfm_padded_non_power",
         9,
-        19_562,
-        "e6ab265b4f1b3933756355dcf548233a2dc36ae2acfd771127ae1e6561bcb781",
+        19_580,
+        "0daec12d290b087fb2350d8bd8fbdf8280a5b571a98ef293bb07c819f0684cc9",
     ),
     (
         "rfs_padded_non_power",
         9,
-        19_977,
-        "d0ac4b3cccdf505d290b66f4ed2dd1db5b5ba85cea02b837b3b9da302ed3e6c0",
+        19_995,
+        "9c64b339eed1653a8ee57f8600bb5ffc39ae163f2e12519bc4a53296d0886558",
     ),
     (
         "rfq_sell_cover_no_ref",
         9,
-        101_583,
-        "dd39b34eba7aa56a3767fd522b8b28daf22b77a594cf937ae42e0a5dfb604482",
+        101_601,
+        "3bffd19456aa6b9c94f9749b5ef9d2c4a575988b1a954bcd9b8ebf17a921329d",
     ),
     (
         "rfm_sell_cover_no_ref",
         9,
-        100_974,
-        "96d541932966d5f9c2bc664b6bbe4b0ca131f6d955d574edaee66674c6299225",
+        100_992,
+        "cba7fb1577cb93303c689fbb6d799b89f05cd64da63747de21f49f8ec3f70604",
     ),
     (
         "rfs_sell_cover_no_ref",
         9,
-        101_389,
-        "3aa862429a1dbaafb7822713a43f9b227e95c9661e4149b2707c155f3bd6035f",
+        101_407,
+        "2ad412e8253e22c281a9f370fb9186e74731ace99aa7644da3d5bd26b8f9d2ba",
     ),
     (
         "rfq_multi_asset_batch",
         9,
-        18_519,
-        "47394ee3d084379adf433ceca5f7efe20aac65ffb0b44cb4f5aec2ef0d1eb087",
+        18_537,
+        "786b152a27c95fc7059aa5a62b3362ca2d18351a0acb6434e96aca19f96a1063",
     ),
     (
         "rfm_multi_asset_batch",
         9,
-        17_910,
-        "4ec6792ad2136183ded96ddd2374269183d18f83b7879a4f5c3fad070e750177",
+        17_928,
+        "b4418802f5d8814bda5651713fb6e78570227a1726888892479b1b632d69ad96",
     ),
     (
         "rfs_multi_asset_batch",
         9,
-        18_325,
-        "84af7a4eed780ab588c0304c152a5e02f8f62ca92dd88c1679d6a7e1cf56cc94",
+        18_343,
+        "9f19e9f33225a0c134b4422314fd0ef955e15f37d791712da7693f3e28fd84b1",
     ),
     (
         "rfq_inputs_only_shamir",
         8,
-        29_283,
-        "704a390d3183bffb5a7d16eecc1f7ac7336759b45fa1522cc07a8115eeb8d98f",
+        29_309,
+        "2a4af894be91e7473fa12d5f0da0bf92aacf0abdd3dd8344afdcaea164e97d49",
     ),
     (
         "rfm_inputs_only_shamir",
         8,
-        29_283,
-        "2298129bb535806dcb1be3d22f81aa684da1f51692736e09f010078229a8f2e4",
+        29_309,
+        "d78b6524243a0b4df5a8515c15ead00c64e2e793f947f752b131fe7e81bd3736",
     ),
     (
         "rfs_inputs_only_shamir",
         8,
-        29_283,
-        "fa8381907d572028d4d9b0aa3f606b820ad439e6a0d73ad4f2c5df6ba38d9554",
+        29_309,
+        "7b30fa8ca9d37d85b5e96d0038d0ef69b761f492a43b274403e8d80911eeaf98",
     ),
     (
         "rfq_supplied_policies_coefficients",
         9,
-        41_333,
-        "25b760b457830de73214cfd3afc53eaf5f8717b3d99c137622b77be2f2ce424d",
+        41_351,
+        "b6523a3828fa2b2a26ca09d62b6bd640c3997fb5ff5416d42a171a175d5be519",
     ),
     (
         "rfm_supplied_policies_coefficients",
         9,
-        40_724,
-        "3f7c116e5386d7a4334be430b1112984233cc9687c6d7e2e68f7b10eb828c18c",
+        40_742,
+        "ace7f54652be8323efbb58ed1494a8b2381501cf7b2db757da59d2d07c09eb7b",
     ),
     (
         "rfs_supplied_policies_coefficients",
         9,
-        41_139,
-        "d76074487fb6034da72f45a8c0697c9b0690acfc1db10ff1568f31390b6c904b",
+        41_157,
+        "c0fab651555339b7463bb9c16221ddfabdde5958e284672de36995f5a4402cc5",
     ),
 ];
 
@@ -562,7 +576,7 @@ fn all_emitted_files_match_the_versioned_generator_contract_for_27_cases() {
     fs::write(&coefficients, "[2, 5, 9]\n").unwrap();
 
     let mut cases = 0;
-    let mut contracts = GENERATOR_V7_ALL_FILES_CONTRACT.into_iter();
+    let mut contracts = GENERATOR_V8_ALL_FILES_CONTRACT.into_iter();
     let mut mismatches = Vec::new();
     for profile in PROFILES {
         for mode in ["rfq", "rfm", "rfs"] {

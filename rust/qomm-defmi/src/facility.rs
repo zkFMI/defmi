@@ -125,7 +125,11 @@ pub struct AdmissionBatchPlan {
     pub slot: u64,
     pub batch_digest: [u8; 32],
     pub order_digest: [u8; 32],
-    /// Position 0 is sequence 1, position 1 is sequence 2, and so on.
+    /// Global sequence assigned to position 0.  Older batches omit this from
+    /// their signed body and therefore retain the legacy value `1`.
+    pub first_sequence: u64,
+    /// Position 0 is `first_sequence`, position 1 is
+    /// `first_sequence + 1`, and so on.
     pub admission_digests: Vec<[u8; 32]>,
     pub expires_at: u64,
 }
@@ -138,9 +142,14 @@ impl AdmissionBatchPlan {
             .copied()
             .collect::<BTreeSet<_>>();
         if self.epoch == 0
+            || self.first_sequence == 0
+            || self.admission_digests.is_empty()
+            || self
+                .first_sequence
+                .checked_add(self.admission_digests.len() as u64 - 1)
+                .is_none()
             || self.expires_at == 0
             || self.expires_at > MAX_UNIX_TIME
-            || self.admission_digests.is_empty()
             || self.admission_digests.len() > 4096
             || self.admission_digests.contains(&ZERO)
             || unique_admissions.len() != self.admission_digests.len()
@@ -158,7 +167,7 @@ impl AdmissionBatchPlan {
                     .into(),
             );
         }
-        Ok(json!({
+        let mut body = json!({
             "operation_id": hex::encode(self.operation_id),
             "batch_id": hex::encode(self.batch_id),
             "venue_id": hex::encode(self.venue_id),
@@ -168,7 +177,16 @@ impl AdmissionBatchPlan {
             "order_digest": hex::encode(self.order_digest),
             "admission_digests": self.admission_digests.iter().map(hex::encode).collect::<Vec<_>>(),
             "expires_at": self.expires_at,
-        }))
+        });
+        // Preserve the exact statement bytes of already-accepted legacy
+        // sequence-1 batches while allowing later one-lane batches to carry a
+        // venue-global sequence.
+        if self.first_sequence != 1 {
+            body.as_object_mut()
+                .expect("admission batch body is an object")
+                .insert("first_sequence".into(), json!(self.first_sequence));
+        }
+        Ok(body)
     }
 
     pub fn statement(&self) -> Result<[u8; 32], String> {
@@ -183,6 +201,7 @@ pub struct AdmissionBatchSnapshot {
     pub epoch: u64,
     pub slot: u64,
     pub batch_digest: [u8; 32],
+    pub first_sequence: u64,
     pub population: u64,
     pub consumed: u64,
     pub expires_at: u64,
@@ -360,6 +379,18 @@ impl AssetKind {
             Self::Other => "other",
         }
     }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "cash" => Ok(Self::Cash),
+            "security" => Ok(Self::Security),
+            "fund" => Ok(Self::Fund),
+            "commodity" => Ok(Self::Commodity),
+            "carbon" => Ok(Self::Carbon),
+            "other" => Ok(Self::Other),
+            _ => Err("stored asset kind is invalid".into()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -414,38 +445,46 @@ impl AccountOpening {
 }
 
 /// Legal/economic capacity in which the facility signer stands behind a line.
-/// All three kinds use the same confidential cap state machine; the kind is
+/// All five kinds use the same confidential cap state machine; the kind is
 /// nevertheless consensus data because default handling and loss waterfalls
-/// differ materially between a CCP, a bilateral bank, and self-collateral.
+/// differ materially between a central bank, CCP, bilateral bank, specialist
+/// credit/insurance provider, and self-collateral.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GuarantorKind {
+    CentralBank,
     CentralCounterparty,
     Bank,
+    CreditProvider,
     SelfGuaranteed,
 }
 
 impl GuarantorKind {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::CentralBank => "central_bank",
             Self::CentralCounterparty => "ccp",
             Self::Bank => "bank",
+            Self::CreditProvider => "credit_provider",
             Self::SelfGuaranteed => "self",
         }
     }
 
-    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+    pub fn parse(value: &str) -> Result<Self, String> {
         match value {
+            "central_bank" => Ok(Self::CentralBank),
             "ccp" => Ok(Self::CentralCounterparty),
             "bank" => Ok(Self::Bank),
+            "credit_provider" => Ok(Self::CreditProvider),
             "self" => Ok(Self::SelfGuaranteed),
             _ => Err("stored guarantor kind is invalid".into()),
         }
     }
 }
 
-/// A CCP, bank, or self-guaranteeing participant whose signatures may create
-/// and control committed credit facilities. The policy is public by digest;
-/// bilateral limits and utilisation are not.
+/// A central bank, CCP, bank, specialist credit provider, or self-guaranteeing
+/// participant whose signatures may create and control committed credit
+/// facilities. The policy is public by digest; bilateral limits and utilisation
+/// are not.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuarantorDefinition {
     pub guarantor_id: [u8; 32],
@@ -757,6 +796,81 @@ fn verify_credit_relation_equations(transition: &CreditFacilityTransition) -> Re
 }
 
 impl CreditFacilityRelationProof {
+    const WIRE_MAGIC: &'static [u8; 8] = b"QCRPROO1";
+    const MAX_WIRE_PROOF_BYTES: usize = 1 << 20;
+
+    /// Bounded, versioned wire form used between an entity-owned participant
+    /// module and the DeFMI coordinator.  Only Bulletproof bytes cross the
+    /// boundary; the private facility openings stay with the participant.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        let state = self.state_range.to_bytes();
+        let split = self.split_range.to_bytes();
+        if state.is_empty()
+            || split.is_empty()
+            || state.len() > Self::MAX_WIRE_PROOF_BYTES
+            || split.len() > Self::MAX_WIRE_PROOF_BYTES
+        {
+            return Err("credit relation proof exceeds its wire bound".into());
+        }
+        let state_len = u32::try_from(state.len())
+            .map_err(|_| "credit state proof length exceeds u32".to_string())?;
+        let split_len = u32::try_from(split.len())
+            .map_err(|_| "credit split proof length exceeds u32".to_string())?;
+        let mut wire = Vec::with_capacity(16 + state.len() + split.len());
+        wire.extend_from_slice(Self::WIRE_MAGIC);
+        wire.extend_from_slice(&state_len.to_be_bytes());
+        wire.extend_from_slice(&state);
+        wire.extend_from_slice(&split_len.to_be_bytes());
+        wire.extend_from_slice(&split);
+        Ok(wire)
+    }
+
+    pub fn from_bytes(wire: &[u8]) -> Result<Self, String> {
+        if wire.len() < 16 || &wire[..8] != Self::WIRE_MAGIC {
+            return Err("credit relation proof wire header is invalid".into());
+        }
+        let state_len = u32::from_be_bytes(
+            wire[8..12]
+                .try_into()
+                .map_err(|_| "credit state proof length is truncated".to_string())?,
+        ) as usize;
+        if state_len == 0 || state_len > Self::MAX_WIRE_PROOF_BYTES {
+            return Err("credit state proof length is outside its wire bound".into());
+        }
+        let split_len_offset = 12_usize
+            .checked_add(state_len)
+            .ok_or_else(|| "credit relation proof length overflowed".to_string())?;
+        if split_len_offset
+            .checked_add(4)
+            .is_none_or(|end| end > wire.len())
+        {
+            return Err("credit relation proof wire is truncated".into());
+        }
+        let split_len = u32::from_be_bytes(
+            wire[split_len_offset..split_len_offset + 4]
+                .try_into()
+                .map_err(|_| "credit split proof length is truncated".to_string())?,
+        ) as usize;
+        if split_len == 0 || split_len > Self::MAX_WIRE_PROOF_BYTES {
+            return Err("credit split proof length is outside its wire bound".into());
+        }
+        let split_offset = split_len_offset + 4;
+        if split_offset
+            .checked_add(split_len)
+            .is_none_or(|end| end != wire.len())
+        {
+            return Err("credit relation proof wire has trailing or missing bytes".into());
+        }
+        let state_range = RangeProof::from_bytes(&wire[12..split_len_offset])
+            .map_err(|_| "credit state range proof is invalid".to_string())?;
+        let split_range = RangeProof::from_bytes(&wire[split_offset..])
+            .map_err(|_| "credit split range proof is invalid".to_string())?;
+        Ok(Self {
+            state_range,
+            split_range,
+        })
+    }
+
     fn digest(&self) -> [u8; 32] {
         let state = self.state_range.to_bytes();
         let split = self.split_range.to_bytes();
@@ -1267,6 +1381,30 @@ pub struct CreditFacilitySnapshot {
     pub sequence: u64,
 }
 
+/// Public, canonical portion of one active facility hold.  This is sufficient
+/// to consume a reservation after a coordinator restart: the original hidden
+/// amount and blinding are neither retained nor reconstructed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreditHoldSnapshot {
+    pub hold_id: [u8; 32],
+    pub facility_id: [u8; 32],
+    pub query_commitment: [u8; 32],
+    pub amount_commitment: [u8; 32],
+    pub expires_at: u64,
+}
+
+impl From<&CreditFacilityTransition> for CreditHoldSnapshot {
+    fn from(value: &CreditFacilityTransition) -> Self {
+        Self {
+            hold_id: value.hold_id,
+            facility_id: value.facility_id,
+            query_commitment: value.query_commitment,
+            amount_commitment: value.amount_commitment,
+            expires_at: value.expires_at,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StateLeg {
     pub handle: [u8; 32],
@@ -1427,11 +1565,42 @@ pub fn build_threshold_dvp_consumption(
     settlement_digest: [u8; 32],
     dvp_proof_digest: [u8; 32],
 ) -> Result<CreditFacilityTransition, String> {
+    if hold.kind != CreditTransitionKind::Hold {
+        return Err("threshold DvP consumption lacks a live hold or settlement".into());
+    }
+    build_threshold_dvp_consumption_from_snapshot(
+        operation_id,
+        &CreditHoldSnapshot::from(hold),
+        before,
+        role,
+        consumed,
+        refund,
+        settlement_digest,
+        dvp_proof_digest,
+    )
+}
+
+/// Restart-safe form of [`build_threshold_dvp_consumption`].  The caller reads
+/// both snapshots from the same canonical DeFMI root and verifies that the
+/// hold is active before calling this function.
+#[allow(clippy::too_many_arguments)]
+pub fn build_threshold_dvp_consumption_from_snapshot(
+    operation_id: [u8; 32],
+    hold: &CreditHoldSnapshot,
+    before: &CreditFacilitySnapshot,
+    role: ReservationRole,
+    consumed: RistrettoPoint,
+    refund: RistrettoPoint,
+    settlement_digest: [u8; 32],
+    dvp_proof_digest: [u8; 32],
+) -> Result<CreditFacilityTransition, String> {
     if operation_id == ZERO
         || settlement_digest == ZERO
-        || hold.kind != CreditTransitionKind::Hold
         || hold.facility_id != before.facility_id
+        || hold.hold_id == ZERO
+        || hold.query_commitment == ZERO
         || hold.amount_commitment == ZERO
+        || hold.expires_at == 0
     {
         return Err("threshold DvP consumption lacks a live hold or settlement".into());
     }
@@ -2369,7 +2538,7 @@ impl DefmiFacility {
             .unwrap_or("0")
             .parse::<u64>()
             .map_err(|error| error.to_string())?;
-        if version > 14 {
+        if version > 15 {
             return Err(format!("unsupported DeFMI schema version {version}"));
         }
         database.execute(
@@ -2403,7 +2572,7 @@ impl DefmiFacility {
                 last_receipt_digest BLOB NOT NULL CHECK(length(last_receipt_digest)=32));\
              CREATE TABLE IF NOT EXISTS guarantors(\
                 guarantor_id BLOB PRIMARY KEY CHECK(length(guarantor_id)=32),\
-                kind TEXT NOT NULL CHECK(kind IN ('ccp','bank','self')),\
+                kind TEXT NOT NULL CHECK(kind IN ('central_bank','ccp','bank','credit_provider','self')),\
                 name TEXT NOT NULL,public_key BLOB NOT NULL UNIQUE CHECK(length(public_key)=32),\
                 risk_policy_digest BLOB NOT NULL CHECK(length(risk_policy_digest)=32),\
                 active INTEGER NOT NULL DEFAULT 1,statement BLOB NOT NULL UNIQUE);\
@@ -2545,8 +2714,77 @@ impl DefmiFacility {
             // reclassifying an existing legal agreement.
             database.execute(
                 "ALTER TABLE guarantors ADD COLUMN kind TEXT NOT NULL DEFAULT 'bank' \
-                 CHECK(kind IN ('ccp','bank','self'))",
+                 CHECK(kind IN ('central_bank','ccp','bank','credit_provider','self'))",
             )?;
+        }
+        let guarantor_schema = database
+            .query("SELECT sql FROM sqlite_master WHERE type='table' AND name='guarantors'")?
+            .first()
+            .and_then(|row| row.first())
+            .and_then(Option::as_deref)
+            .ok_or_else(|| "guarantor table schema is missing".to_string())?
+            .to_string();
+        if !guarantor_schema.contains("credit_provider")
+            || !guarantor_schema.contains("central_bank")
+        {
+            // Schema v15 aligns the durable constraint with every supported
+            // guarantor kind, including central banks and specialist credit
+            // providers, without changing any existing classification. SQLite
+            // cannot widen a CHECK constraint in place, so rebuild only this
+            // parent table while preserving its identifiers and the child
+            // references from `credit_facilities`.
+            database.execute("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE;")?;
+            for (step, sql) in [
+                ("drop stale temporary table", "DROP TABLE IF EXISTS guarantors_v15"),
+                (
+                    "create replacement table",
+                    "CREATE TABLE guarantors_v15(\
+                        guarantor_id BLOB PRIMARY KEY CHECK(length(guarantor_id)=32),\
+                        kind TEXT NOT NULL CHECK(kind IN ('central_bank','ccp','bank','credit_provider','self')),\
+                        name TEXT NOT NULL,public_key BLOB NOT NULL UNIQUE CHECK(length(public_key)=32),\
+                        risk_policy_digest BLOB NOT NULL CHECK(length(risk_policy_digest)=32),\
+                        active INTEGER NOT NULL DEFAULT 1,statement BLOB NOT NULL UNIQUE)",
+                ),
+                (
+                    "copy guarantor records",
+                    "INSERT INTO guarantors_v15(\
+                        guarantor_id,kind,name,public_key,risk_policy_digest,active,statement) \
+                     SELECT guarantor_id,kind,name,public_key,risk_policy_digest,active,statement \
+                     FROM guarantors",
+                ),
+                ("drop constrained table", "DROP TABLE guarantors"),
+                (
+                    "install replacement table",
+                    "ALTER TABLE guarantors_v15 RENAME TO guarantors",
+                ),
+            ] {
+                if let Err(error) = database.execute(sql) {
+                    let _ = database.execute("ROLLBACK; PRAGMA foreign_keys=ON;");
+                    return Err(format!(
+                        "failed to migrate guarantor kinds while attempting to {step}: {error}"
+                    ));
+                }
+            }
+            let foreign_key_violations = match database.query("PRAGMA foreign_key_check") {
+                Ok(rows) => rows,
+                Err(error) => {
+                    let _ = database.execute("ROLLBACK; PRAGMA foreign_keys=ON;");
+                    return Err(format!(
+                        "failed to validate guarantor kind migration: {error}"
+                    ));
+                }
+            };
+            if !foreign_key_violations.is_empty() {
+                let _ = database.execute("ROLLBACK; PRAGMA foreign_keys=ON;");
+                return Err("guarantor kind migration violates a foreign key".into());
+            }
+            if let Err(error) = database.execute("COMMIT") {
+                let _ = database.execute("ROLLBACK; PRAGMA foreign_keys=ON;");
+                return Err(format!(
+                    "failed to commit guarantor kind migration: {error}"
+                ));
+            }
+            database.execute("PRAGMA foreign_keys=ON;")?;
         }
         for row in database.query("SELECT kind FROM guarantors")? {
             GuarantorKind::parse(row[0].as_deref().unwrap_or_default())?;
@@ -2737,7 +2975,7 @@ impl DefmiFacility {
                      THEN RAISE(ABORT,'operation identifier was reused') END;\
                  END;",
         )?;
-        database.execute("PRAGMA user_version=14;")?;
+        database.execute("PRAGMA user_version=15;")?;
         database.execute(&format!(
             "INSERT OR IGNORE INTO metadata(key,value) VALUES('state_root',{});\
              INSERT OR IGNORE INTO metadata(key,value) VALUES('last_receipt',{});",
@@ -3254,6 +3492,8 @@ impl DefmiFacility {
     ) -> Result<Option<AdmissionBatchSnapshot>, String> {
         let rows = database.query(&format!(
             "SELECT hex(batch_id),hex(venue_id),epoch,slot,hex(batch_digest),\
+                    (SELECT MIN(sequence) FROM admission_batch_entries \
+                     WHERE admission_batch_entries.batch_id=admission_batches.batch_id),\
                     population,consumed,expires_at FROM admission_batches WHERE batch_id={}",
             blob(batch_id)
         ))?;
@@ -3282,17 +3522,22 @@ impl DefmiFacility {
                         row[4].as_deref().unwrap_or_default(),
                         "admission batch digest",
                     )?,
-                    population: row[5]
+                    first_sequence: row[5]
                         .as_deref()
                         .unwrap_or("0")
                         .parse::<u64>()
                         .map_err(|error| error.to_string())?,
-                    consumed: row[6]
+                    population: row[6]
                         .as_deref()
                         .unwrap_or("0")
                         .parse::<u64>()
                         .map_err(|error| error.to_string())?,
-                    expires_at: row[7]
+                    consumed: row[7]
+                        .as_deref()
+                        .unwrap_or("0")
+                        .parse::<u64>()
+                        .map_err(|error| error.to_string())?,
+                    expires_at: row[8]
                         .as_deref()
                         .unwrap_or("0")
                         .parse::<u64>()
@@ -3562,7 +3807,7 @@ impl DefmiFacility {
             certified.sort_by_key(|lane| lane.sequence);
             if certified.len() != plan.admission_digests.len()
                 || certified.iter().enumerate().any(|(index, lane)| {
-                    lane.sequence != index as u64 + 1
+                    lane.sequence != plan.first_sequence + index as u64
                         || lane.slot != plan.slot
                         || lane.cluster_digest != plan.batch_digest
                         || lane.order_digest != plan.order_digest
@@ -3593,6 +3838,24 @@ impl DefmiFacility {
                 }
                 return Ok(existing);
             }
+            let prior = database.query(&format!(
+                "SELECT COALESCE(MAX(e.sequence),0) FROM admission_batch_entries e \
+                 JOIN admission_batches b ON b.batch_id=e.batch_id \
+                 WHERE b.venue_id={} AND b.epoch={}",
+                blob(&plan.venue_id),
+                plan.epoch,
+            ))?;
+            let next_sequence = prior
+                .first()
+                .and_then(|row| row[0].as_deref())
+                .unwrap_or("0")
+                .parse::<u64>()
+                .map_err(|error| error.to_string())?
+                .checked_add(1)
+                .ok_or_else(|| "admission sequence overflowed".to_string())?;
+            if plan.first_sequence != next_sequence {
+                return Err("admission batch is not the next venue sequence".into());
+            }
             let before_root = Self::calculate_root(&database)?;
             self.require_quorum(&statement, &before_root, approval)?;
             database.execute(&format!(
@@ -3612,11 +3875,12 @@ impl DefmiFacility {
                 blob(&statement),
             ))?;
             for (index, admission) in plan.admission_digests.iter().enumerate() {
+                let sequence = plan.first_sequence + index as u64;
                 database.execute(&format!(
                     "INSERT INTO admission_batch_entries(\
                         batch_id,sequence,admission_digest,consumed_by) VALUES({},{},{},{})",
                     blob(&plan.batch_id),
-                    index + 1,
+                    sequence,
                     blob(admission),
                     blob(&ZERO),
                 ))?;
@@ -3670,7 +3934,15 @@ impl DefmiFacility {
             if now > batch.expires_at {
                 return Err("admission batch has expired".into());
             }
-            if advance.sequence != batch.consumed + 1 || advance.sequence > batch.population {
+            let expected_sequence = batch
+                .first_sequence
+                .checked_add(batch.consumed)
+                .ok_or_else(|| "admission sequence overflowed".to_string())?;
+            let last_sequence = batch
+                .first_sequence
+                .checked_add(batch.population - 1)
+                .ok_or_else(|| "admission sequence overflowed".to_string())?;
+            if advance.sequence != expected_sequence || advance.sequence > last_sequence {
                 return Err("admission lane is not the next fixed-population sequence".into());
             }
             let expected = database.query(&format!(
@@ -3702,7 +3974,7 @@ impl DefmiFacility {
                 blob(&advance.batch_id),
                 advance.sequence,
                 blob(&ZERO),
-                advance.sequence,
+                batch.consumed + 1,
                 blob(&advance.batch_id),
                 blob(&advance.operation_id),
                 blob(&advance.batch_id),
@@ -3731,7 +4003,10 @@ impl DefmiFacility {
         now: u64,
     ) -> Result<[u8; 32], String> {
         let rows = database.query(&format!(
-            "SELECT hex(batch_id),population,consumed,expires_at,hex(order_digest) FROM admission_batches \
+            "SELECT hex(batch_id),\
+                    (SELECT MIN(sequence) FROM admission_batch_entries \
+                     WHERE admission_batch_entries.batch_id=admission_batches.batch_id),\
+                    population,consumed,expires_at,hex(order_digest) FROM admission_batches \
              WHERE venue_id={} AND epoch={} AND slot={} AND batch_digest={}",
             blob(&admission.venue_id),
             admission.epoch,
@@ -3742,28 +4017,39 @@ impl DefmiFacility {
             "Taker reserve has no registered fixed-population admission batch".to_string()
         })?;
         let batch_id = parse_hex32(row[0].as_deref().unwrap_or_default(), "admission batch id")?;
-        let population = row[1]
+        let first_sequence = row[1]
             .as_deref()
             .unwrap_or("0")
             .parse::<u64>()
             .map_err(|error| error.to_string())?;
-        let consumed = row[2]
+        let population = row[2]
             .as_deref()
             .unwrap_or("0")
             .parse::<u64>()
             .map_err(|error| error.to_string())?;
-        let expires_at = row[3]
+        let consumed = row[3]
+            .as_deref()
+            .unwrap_or("0")
+            .parse::<u64>()
+            .map_err(|error| error.to_string())?;
+        let expires_at = row[4]
             .as_deref()
             .unwrap_or("0")
             .parse::<u64>()
             .map_err(|error| error.to_string())?;
         let order_digest = parse_hex32(
-            row[4].as_deref().unwrap_or_default(),
+            row[5].as_deref().unwrap_or_default(),
             "admission order digest",
         )?;
+        let expected_sequence = first_sequence
+            .checked_add(consumed)
+            .ok_or_else(|| "admission sequence overflowed".to_string())?;
+        let last_sequence = first_sequence
+            .checked_add(population - 1)
+            .ok_or_else(|| "admission sequence overflowed".to_string())?;
         if now > expires_at
-            || admission.sequence != consumed + 1
-            || admission.sequence > population
+            || admission.sequence != expected_sequence
+            || admission.sequence > last_sequence
             || admission.order_digest != order_digest
         {
             return Err("Taker RFQ is expired or not next in the fixed-population order".into());
@@ -3797,7 +4083,7 @@ impl DefmiFacility {
             blob(&batch_id),
             admission.sequence,
             blob(&ZERO),
-            admission.sequence,
+            consumed + 1,
             blob(&batch_id),
         ))?;
         Ok(batch_id)
@@ -6669,5 +6955,102 @@ impl DefmiFacility {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+    use rand_core::OsRng;
+
+    #[test]
+    fn v14_guarantor_table_migrates_to_all_supported_kinds() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy-v14.sqlite3");
+        let legacy_signer = SigningKey::generate(&mut OsRng);
+        let legacy = Database::open(&path).unwrap();
+        legacy
+            .execute(
+                "CREATE TABLE guarantors(\
+                    guarantor_id BLOB PRIMARY KEY CHECK(length(guarantor_id)=32),\
+                    kind TEXT NOT NULL CHECK(kind IN ('ccp','bank','self')),\
+                    name TEXT NOT NULL,public_key BLOB NOT NULL UNIQUE CHECK(length(public_key)=32),\
+                    risk_policy_digest BLOB NOT NULL CHECK(length(risk_policy_digest)=32),\
+                    active INTEGER NOT NULL DEFAULT 1,statement BLOB NOT NULL UNIQUE);\
+                 PRAGMA user_version=14;",
+            )
+            .unwrap();
+        legacy
+            .execute(&format!(
+                "INSERT INTO guarantors(\
+                    guarantor_id,kind,name,public_key,risk_policy_digest,active,statement)\
+                 VALUES({},'bank','Legacy bank',{},{},1,{})",
+                blob(&[1; 32]),
+                blob(&legacy_signer.verifying_key().to_bytes()),
+                blob(&[2; 32]),
+                blob(&[3; 32]),
+            ))
+            .unwrap();
+        drop(legacy);
+
+        let node = SigningKey::generate(&mut OsRng);
+        let authorizer = QuorumAuthorizer::new(
+            BTreeMap::from([("node-1".into(), node.verifying_key())]),
+            1,
+            1,
+            "defmi:test:migration",
+        )
+        .unwrap();
+        let facility =
+            DefmiFacility::open(&path, authorizer, SigningKey::generate(&mut OsRng)).unwrap();
+        let database = facility.database.lock().expect("DeFMI database lock");
+
+        assert_eq!(
+            database.query("PRAGMA user_version").unwrap()[0][0].as_deref(),
+            Some("15")
+        );
+        assert_eq!(
+            database
+                .query("SELECT kind,name FROM guarantors WHERE guarantor_id=X'0101010101010101010101010101010101010101010101010101010101010101'")
+                .unwrap()[0],
+            vec![Some("bank".into()), Some("Legacy bank".into())]
+        );
+        let credit_provider = SigningKey::generate(&mut OsRng);
+        database
+            .execute(&format!(
+                "INSERT INTO guarantors(\
+                    guarantor_id,kind,name,public_key,risk_policy_digest,active,statement)\
+                 VALUES({},'credit_provider','Specialist credit provider',{},{},1,{})",
+                blob(&[4; 32]),
+                blob(&credit_provider.verifying_key().to_bytes()),
+                blob(&[5; 32]),
+                blob(&[6; 32]),
+            ))
+            .unwrap();
+        let central_bank = SigningKey::generate(&mut OsRng);
+        database
+            .execute(&format!(
+                "INSERT INTO guarantors(\
+                    guarantor_id,kind,name,public_key,risk_policy_digest,active,statement)\
+                 VALUES({},'central_bank','Central bank',{},{},1,{})",
+                blob(&[7; 32]),
+                blob(&central_bank.verifying_key().to_bytes()),
+                blob(&[8; 32]),
+                blob(&[9; 32]),
+            ))
+            .unwrap();
+        assert_eq!(
+            database.query("SELECT count(*) FROM guarantors").unwrap()[0][0].as_deref(),
+            Some("3")
+        );
+        assert!(database
+            .query("SELECT sql FROM sqlite_master WHERE type='table' AND name='guarantors'")
+            .unwrap()[0][0]
+            .as_deref()
+            .is_some_and(|schema| schema.contains("credit_provider")));
+        assert_eq!(
+            database.query("PRAGMA foreign_keys").unwrap()[0][0].as_deref(),
+            Some("1")
+        );
     }
 }

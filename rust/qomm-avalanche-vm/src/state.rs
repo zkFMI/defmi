@@ -6,10 +6,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use aethel_core::AethelBook;
 use curve25519_dalek::{ristretto::CompressedRistretto, scalar::Scalar};
+use deccp_core::{ClearingBook, ClearingSnapshot, DeCcpError};
 use ed25519_dalek::VerifyingKey;
+use qomm_defmi::central_bank_liquidity::BojLiquidityBook;
+use qomm_defmi::cross_domain::{
+    Committee as CrossDomainCommittee, CrossDomainBook, Domain as CrossDomain,
+};
 use qomm_defmi::facility::{QuorumAuthorizer, ZERO};
-use qomm_defmi::note_chain::{CsdIssuerDefinition, NoteClaim, NoteClaimKind, NoteOutput};
+use qomm_defmi::note_chain::{
+    standing_note_pool_delegation_digest, standing_note_pool_id, CsdIssuerDefinition, NoteClaim,
+    NoteClaimKind, NoteOutput,
+};
+use qomm_defmi::participant::ParticipantRegistry;
 use qomm_proofs::opening_envelope::{EncryptedOpeningShare, OpeningEnvelope};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -105,6 +115,26 @@ pub(crate) struct NoteReservationRecord {
     pub delegation_digest: [u8; 32],
     pub status: String,
     pub settlement_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct StandingNotePoolRecord {
+    pub venue_id: [u8; 32],
+    pub defmi_id: [u8; 32],
+    pub entity_commitment: [u8; 32],
+    pub policy_digest: [u8; 32],
+    pub mandate_digest: [u8; 32],
+    pub asset_id: [u8; 32],
+    pub direction: u8,
+    pub maximum_amount_commitment: [u8; 32],
+    pub current_pool_note_id: [u8; 32],
+    pub delegation_digest: [u8; 32],
+    pub committee_epoch: u64,
+    pub valid_until: u64,
+    pub sequence: u64,
+    pub status: String,
+    pub statement: [u8; 32],
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -362,11 +392,44 @@ pub(crate) struct SettlementVerifierRecord {
     pub statement: [u8; 32],
 }
 
+/// The DeCCP clearing book this VM hosts for Aethel guarantees.
+///
+/// `ClearingBook` deliberately has no `Deserialize`: DeCCP refuses to rebuild
+/// a book from storage it cannot trust. Here the store is the VM's own
+/// consensus state, whose root commits to these bytes and whose decoder
+/// re-checks the canonical encoding, so the book is rebuilt through
+/// `ClearingBook::restore_authenticated`, which still re-runs every DeCCP
+/// structural invariant on load.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "ClearingSnapshot", into = "ClearingSnapshot")]
+pub(crate) struct ClearingState {
+    pub book: ClearingBook,
+}
+
+impl TryFrom<ClearingSnapshot> for ClearingState {
+    type Error = DeCcpError;
+
+    fn try_from(snapshot: ClearingSnapshot) -> Result<Self, DeCcpError> {
+        ClearingBook::restore_authenticated(snapshot).map(|book| Self { book })
+    }
+}
+
+impl From<ClearingState> for ClearingSnapshot {
+    fn from(clearing: ClearingState) -> Self {
+        clearing.book.snapshot()
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct State {
     pub transition_count: u64,
     pub applied_transactions: BTreeSet<[u8; 32]>,
+    #[serde(default, skip_serializing_if = "AethelBook::is_empty")]
+    pub(crate) aethel: AethelBook,
+    /// The DeCCP clearing book that holds guarantee capacity for Aethel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) deccp: Option<ClearingState>,
     #[serde(default)]
     pub(crate) assets: BTreeMap<String, AssetRecord>,
     #[serde(default)]
@@ -377,6 +440,8 @@ pub struct State {
     pub(crate) notes: BTreeMap<String, NoteRecord>,
     #[serde(default)]
     pub(crate) note_reservations: BTreeMap<String, NoteReservationRecord>,
+    #[serde(default)]
+    pub(crate) standing_note_pools: BTreeMap<String, StandingNotePoolRecord>,
     #[serde(default)]
     pub(crate) note_claims: BTreeMap<String, NoteClaimRecord>,
     #[serde(default)]
@@ -407,6 +472,16 @@ pub struct State {
     pub(crate) settlement_verifiers: BTreeMap<String, SettlementVerifierRecord>,
     #[serde(default)]
     pub(crate) operations: BTreeMap<String, [u8; 32]>,
+    #[serde(default, skip_serializing_if = "CrossDomainBook::is_empty")]
+    pub(crate) cross_domain: CrossDomainBook,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cross_domain_local_domain: Option<CrossDomain>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) cross_domain_committees: BTreeMap<String, CrossDomainCommittee>,
+    #[serde(default, skip_serializing_if = "BojLiquidityBook::is_empty")]
+    pub(crate) boj_liquidity: BojLiquidityBook,
+    #[serde(default, skip_serializing_if = "ParticipantRegistry::is_empty")]
+    pub(crate) participant_registry: ParticipantRegistry,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -435,8 +510,47 @@ impl State {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.aethel.validate().map_err(|error| error.to_string())?;
+        if let Some(clearing) = &self.deccp {
+            clearing
+                .book
+                .validate()
+                .map_err(|error| format!("invalid DeCCP clearing state: {error}"))?;
+        }
         if self.transition_count != self.applied_transactions.len() as u64 {
             return Err("state transition count does not match the transaction index".into());
+        }
+        self.cross_domain
+            .validate()
+            .map_err(|error| format!("invalid cross-domain state: {error}"))?;
+        self.boj_liquidity
+            .validate()
+            .map_err(|error| format!("invalid BOJ liquidity state: {error}"))?;
+        self.participant_registry
+            .validate()
+            .map_err(|error| format!("invalid participant registry state: {error}"))?;
+        if !self.cross_domain.is_empty() && self.cross_domain_local_domain.is_none() {
+            return Err("cross-domain state has no configured local domain".into());
+        }
+        if let Some(local_domain) = &self.cross_domain_local_domain {
+            if self
+                .cross_domain
+                .legs
+                .values()
+                .any(|record| &record.prepare.local_domain != local_domain)
+            {
+                return Err(
+                    "cross-domain leg does not belong to the configured local domain".into(),
+                );
+            }
+        }
+        for (key, committee) in &self.cross_domain_committees {
+            committee
+                .validate()
+                .map_err(|error| format!("invalid cross-domain committee: {error}"))?;
+            if key != &cross_domain_committee_key(&committee.domain.id(), committee.epoch) {
+                return Err("cross-domain committee is stored under the wrong key".into());
+            }
         }
         for (name, map) in [
             ("asset", self.assets.keys().collect::<Vec<_>>()),
@@ -446,6 +560,10 @@ impl State {
             (
                 "note reservation",
                 self.note_reservations.keys().collect::<Vec<_>>(),
+            ),
+            (
+                "standing note pool",
+                self.standing_note_pools.keys().collect::<Vec<_>>(),
             ),
             ("note claim", self.note_claims.keys().collect::<Vec<_>>()),
             ("guarantor", self.guarantors.keys().collect::<Vec<_>>()),
@@ -526,6 +644,48 @@ impl State {
                 || !matches!(record.status.as_str(), "active" | "consumed" | "released")
             {
                 return Err("state contains a malformed note reservation".into());
+            }
+        }
+        for (pool_id, record) in &self.standing_note_pools {
+            let pool_id: [u8; 32] = hex::decode(pool_id)
+                .expect("validated standing note pool identifier")
+                .try_into()
+                .expect("32-byte standing note pool identifier");
+            let note = self
+                .notes
+                .get(&id_key(&record.current_pool_note_id))
+                .ok_or_else(|| "standing note pool has no current covenant note".to_string())?;
+            if pool_id
+                != standing_note_pool_id(
+                    record.entity_commitment,
+                    record.policy_digest,
+                    record.mandate_digest,
+                    record.asset_id,
+                    record.direction,
+                )?
+                || record.delegation_digest
+                    != standing_note_pool_delegation_digest(
+                        pool_id,
+                        record.venue_id,
+                        record.defmi_id,
+                        record.committee_epoch,
+                        record.valid_until,
+                    )?
+                || [
+                    record.venue_id,
+                    record.defmi_id,
+                    record.maximum_amount_commitment,
+                    record.statement,
+                ]
+                .contains(&ZERO)
+                || !matches!(record.direction, 1 | 2)
+                || record.committee_epoch == 0
+                || record.valid_until == 0
+                || record.status != "active"
+                || note.asset_id != record.asset_id
+                || note.lock_id != pool_id
+            {
+                return Err("state contains a malformed standing note pool".into());
             }
         }
         for (claim_id, record) in &self.note_claims {
@@ -664,16 +824,26 @@ impl State {
                 .expect("validated batch identifier")
                 .try_into()
                 .expect("32-byte batch identifier");
-            for sequence in 1..=batch.population {
-                let entry = self
-                    .admission_entries
-                    .get(&admission_entry_key(&batch_id_bytes, sequence))
-                    .ok_or_else(|| "admission batch omits a planned lane".to_string())?;
+            let mut entries = self
+                .admission_entries
+                .values()
+                .filter(|entry| entry.batch_id == batch_id_bytes)
+                .collect::<Vec<_>>();
+            entries.sort_by_key(|entry| entry.sequence);
+            if entries.len() != batch.population as usize {
+                return Err("admission batch omits a planned lane".into());
+            }
+            let first_sequence = entries
+                .first()
+                .map(|entry| entry.sequence)
+                .ok_or_else(|| "admission batch has no planned lanes".to_string())?;
+            for (index, entry) in entries.into_iter().enumerate() {
+                let sequence = first_sequence + index as u64;
                 if entry.batch_id != batch_id_bytes
                     || entry.sequence != sequence
                     || entry.admission_digest == ZERO
-                    || (sequence <= batch.consumed && entry.consumed_by == ZERO)
-                    || (sequence > batch.consumed && entry.consumed_by != ZERO)
+                    || (index < batch.consumed as usize && entry.consumed_by == ZERO)
+                    || (index >= batch.consumed as usize && entry.consumed_by != ZERO)
                 {
                     return Err("admission batch cursor and entries disagree".into());
                 }
@@ -684,7 +854,7 @@ impl State {
                 || self
                     .admission_batches
                     .get(&id_key(&entry.batch_id))
-                    .is_none_or(|batch| entry.sequence == 0 || entry.sequence > batch.population)
+                    .is_none_or(|_| entry.sequence == 0)
         }) {
             return Err("state contains an orphaned admission entry".into());
         }
@@ -743,6 +913,20 @@ impl State {
     pub fn root(&self) -> [u8; 32] {
         let mut hash = Sha256::new();
         hash.update(STATE_DOMAIN);
+        if !self.aethel.is_empty() {
+            hash.update(b"aethel-book:v1");
+            let encoded =
+                serde_json::to_vec(&self.aethel).expect("validated Aethel state is serializable");
+            hash.update((encoded.len() as u64).to_be_bytes());
+            hash.update(encoded);
+        }
+        if let Some(clearing) = &self.deccp {
+            hash.update(b"deccp-book:v1");
+            let encoded = serde_json::to_vec(clearing)
+                .expect("validated DeCCP clearing state is serializable");
+            hash.update((encoded.len() as u64).to_be_bytes());
+            hash.update(encoded);
+        }
         for (asset_id, record) in &self.assets {
             hash.update(
                 serde_json::to_vec(&json!([
@@ -810,6 +994,29 @@ impl State {
             ] {
                 hash.update(field);
             }
+            hash.update((record.status.len() as u16).to_be_bytes());
+            hash.update(record.status.as_bytes());
+        }
+        for (pool_id, record) in &self.standing_note_pools {
+            hash.update(hex::decode(pool_id).expect("validated standing note pool identifier"));
+            for field in [
+                record.venue_id,
+                record.defmi_id,
+                record.entity_commitment,
+                record.policy_digest,
+                record.mandate_digest,
+                record.asset_id,
+                record.maximum_amount_commitment,
+                record.current_pool_note_id,
+                record.delegation_digest,
+                record.statement,
+            ] {
+                hash.update(field);
+            }
+            hash.update([record.direction]);
+            hash.update(record.committee_epoch.to_be_bytes());
+            hash.update(record.valid_until.to_be_bytes());
+            hash.update(record.sequence.to_be_bytes());
             hash.update((record.status.len() as u16).to_be_bytes());
             hash.update(record.status.as_bytes());
         }
@@ -988,6 +1195,43 @@ impl State {
             hash.update(hex::decode(operation).expect("validated operation identifier"));
             hash.update(statement);
         }
+        if !self.cross_domain.is_empty() {
+            hash.update(b"cross-domain-book:v1");
+            let encoded = serde_json::to_vec(&self.cross_domain)
+                .expect("validated cross-domain state is serializable");
+            hash.update((encoded.len() as u64).to_be_bytes());
+            hash.update(encoded);
+        }
+        if let Some(domain) = &self.cross_domain_local_domain {
+            hash.update(b"cross-domain-local:v1");
+            let encoded = serde_json::to_vec(domain)
+                .expect("validated cross-domain local domain is serializable");
+            hash.update((encoded.len() as u64).to_be_bytes());
+            hash.update(encoded);
+        }
+        for (key, committee) in &self.cross_domain_committees {
+            hash.update(b"cross-domain-committee:v1");
+            hash.update((key.len() as u64).to_be_bytes());
+            hash.update(key.as_bytes());
+            let encoded = serde_json::to_vec(committee)
+                .expect("validated cross-domain committee is serializable");
+            hash.update((encoded.len() as u64).to_be_bytes());
+            hash.update(encoded);
+        }
+        if !self.boj_liquidity.is_empty() {
+            hash.update(b"boj-liquidity-book:v1");
+            let encoded = serde_json::to_vec(&self.boj_liquidity)
+                .expect("validated BOJ liquidity state is serializable");
+            hash.update((encoded.len() as u64).to_be_bytes());
+            hash.update(encoded);
+        }
+        if !self.participant_registry.is_empty() {
+            hash.update(b"participant-registry:v1");
+            let encoded = serde_json::to_vec(&self.participant_registry)
+                .expect("validated participant registry state is serializable");
+            hash.update((encoded.len() as u64).to_be_bytes());
+            hash.update(encoded);
+        }
         hash.finalize().into()
     }
 }
@@ -998,6 +1242,10 @@ pub(crate) fn id_key(id: &[u8; 32]) -> String {
 
 pub(crate) fn admission_committee_key(venue_id: &[u8; 32], epoch: u64) -> String {
     format!("{}:{epoch:020}", hex::encode(venue_id))
+}
+
+pub(crate) fn cross_domain_committee_key(domain_id: &[u8; 32], epoch: u64) -> String {
+    format!("{}:{epoch:020}", hex::encode(domain_id))
 }
 
 pub(crate) fn admission_entry_key(batch_id: &[u8; 32], sequence: u64) -> String {
@@ -1045,5 +1293,59 @@ mod tests {
             },
         );
         assert!(state.encode().is_err());
+    }
+
+    #[test]
+    fn state_root_commits_boj_and_participant_registry_books() {
+        use qomm_defmi::central_bank_liquidity::{
+            BojParticipant, ParticipantStatus, RegisterParticipant,
+        };
+        use qomm_defmi::participant::RegistryConfiguration;
+
+        let empty = State::default().root();
+
+        let mut boj = State::default();
+        boj.boj_liquidity
+            .register_participant(
+                RegisterParticipant {
+                    operation_id: [1; 32],
+                    participant: BojParticipant {
+                        legal_entity_id: [2; 32],
+                        funds_account_id: [3; 32],
+                        jgb_account_id: [4; 32],
+                        current_account_balance_yen: 100,
+                        other_secured_exposure_yen: 0,
+                        intraday_overdraft_yen: 0,
+                        business_day: 1,
+                        repayment_deadline: 100,
+                        business_day_closed: false,
+                        sequence: 0,
+                        status: ParticipantStatus::Active,
+                    },
+                },
+                10,
+            )
+            .expect("BOJ participant");
+        assert_ne!(boj.root(), empty);
+
+        let mut participant = State::default();
+        participant
+            .participant_registry
+            .configure(RegistryConfiguration {
+                operation_id: [5; 32],
+                domain_id: [6; 32],
+                template_digest: [7; 32],
+                schema_digest: [8; 32],
+                template_version: 1,
+            })
+            .expect("participant registry");
+        assert_ne!(participant.root(), empty);
+        assert_ne!(participant.root(), boj.root());
+        assert_eq!(
+            State::decode(&participant.encode().expect("encode"))
+                .expect("decode")
+                .root(),
+            participant.root()
+        );
     }
 }

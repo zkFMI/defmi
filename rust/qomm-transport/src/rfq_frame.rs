@@ -6,6 +6,7 @@
 //! accepted here: they remain standing, encrypted node-local MPC state.
 
 use crate::mandate::{Direction, TakerExecutionMandate};
+use crate::mpc_result::fill_mask_scalar_commitment;
 use crate::wire::{share_field_elements, FieldElement, WireError, PAYLOAD_BYTES};
 use curve25519_dalek::scalar::Scalar;
 use qomm_zk::Pedersen;
@@ -102,6 +103,8 @@ impl ResidentRfqInput {
                 != mandate.limit_price_commitment
             || committed(openings.reserve_amount, &openings.reserve_blinding)
                 != mandate.maximum_amount_commitment
+            || fill_mask_scalar_commitment(openings.fill_mask.to_bytes())
+                != mandate.fill_mask_commitment
         {
             return Err("RFQ openings do not match the signed Taker mandate".into());
         }
