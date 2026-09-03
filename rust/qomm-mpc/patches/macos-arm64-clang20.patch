@@ -1,0 +1,21 @@
+MP-SPDZ 0.4.3 compatibility for Apple Clang 20 on arm64 macOS.
+
+The PRNG type depends on the protocol template parameter. Newer Clang rejects
+the unqualified member-template call instead of accepting it as an extension.
+This changes no generated code or protocol behavior; it only makes the
+standard-required `template` disambiguator explicit.
+
+--- a/Protocols/ReplicatedInput.hpp
++++ b/Protocols/ReplicatedInput.hpp
+@@ -197,10 +197,10 @@ void PrepLessInput<T>::add_mine(vector<T>& target, octetStream& dest,
+         auto& G = protocol.shared_prngs[1];
+         if (im_in)
+             for (auto& x : target)
+-                x[1] += G.get<typename T::open_type>();
++                x[1] += G.template get<typename T::open_type>();
+         else
+             for (auto& x : target)
+-                x[1] = G.get<typename T::open_type>();
++                x[1] = G.template get<typename T::open_type>();
+     }
+ }

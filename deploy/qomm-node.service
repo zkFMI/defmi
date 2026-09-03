@@ -1,0 +1,31 @@
+[Unit]
+Description=QOMM resident MPC node %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qomm
+Group=qomm
+WorkingDirectory=/opt/qomm/current
+ExecStart=/opt/qomm/current/rust/target/release/serve_node --config /etc/qomm/node-%i/node.json
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/qomm/node-%i
+ReadOnlyPaths=/etc/qomm/node-%i /opt/qomm/current
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,30 @@
+[package]
+name = "qomm-zkpi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+qomm-zk.workspace = true
+qomm-proofs.workspace = true
+curve25519-dalek.workspace = true
+bulletproofs.workspace = true
+merlin.workspace = true
+sha2.workspace = true
+serde.workspace = true
+rand_core.workspace = true
+frost-ristretto255.workspace = true
+frost-core.workspace = true
+
+[dev-dependencies]
+qomm-measure.workspace = true
+rand = "0.8"
+serde_json.workspace = true
+
+[[bin]]
+name = "qomm-zkpi-verify"
+path = "src/bin/verify.rs"
+
+[[bench]]
+name = "wire"
+harness = false

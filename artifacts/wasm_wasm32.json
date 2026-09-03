@@ -1,0 +1,11 @@
+{
+  "host": "host-a",
+  "target": "wasm32",
+  "runtime": "wasmtime 47.0.3 (5554cc1a6 2026-07-31)",
+  "repeats": 5,
+  "calibration": {"scalar_mult_us": 81.6241},
+  "scaling": [
+    {"bits": 32, "build_ms": 22.0562, "settle_ms": 9.2371, "state_ms": 0.0290, "bytes_written": 168, "state_bytes_held": 456, "per_second": 107.92},
+    {"bits": 64, "build_ms": 40.7082, "settle_ms": 15.4771, "state_ms": 0.0295, "bytes_written": 168, "state_bytes_held": 456, "per_second": 64.49}
+  ]
+}

@@ -1,0 +1,31 @@
+[Unit]
+Description=QOMM node-local proof and FROST participant %i
+After=network-online.target qomm-node@%i.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qomm
+Group=qomm
+WorkingDirectory=/opt/qomm/current
+ExecStart=/opt/qomm/current/rust/target/release/serve_proof_party --config /etc/qomm/node-%i/proof-party.json
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/qomm/node-%i
+ReadOnlyPaths=/etc/qomm/node-%i /opt/qomm/current
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

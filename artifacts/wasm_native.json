@@ -1,0 +1,11 @@
+{
+  "host": "host-a",
+  "target": "native",
+  "runtime": "x86_64-unknown-linux-gnu",
+  "repeats": 15,
+  "calibration": {"scalar_mult_us": 26.1018},
+  "scaling": [
+    {"bits": 32, "build_ms": 8.0587, "settle_ms": 4.3213, "state_ms": 0.0158, "bytes_written": 168, "state_bytes_held": 856, "per_second": 230.57},
+    {"bits": 64, "build_ms": 14.5303, "settle_ms": 7.0703, "state_ms": 0.0161, "bytes_written": 168, "state_bytes_held": 856, "per_second": 141.12}
+  ]
+}

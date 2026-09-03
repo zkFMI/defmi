@@ -1,0 +1,19 @@
+[package]
+name = "zkpi-defmi-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust application SDK for verifier-complete zkPI and DeFMI workflows"
+
+[dependencies]
+qomm-transport.workspace = true
+qomm-defmi.workspace = true
+qomm-zkpi.workspace = true
+ed25519-dalek.workspace = true
+serde.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true

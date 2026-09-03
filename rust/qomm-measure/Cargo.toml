@@ -1,0 +1,6 @@
+[package]
+name = "qomm-measure"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "One way of reporting a repeated measurement, shared by every benchmark."

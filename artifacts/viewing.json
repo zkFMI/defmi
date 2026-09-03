@@ -1,0 +1,89 @@
+{
+  "grant": {
+    "build": {
+      "max": 0.090209,
+      "mean": 0.07718293333333334,
+      "median": 0.07583400000000001,
+      "min": 0.074757,
+      "n": 15,
+      "rsd": 0.05304927246303868,
+      "sd": 0.004094498459896551
+    },
+    "check": {
+      "max": 0.121531,
+      "mean": 0.07225440000000001,
+      "median": 0.069023,
+      "min": 0.06708,
+      "n": 15,
+      "rsd": 0.1901291950084018,
+      "sd": 0.01373767090781507
+    },
+    "expired_is_refused": true,
+    "wrong_owner_is_refused": true
+  },
+  "group": "ed25519",
+  "host": "host-a",
+  "scaling": [
+    {
+      "fraction_reached": 0.2031,
+      "notes_in_pool": 64,
+      "notes_reached": 13,
+      "per_note_ms": 0.0505,
+      "pool": 64,
+      "scan": {
+        "max": 3.264769,
+        "mean": 3.2474809999999996,
+        "median": 3.246003,
+        "min": 3.2323299999999997,
+        "n": 5,
+        "rsd": 0.003603334747189576,
+        "sd": 0.01170176112813795
+      },
+      "sees_exactly_its_scope": true,
+      "serials_recovered": 0,
+      "total_planted_in_that_scope": 3745,
+      "total_seen": 3745
+    },
+    {
+      "fraction_reached": 0.2031,
+      "notes_in_pool": 256,
+      "notes_reached": 52,
+      "per_note_ms": 0.0507,
+      "pool": 256,
+      "scan": {
+        "max": 12.998897000000001,
+        "mean": 12.9793466,
+        "median": 12.9752,
+        "min": 12.970680999999999,
+        "n": 5,
+        "rsd": 0.0008888471109503909,
+        "sd": 0.011536654727433778
+      },
+      "sees_exactly_its_scope": true,
+      "serials_recovered": 0,
+      "total_planted_in_that_scope": 12207,
+      "total_seen": 12207
+    },
+    {
+      "fraction_reached": 0.2002,
+      "notes_in_pool": 1024,
+      "notes_reached": 205,
+      "per_note_ms": 0.0505,
+      "pool": 1024,
+      "scan": {
+        "max": 51.940792,
+        "mean": 51.7519402,
+        "median": 51.702545,
+        "min": 51.675208,
+        "n": 5,
+        "rsd": 0.0020902206162932116,
+        "sd": 0.10817297233921344
+      },
+      "sees_exactly_its_scope": true,
+      "serials_recovered": 0,
+      "total_planted_in_that_scope": 52126,
+      "total_seen": 52126
+    }
+  ],
+  "scopes": 4
+}

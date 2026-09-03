@@ -1,0 +1,134 @@
+{
+  "artifacts": {
+    "avalanche_l1_acceptance.json": {
+      "bytes": 3658,
+      "sha256": "98adf850d479843d114385f3575c5c93bdd123af521b2436462d5d59ca442a9c"
+    },
+    "avalanche_qomm_full_acceptance.json": {
+      "bytes": 5888,
+      "runtime": {
+        "avalanche_validators": 5,
+        "avalanchego_sha256": "33cffd0d95accb6adffdaf163ac06a747877accbc273925cd37b1624d00a30ca",
+        "avalanchego_version": "avalanchego/1.14.2 [database=v1.4.5, rpcchainvm=45, commit=6e5acf909c7a16b991142d6b3979bac5699bdb68, go=1.25.8]",
+        "embedded_libspdz_used": false,
+        "mp_spdz_commit": "9d809599ea6ce627216a389ca7d984fbb75d0cb9",
+        "mpc_execution_mode": "external-seven-process-mp-spdz",
+        "mpc_parties": 7,
+        "network_runner_sha256": "a20d3bc533afb3e1c3aafbc980194a15b71de97f8a4eba92153456e263aececb",
+        "network_runner_version": "[08-29|20:56:23.835] INFO ux/output.go:13 version response: version:1",
+        "physical_hosts": 1,
+        "qomm_rust_vm_sha256": "3c38805ebbcdb59ba506cad0b607f6b86f8c6cddbada2349f47ae41018c42db6",
+        "rpcchainvm_protocol": 45,
+        "validator_fast_state_sync": {
+          "completed": true,
+          "height": 54,
+          "install_mode": "atomic-static",
+          "merkle_chunk_transport": "rpcchainvm-app-request-response",
+          "node": "node3",
+          "summary_id": "2APhSMp3caJip9HXJjD2ttGPkTezA4TPSo3aHpw9Qyj8oa47Gc"
+        },
+        "validator_restart": {
+          "database_reset": true,
+          "elapsed_seconds": 1,
+          "node": "node3",
+          "recovered": true,
+          "removed_database_entries": 9,
+          "roots_verified": 5
+        }
+      },
+      "sha256": "b02d236098dd065cdc6fc392cddd019bae413964d93a01cfc904f77db81130df"
+    },
+    "ccp_rust.json": {
+      "bytes": 2921,
+      "host": "host-c",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "sha256": "1653d0329055eae2651fe9e0d424baca671773e5017a52e85fac16a418d6857a"
+    },
+    "deccp.json": {
+      "bytes": 3370,
+      "host": "host-a",
+      "sha256": "cfd908064ec0f0a846401235fa52a1039149e2c22b530f7a27e84441b84cb85e"
+    },
+    "defmi.json": {
+      "bytes": 51281,
+      "host": "host-c",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "sha256": "59116c5cf0b5e4b5c7591bb74c1649721ab592478408e2b55e23fa2052e4307b"
+    },
+    "note_dvp_rust.json": {
+      "bytes": 2079,
+      "host": "host-c",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "sha256": "703b05f2e36db34dc33ec03e15d3f3112fbf01516488fa56b9a13472ab9e9909"
+    },
+    "pvp.json": {
+      "bytes": 918,
+      "host": "host-a",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "sha256": "1da4b2866014630d4e55e07557cd510711aeca3fd09bb266d5ea56429f69246d"
+    },
+    "reconcile.json": {
+      "bytes": 6633,
+      "host": "host-a",
+      "sha256": "1945ee1fc359d5dcde506f467968c4e44279be4f4f0c2902c044c61367d3f036"
+    },
+    "reconcile_rust.json": {
+      "bytes": 4506,
+      "host": "host-c",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "sha256": "9c8a33c85b9b96a793facf0a146a3c5431c27329f41ada6449f46d233e4bd94c"
+    },
+    "rings.json": {
+      "bytes": 5624,
+      "host": "host-a",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "sha256": "bb397f6d796df3ad5135f7db6f4abb3666c764805c58c26e2a292f44943dfb80"
+    },
+    "rust_bench.json": {
+      "bytes": 748,
+      "host": "host-a",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "sha256": "1003b3d7a38fae687bc8c9ff2f264a029ceea4780d73e98302f6a5c60dfaf0d5"
+    },
+    "same_chain.json": {
+      "bytes": 11094,
+      "host": "host-a",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "sha256": "d59ff209251ab42f764ac83c01fadb8924b792e06cd1548434a0c52822290e26"
+    },
+    "solana_cu.json": {
+      "bytes": 3334,
+      "sha256": "e2b8c67a9c9a4106f922ecd6b82e319994936115876f3f8af0cdf8ad84c87a68"
+    },
+    "stylus_gas.json": {
+      "bytes": 4479,
+      "sha256": "1d9c285b0014686fae0aadd780747f5da8500a8e2cecd7321810ba6a66314f88"
+    },
+    "vetting.json": {
+      "bytes": 2089,
+      "host": "host-c",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "sha256": "764ec2b21df9ee4062d5a0adc5158f455b2734b93f59d66d04ebd2c983166956"
+    },
+    "viewing.json": {
+      "bytes": 2154,
+      "host": "host-a",
+      "sha256": "683b861b43bee8f5aa3952ea559ab37fe51927cb23aea111f7cd4c605f6a3635"
+    },
+    "wasm_native.json": {
+      "bytes": 465,
+      "host": "host-a",
+      "runtime": "x86_64-unknown-linux-gnu",
+      "sha256": "db64d5e4886387417c4eca5db1f6f4e8d59a97ebf30dbc78785c1f24f85ea426",
+      "target": "native"
+    },
+    "wasm_wasm32.json": {
+      "bytes": 479,
+      "host": "host-a",
+      "runtime": "wasmtime 47.0.3 (5554cc1a6 2026-07-31)",
+      "sha256": "1c6720e4ff7de3169bae684f97cf5877eb60a597fa53d32ec7a67b9359492f0f",
+      "target": "wasm32"
+    }
+  },
+  "commit": null
+}

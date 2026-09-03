@@ -1,0 +1,466 @@
+Keep going when a party lies, instead of naming it and stopping.
+
+Against MP-SPDZ 0.4.3 (6 Jul 2026). One new header and two changed ones.
+Enabled with `--options robust`; without it `atlas-party.x` is unchanged.
+
+What this is for
+----------------
+`locate-inconsistent-shares.patch` made the engine name the party that sent a
+wrong share. It still stopped. `ACCOUNTABILITY.md` calls that rung 4 and is
+explicit that rung 5 --- the honest parties get the output whatever the corrupt
+ones do --- needs more than a decoder bolted onto a reconstruction.
+
+It needs less than Goyal-Song-Zhu, though, and reading the engine says why.
+
+Where the shortcut comes from
+-----------------------------
+A product before degree reduction is a degree-`2t` codeword over `n` points, and
+Reed-Solomon corrects `e` errors iff `n - d >= 2e + 1`. Correcting `t` of them
+therefore needs
+
+    n - 2t >= 2t + 1,  i.e.  n >= 4t + 1.
+
+At `n = 7, T = 2` the capacity is 1 and this deployment is exactly one short. At
+`n = 9` it is 2. That is the entire reason for nine nodes.
+
+`t < n/3` is the line where segmenting, checkpoints and player elimination
+become necessary. `t < n/4` is the line where a decoder is enough.
+
+Why it lands on ATLAS and not on Shamir
+---------------------------------------
+`Protocols/Shamir.hpp` is GRR re-sharing: `prepare_mul` does
+`resharing->add_mine(x * y * rec_factor)` and `finalize` sums the received
+degree-`t` shares. There is **no degree-`2t` opening anywhere in it**, so there
+is nothing for a decoder to correct, and none of this applies to
+`malicious-shamir-party.x`.
+
+`Protocols/Atlas.hpp` is Damgard-Nielsen and does: `get_double_sharing()`
+returns `{[r]_2t, [r]_t}`, `prepare()` sends `xy + r` to a rotating king, and
+`exchange()` has the king interpolate from `2t+1` shares and re-share at
+degree `t`.
+
+What changes
+------------
+**The king goes.** It is where "consistent but wrong" lives: it reconstructs
+from `2t+1` shares and then re-shares, and a re-sharing of the wrong value is a
+perfectly consistent sharing that no amount of error correction on a codeword
+will catch.
+
+It does not have to be there. `r` is a **fresh** degree-`2t` random, so the
+masked product is not secret and can go to everybody. Then every party decodes
+the whole codeword for itself with Berlekamp-Welch and computes
+`[xy]_t = e - [r]_t` locally, where `e` is public. Nobody's word is taken, and
+there is no re-sharing step at all --- so there is nothing to segment, nothing
+to check-point, and nobody to eliminate.
+
+`Protocols/RobustDecode.h` is the decoder. It differs from
+`MaliciousShamirMC::locate` in being on the common path: the honest case is one
+interpolation and a comparison, and the linear system is built only once a share
+is known to disagree. It returns the secret as well as the culprits, because a
+robust protocol needs both halves of the answer.
+
+The constructor refuses to start below `n >= 4t+1` rather than running with a
+capacity smaller than the corruption threshold. A decoder that silently corrects
+fewer liars than the protocol tolerates is the worst way for this to fail.
+
+What it does NOT make robust
+----------------------------
+Only the degree-reduction step. Named honestly:
+
+  * The **double sharings** come from `Shamir<T>::get_randoms`, which is
+    hyper-invertible matrices without a malicious check in this build. A
+    corrupt contributor can make `[r]_t` and `[r]_2t` inconsistent with each
+    other, and no decode on either one alone sees it.
+  * The **output opening** is `IndirectShamirMC`, unchanged.
+  * The **inputs** are whatever the caller shared. In QOMM they are bound by
+    the dealer's per-share Pedersen commitments; in this benchmark they are not.
+
+The first of those is preprocessing, and preprocessing is allowed to abort: it
+consumes no inputs, so a failed run leaks nothing and denies nobody an outcome.
+It is re-run, and a node that keeps failing it is removed between auctions,
+which is a governance action rather than a protocol one. Guaranteed output
+delivery is only needed once real inputs are in.
+
+Measured on host-a, n=9, T=2, 128-bit, single-phase
+---------------------------------------------------
+Behaviour, 2000 multiplications, `QOMM_CORRUPT_PLAYER` making the named parties
+send a wrong share of every masked product (`artifacts/robust_atlas.json`):
+
+    honest              answer correct, nobody named,      8 rounds
+    corrupt {0}         answer CORRECT, named [0],         8 rounds
+    corrupt {0,1}       answer CORRECT, named [0,1],       8 rounds
+    corrupt {8}         answer CORRECT, named [8],         8 rounds
+    corrupt {0,1,2}     refuses: "more than 2 parties sent wrong shares of a
+                        masked product, which is beyond the decoding capacity
+                        of a degree-4 sharing over 9 points"
+    n = 7               refuses to start: "needs n >= 4t+1 ... which corrects
+                        only 1"
+
+The first four lines are the whole point: the protocol did not stop, and the
+answer was right.
+
+Cost, as a slope between 2000 and 22000 multiplications:
+
+    ATLAS with a king, n=9      5.333 elements per party per multiplication
+    this, n=9                  18.222                                  3.42x
+    malicious Shamir + naming, n=7
+                               64.236                                  0.28x
+    rounds  this 8 -> 12,  king 9 -> 13,  malicious Shamir 11 -> 23
+
+So against the engine actually deployed it is **3.5x cheaper per party and 2.7x
+cheaper globally, with fewer rounds**, and it does not stop.
+
+The prediction was 11.3 and it was 1.6x low
+-------------------------------------------
+`artifacts/robust_by_decoding_prediction.json`, written before any of this ran,
+modelled the swap as "remove the king's 2 elements, add the all-to-all's `n-1`".
+Measured, the swap costs 12.889 rather than 6. The model was fitted to global
+traffic on the sending side only and the discrepancy has **not been isolated**,
+so it is a bad model and not a finding about the protocol. What survives is the
+measurement.
+
+A native verification model of the same decode covers the capacity boundaries
+in the QOMM audit tests.
+
+--- /dev/null
++++ Protocols/RobustDecode.h
+@@ -0,0 +1,191 @@
++/*
++ * RobustDecode.h
++ *
++ * Berlekamp-Welch over a Shamir codeword: recover the secret AND name the
++ * senders whose shares do not lie on it.
++ *
++ * `MaliciousShamirMC::locate` answers only the second half of that question,
++ * because it is called after a consistency check has already failed and the
++ * caller is about to throw. A robust protocol needs both halves and needs them
++ * on the common path, so the honest case is a single interpolation and the
++ * linear system is only built once a share is known to disagree.
++ */
++
++#ifndef PROTOCOLS_ROBUSTDECODE_H_
++#define PROTOCOLS_ROBUSTDECODE_H_
++
++#include <vector>
++using namespace std;
++
++/// Lagrange interpolation at `at` through the `degree + 1` positions in `idx`.
++template<class F>
++F rd_interpolate(const vector<F>& shares, const vector<F>& x,
++        const vector<int>& idx, int degree, const F& at)
++{
++    F acc = F(0);
++    for (int a = 0; a <= degree; a++)
++    {
++        F term = shares[idx[a]];
++        for (int b = 0; b <= degree; b++)
++        {
++            if (b == a)
++                continue;
++            term *= (at - x[idx[b]]) / (x[idx[a]] - x[idx[b]]);
++        }
++        acc += term;
++    }
++    return acc;
++}
++
++/// Decode `shares` as an RS[n, degree+1] codeword evaluated at 1..n.
++///
++/// On success `value` is the secret --- the polynomial at zero --- `culprits`
++/// holds the positions that disagree with it, and the return is true. The
++/// return is false when more than floor((n - degree - 1) / 2) shares are wrong,
++/// which is the point past which no algorithm can tell one candidate codeword
++/// from another. Refusing there is correct behaviour: naming somebody past
++/// capacity would be worse than saying nothing.
++template<class F>
++bool robust_decode(const vector<F>& shares, int degree, F& value,
++        vector<int>& culprits)
++{
++    int n = shares.size();
++    int capacity = (n - degree - 1) / 2;
++    culprits.clear();
++    if (n < degree + 1)
++        return false;
++
++    vector<F> x(n);
++    for (int i = 0; i < n; i++)
++        x[i] = F(i + 1);              // Shamir evaluates player i at i+1
++
++    // The honest path, which is almost every path: interpolate through the
++    // first degree+1 and check that the rest lie on it. One interpolation.
++    {
++        vector<int> idx(degree + 1);
++        for (int a = 0; a <= degree; a++)
++            idx[a] = a;
++        bool agrees = true;
++        for (int i = degree + 1; i < n and agrees; i++)
++            if (rd_interpolate(shares, x, idx, degree, x[i]) != shares[i])
++                agrees = false;
++        if (agrees)
++        {
++            value = rd_interpolate(shares, x, idx, degree, F(0));
++            return true;
++        }
++    }
++
++    if (capacity < 1)
++        return false;
++
++    // Berlekamp-Welch. Solve for Q of degree <= degree+e and monic E of degree
++    // e with Q(x_i) = y_i E(x_i); E then vanishes on the wrong positions. `e`
++    // is tried upwards so one liar costs the smallest system that can find one.
++    for (int e = 1; e <= capacity; e++)
++    {
++        int cols = (degree + e + 1) + e;
++        if (cols > n)
++            break;
++        vector<vector<F>> m(n, vector<F>(cols + 1));
++        for (int i = 0; i < n; i++)
++        {
++            F xk = F(1);
++            for (int k = 0; k < degree + e + 1; k++)
++            {
++                m[i][k] = xk;
++                xk *= x[i];
++            }
++            F xp = F(1);
++            for (int k = 0; k < e; k++)
++            {
++                m[i][degree + e + 1 + k] = F(0) - shares[i] * xp;
++                xp *= x[i];
++            }
++            m[i][cols] = shares[i] * xp;          // xp is now x^e
++        }
++
++        // reduced row echelon form; free variables take zero, which is a
++        // particular solution and is all that is needed
++        vector<int> pivot;
++        int r = 0;
++        for (int c = 0; c < cols and r < n; c++)
++        {
++            int p = -1;
++            for (int i = r; i < n; i++)
++                if (not m[i][c].is_zero())
++                {
++                    p = i;
++                    break;
++                }
++            if (p < 0)
++                continue;
++            swap(m[r], m[p]);
++            F scale = m[r][c].invert();
++            for (int k = c; k <= cols; k++)
++                m[r][k] *= scale;
++            for (int i = 0; i < n; i++)
++                if (i != r and not m[i][c].is_zero())
++                {
++                    F f = m[i][c];
++                    for (int k = c; k <= cols; k++)
++                        m[i][k] -= f * m[r][k];
++                }
++            pivot.push_back(c);
++            r++;
++        }
++        bool consistent = true;
++        for (int i = r; i < n and consistent; i++)
++        {
++            bool all_zero = true;
++            for (int c = 0; c < cols; c++)
++                if (not m[i][c].is_zero())
++                    all_zero = false;
++            if (all_zero and not m[i][cols].is_zero())
++                consistent = false;
++        }
++        if (not consistent)
++            continue;
++        vector<F> sol(cols, F(0));
++        for (size_t i = 0; i < pivot.size(); i++)
++            sol[pivot[i]] = m[i][cols];
++
++        // the positions E does not vanish on are the ones worth interpolating
++        // from
++        vector<int> good;
++        for (int i = 0; i < n; i++)
++        {
++            F ev = F(0), xp = F(1);
++            for (int k = 0; k < e; k++)
++            {
++                ev += sol[degree + e + 1 + k] * xp;
++                xp *= x[i];
++            }
++            ev += xp;                             // the monic top term
++            if (not ev.is_zero())
++                good.push_back(i);
++        }
++        if ((int) good.size() < degree + 1)
++            continue;
++
++        // Interpolate from degree+1 trusted positions and see who disagrees.
++        // Reading the roots of E instead would be wrong: when e overshoots, E
++        // picks up roots that belong to nobody, and a share that does lie on
++        // the polynomial is not evidence against its sender.
++        vector<int> idx(good.begin(), good.begin() + degree + 1);
++        vector<int> disagree;
++        for (int i = 0; i < n; i++)
++            if (rd_interpolate(shares, x, idx, degree, x[i]) != shares[i])
++                disagree.push_back(i);
++        if ((int) disagree.size() <= capacity)
++        {
++            culprits = disagree;
++            value = rd_interpolate(shares, x, idx, degree, F(0));
++            return true;
++        }
++    }
++    return false;
++}
++
++#endif /* PROTOCOLS_ROBUSTDECODE_H_ */
+--- /tmp/atlas.h.bak	2026-08-22 03:36:30.116485977 +0000
++++ Protocols/Atlas.h	2026-08-22 03:39:41.552591270 +0000
+@@ -7,6 +7,8 @@
+ #define PROTOCOLS_ATLAS_H_
+
+ #include "Replicated.h"
++#include "RobustDecode.h"
++#include "Processor/OnlineOptions.h"
+
+ #include "Tools/Bundle.h"
+
+@@ -26,6 +28,18 @@
+
+     vector<typename T::open_type> reconstruction;
+
++    /// --options robust. No king: the masked product goes to everybody and
++    /// every party decodes it for itself, so nobody has to be believed.
++    bool robust;
++    PointerVector<typename T::open_type> opened;
++
++    /// QOMM_CORRUPT_PLAYER=<i> makes party i send a wrong share of every
++    /// masked product. One environment variable read by every party, so a
++    /// single value corrupts exactly one of them and the harness does not have
++    /// to give each party its own arguments. Test scaffolding, and it is
++    /// deliberately loud in the log about being present.
++    bool corrupt_me;
++
+     int next_king, base_king;
+
+     ShamirInput<T> resharing;
+@@ -44,6 +58,34 @@
+             oss2(P), next_king(0), base_king(0), resharing(0, P), P(P)
+     {
+         this->buffer_size = 0;
++        robust = OnlineOptions::singleton.has_option("robust");
++        corrupt_me = false;
++        const char* who = getenv("QOMM_CORRUPT_PLAYER");
++        if (who != 0)
++            for (const char* c = who; *c; c++)
++                if ((c == who or c[-1] == ',') and atoi(c) == P.my_num()
++                        and *c >= '0' and *c <= '9')
++                    corrupt_me = true;
++        if (corrupt_me)
++            cerr << "QOMM_CORRUPT: player " << P.my_num()
++                    << " will send wrong shares of every masked product"
++                    << endl;
++        if (robust)
++        {
++            // A product before degree reduction is a degree-2t codeword, and
++            // Reed-Solomon corrects e errors iff n - d >= 2e + 1. Correcting t
++            // of them needs n >= 4t + 1. Below that the decoder corrects fewer
++            // liars than the protocol tolerates while looking like it works,
++            // which is the worst way for this to fail. So it refuses to start.
++            int t = ShamirMachine::s().threshold;
++            int n = P.num_players();
++            if (n < 4 * t + 1)
++                throw runtime_error("robust ATLAS needs n >= 4t+1 to correct t "
++                        "wrong shares of a degree-2t product; got n=" +
++                        to_string(n) + ", t=" + to_string(t) +
++                        ", which corrects only " +
++                        to_string((n - 2 * t - 1) / 2));
++        }
+     }
+
+     ~Atlas();
+--- /tmp/atlas.hpp.bak	2026-08-22 03:36:30.118485999 +0000
++++ Protocols/Atlas.hpp	2026-08-22 03:38:10.690591435 +0000
+@@ -46,6 +46,7 @@
+     oss.reset();
+     oss2.reset();
+     masks.clear();
++    opened.clear();
+     base_king = next_king;
+     this->buffer_size = BaseMachine::batch_size<T>(DATA_TRIPLE,
+             this->buffer_size);
+@@ -61,8 +62,25 @@
+ void Atlas<T>::prepare(const typename T::open_type& product)
+ {
+     auto r = get_double_sharing();
+-    (product + r[0]).pack(oss2[next_king]);
+-    next_king = (next_king + 1) % P.num_players();
++    if (robust)
++    {
++        // r[0] is a FRESH degree-2t random, so the masked product is not
++        // secret and does not have to be entrusted to one party. Sending it to
++        // everybody is what removes the king --- and the king is where
++        // "consistent but wrong" lives, because it interpolates from 2t+1
++        // shares and then re-shares, and a re-sharing of the wrong value is
++        // perfectly consistent.
++        auto masked = product + r[0];
++        if (corrupt_me)
++            masked += typename T::open_type(0x5eed);
++        for (int j = 0; j < P.num_players(); j++)
++            masked.pack(oss2[j]);
++    }
++    else
++    {
++        (product + r[0]).pack(oss2[next_king]);
++        next_king = (next_king + 1) % P.num_players();
++    }
+     masks.push_back(r[1]);
+ }
+
+@@ -74,6 +92,34 @@
+     oss.mine = oss2.mine;
+
+     int t = ShamirMachine::s().threshold;
++
++    if (robust)
++    {
++        // Every party holds the whole codeword, so every party decodes it.
++        // There is no re-sharing step at all: e is public and [xy]_t = e -
++        // [r]_t is local arithmetic.
++        int n = P.num_players();
++        size_t queued = masks.size();
++        vector<typename T::open_type> shares(n);
++        for (size_t k = 0; k < queued; k++)
++        {
++            for (int i = 0; i < n; i++)
++                shares[i] = oss[i].template get<T>();
++            typename T::open_type e;
++            vector<int> culprits;
++            if (not robust_decode(shares, 2 * t, e, culprits))
++                throw runtime_error("more than " + to_string((n - 2 * t - 1) / 2)
++                        + " parties sent wrong shares of a masked product, "
++                          "which is beyond the decoding capacity of a degree-"
++                        + to_string(2 * t) + " sharing over " + to_string(n)
++                        + " points");
++            for (size_t c = 0; c < culprits.size(); c++)
++                cerr << "ROBUST_ATLAS_CORRECTED player " << culprits[c] << endl;
++            opened.push_back(e);
++        }
++        return;
++    }
++
+     if (reconstruction.empty())
+         for (int i = 0; i < 2 * t + 1; i++)
+             reconstruction.push_back(Shamir<T>::get_rec_factor(i, 2 * t + 1));
+@@ -103,6 +149,10 @@
+ template<class T>
+ T Atlas<T>::finalize_mul(int)
+ {
++    if (robust)
++        // e is a public constant, whose Shamir sharing is itself at every
++        // party, so this is one field subtraction and no communication.
++        return T(opened.next()) - masks.next();
+     T res = resharing.finalize(base_king) - masks.next();
+     base_king = (base_king + 1) % P.num_players();
+     return res;

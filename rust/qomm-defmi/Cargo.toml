@@ -1,0 +1,88 @@
+[package]
+name = "qomm-defmi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Only for building the settlement verifier for WebAssembly, and only to measure
+# it. bulletproofs depends on clear_on_drop, whose build script compiles C, and
+# there is no wasi sysroot for clang here. Its `no_cc` escape avoids that, but on
+# stable the replacement barrier is the crate's own admitted best effort ---
+# "pretend the pointer is sent to a thread, and hope this is enough to confuse
+# the optimizer" --- so the guarantee that secret memory is really cleared is
+# weaker than the default build's. Kept behind a feature so the normal build
+# cannot pick it up through Cargo's feature unification without asking.
+wasm-measurement = ["clear_on_drop"]
+
+# The settlement verifier is built for WebAssembly and `avalanche` is a TLS RPC
+# client that cannot be: `openssl-sys` has no wasm32 target, so asking for it
+# fails the cross build with a message about a missing OpenSSL directory. The
+# verifier's own first lines say it touches nothing outside the sandbox, so it
+# has no business compiling a network client to get there. `facility` goes with
+# it: it is the durable store the client talks to, it binds SQLite through FFI
+# and reads Unix paths, and `std::os::unix` does not exist on wasm32 either. On
+# by default, because every host build wants both.
+default = ["avalanche"]
+avalanche = ["dep:openssl"]
+
+[dependencies]
+clear_on_drop = { version = "0.2.5", features = ["no_cc"], optional = true }
+qomm-zk.workspace = true
+qomm-zkpi.workspace = true
+qomm-proofs.workspace = true
+qomm-transport.workspace = true
+curve25519-dalek.workspace = true
+bulletproofs.workspace = true
+merlin.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+libc.workspace = true
+openssl = { workspace = true, optional = true }
+
+[dev-dependencies]
+qomm-zkpi.workspace = true
+rand = "0.8"
+qomm-measure.workspace = true
+merlin.workspace = true
+ed25519-dalek.workspace = true
+bulletproofs.workspace = true
+tempfile = "3"
+
+[[bench]]
+name = "settle"
+harness = false
+
+[[bench]]
+name = "pvp"
+harness = false
+
+[[bench]]
+name = "same_chain"
+harness = false
+
+[[bench]]
+name = "rings"
+harness = false
+
+[[bench]]
+name = "ccp"
+harness = false
+
+[[bench]]
+name = "reconcile"
+harness = false
+
+[[bench]]
+name = "note_dvp"
+harness = false
+
+[[bench]]
+name = "vetting"
+harness = false

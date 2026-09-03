@@ -1,0 +1,14 @@
+{
+  "host": "host-c",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "bits": 32,
+  "note": "settle includes a fresh build, since settling consumes the package and the ledger",
+  "rows": [
+    {"ring": 2, "build": {"n": 5, "mean": 31.992883, "sd": 0.251009, "median": 31.939166, "min": 31.790333, "max": 32.417042, "rsd": 0.007846}, "settle_including_build": {"n": 5, "mean": 46.544392, "sd": 2.053746, "median": 46.167250, "min": 45.078834, "max": 50.096125, "rsd": 0.044124}, "package_bytes": 4532},
+    {"ring": 4, "build": {"n": 5, "mean": 32.669133, "sd": 0.112549, "median": 32.645125, "min": 32.545750, "max": 32.847416, "rsd": 0.003445}, "settle_including_build": {"n": 5, "mean": 48.516684, "sd": 1.690981, "median": 48.066792, "min": 47.256334, "max": 51.434334, "rsd": 0.034854}, "package_bytes": 4996},
+    {"ring": 8, "build": {"n": 5, "mean": 37.565783, "sd": 1.921914, "median": 38.628583, "min": 34.331750, "max": 38.808875, "rsd": 0.051161}, "settle_including_build": {"n": 5, "mean": 51.852125, "sd": 0.359260, "median": 51.866958, "min": 51.493666, "max": 52.315750, "rsd": 0.006929}, "package_bytes": 5476},
+    {"ring": 16, "build": {"n": 5, "mean": 36.158425, "sd": 0.356248, "median": 36.026459, "min": 35.751583, "max": 36.553542, "rsd": 0.009852}, "settle_including_build": {"n": 5, "mean": 58.363092, "sd": 0.553116, "median": 58.192292, "min": 57.782250, "max": 59.261542, "rsd": 0.009477}, "package_bytes": 5988},
+    {"ring": 32, "build": {"n": 5, "mean": 39.387867, "sd": 0.261983, "median": 39.342625, "min": 39.031625, "max": 39.698458, "rsd": 0.006651}, "settle_including_build": {"n": 5, "mean": 71.204800, "sd": 0.829880, "median": 70.762667, "min": 70.573125, "max": 72.489958, "rsd": 0.011655}, "package_bytes": 6564},
+    {"ring": 64, "build": {"n": 5, "mean": 45.764050, "sd": 0.423855, "median": 45.666750, "min": 45.318000, "max": 46.414458, "rsd": 0.009262}, "settle_including_build": {"n": 5, "mean": 95.200808, "sd": 0.337965, "median": 95.159250, "min": 94.835375, "max": 95.722042, "rsd": 0.003550}, "package_bytes": 7268}
+  ]
+}

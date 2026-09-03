@@ -1,0 +1,14 @@
+{
+  "host": "host-c",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "repeats": 200,
+  "what": "proving a handle was vetted, one-out-of-many over its group",
+  "rows": [
+    {"crowd": 4, "prove_ms": {"n": 200, "mean": 0.810642, "sd": 0.045957, "median": 0.799605, "min": 0.765042, "max": 1.171625, "rsd": 0.056693}, "verify_ms": {"n": 200, "mean": 0.657593, "sd": 0.038097, "median": 0.649895, "min": 0.624291, "max": 1.018791, "rsd": 0.057935}, "proof_bytes": 556, "ring_bytes": 480},
+    {"crowd": 8, "prove_ms": {"n": 200, "mean": 1.250228, "sd": 0.050158, "median": 1.238333, "min": 1.188583, "max": 1.529250, "rsd": 0.040119}, "verify_ms": {"n": 200, "mean": 0.963459, "sd": 0.049330, "median": 0.952458, "min": 0.912875, "max": 1.374375, "rsd": 0.051201}, "proof_bytes": 780, "ring_bytes": 704},
+    {"crowd": 16, "prove_ms": {"n": 200, "mean": 1.881385, "sd": 0.069948, "median": 1.861000, "min": 1.787167, "max": 2.261292, "rsd": 0.037179}, "verify_ms": {"n": 200, "mean": 1.329893, "sd": 0.073429, "median": 1.307875, "min": 1.254292, "max": 1.769792, "rsd": 0.055214}, "proof_bytes": 1004, "ring_bytes": 928},
+    {"crowd": 32, "prove_ms": {"n": 200, "mean": 2.912227, "sd": 0.091963, "median": 2.888521, "min": 2.762292, "max": 3.270542, "rsd": 0.031578}, "verify_ms": {"n": 200, "mean": 1.815464, "sd": 0.073788, "median": 1.792687, "min": 1.711375, "max": 2.166083, "rsd": 0.040644}, "proof_bytes": 1228, "ring_bytes": 1152},
+    {"crowd": 64, "prove_ms": {"n": 200, "mean": 4.901099, "sd": 0.372807, "median": 4.854688, "min": 4.680625, "max": 9.638667, "rsd": 0.076066}, "verify_ms": {"n": 200, "mean": 2.612286, "sd": 0.238256, "median": 2.555125, "min": 2.418166, "max": 4.878917, "rsd": 0.091206}, "proof_bytes": 1452, "ring_bytes": 1376},
+    {"crowd": 128, "prove_ms": {"n": 200, "mean": 9.018466, "sd": 0.556670, "median": 8.876980, "min": 8.610875, "max": 13.228542, "rsd": 0.061726}, "verify_ms": {"n": 200, "mean": 3.839370, "sd": 0.386611, "median": 3.795500, "min": 3.621167, "max": 8.731833, "rsd": 0.100697}, "proof_bytes": 1676, "ring_bytes": 1600}
+  ]
+}

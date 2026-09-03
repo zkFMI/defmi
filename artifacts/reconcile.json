@@ -1,0 +1,316 @@
+{
+  "group": "ed25519",
+  "host": "host-a",
+  "locating": [
+    {
+      "found": [
+        5
+      ],
+      "ms": 1.6,
+      "narrowest_range": 1,
+      "per_position_register": {
+        "disclosed": 0,
+        "found": [
+          5
+        ],
+        "ms": 1.1
+      },
+      "planted": 5,
+      "positions": 16,
+      "sub_range_proofs": 9,
+      "subtotals_made_public": 9,
+      "two_log_n_plus_one": 9
+    },
+    {
+      "found": [
+        21
+      ],
+      "ms": 2.3,
+      "narrowest_range": 1,
+      "per_position_register": {
+        "disclosed": 0,
+        "found": [
+          21
+        ],
+        "ms": 4.2
+      },
+      "planted": 21,
+      "positions": 64,
+      "sub_range_proofs": 13,
+      "subtotals_made_public": 13,
+      "two_log_n_plus_one": 13
+    },
+    {
+      "found": [
+        85
+      ],
+      "ms": 3.1,
+      "narrowest_range": 1,
+      "per_position_register": {
+        "disclosed": 0,
+        "found": [
+          85
+        ],
+        "ms": 16.2
+      },
+      "planted": 85,
+      "positions": 256,
+      "sub_range_proofs": 17,
+      "subtotals_made_public": 17,
+      "two_log_n_plus_one": 17
+    },
+    {
+      "found": [
+        341
+      ],
+      "ms": 4.6,
+      "narrowest_range": 1,
+      "per_position_register": {
+        "disclosed": 0,
+        "found": [
+          341
+        ],
+        "ms": 63.6
+      },
+      "planted": 341,
+      "positions": 1024,
+      "sub_range_proofs": 21,
+      "subtotals_made_public": 21,
+      "two_log_n_plus_one": 21
+    },
+    {
+      "found": [
+        1365
+      ],
+      "ms": 8.0,
+      "narrowest_range": 1,
+      "per_position_register": {
+        "disclosed": 0,
+        "found": [
+          1365
+        ],
+        "ms": 251.1
+      },
+      "planted": 1365,
+      "positions": 4096,
+      "sub_range_proofs": 25,
+      "subtotals_made_public": 25,
+      "two_log_n_plus_one": 25
+    }
+  ],
+  "note": "balances carry an asset tag, which is what a real one does",
+  "quorum": [
+    {
+      "assemble": {
+        "max": 4.517,
+        "mean": 4.507107777777778,
+        "median": 4.509109,
+        "min": 4.489835,
+        "n": 9,
+        "rsd": 0.001959805178688445,
+        "sd": 0.008833053163795858
+      },
+      "of": 7,
+      "positions": 16,
+      "quorum": [
+        1,
+        2,
+        3
+      ],
+      "verified": true
+    },
+    {
+      "assemble": {
+        "max": 4.512111,
+        "mean": 4.501149888888889,
+        "median": 4.504023,
+        "min": 4.4864939999999995,
+        "n": 9,
+        "rsd": 0.0022454765127760787,
+        "sd": 0.010107226355984655
+      },
+      "of": 7,
+      "positions": 64,
+      "quorum": [
+        1,
+        2,
+        3
+      ],
+      "verified": true
+    },
+    {
+      "assemble": {
+        "max": 4.543172,
+        "mean": 4.516015222222222,
+        "median": 4.510408,
+        "min": 4.500694,
+        "n": 9,
+        "rsd": 0.0032046369486040784,
+        "sd": 0.014472189241591792
+      },
+      "of": 7,
+      "positions": 256,
+      "quorum": [
+        1,
+        2,
+        3
+      ],
+      "verified": true
+    },
+    {
+      "assemble": {
+        "max": 4.543876,
+        "mean": 4.510378888888889,
+        "median": 4.508108,
+        "min": 4.478426,
+        "n": 9,
+        "rsd": 0.004128520682027324,
+        "sd": 0.0186211925265572
+      },
+      "of": 7,
+      "positions": 1024,
+      "quorum": [
+        1,
+        2,
+        3
+      ],
+      "verified": true
+    },
+    {
+      "assemble": {
+        "max": 4.526470000000001,
+        "mean": 4.505165333333333,
+        "median": 4.503069999999999,
+        "min": 4.485431,
+        "n": 9,
+        "rsd": 0.003086782272582496,
+        "sd": 0.013906464485986543
+      },
+      "of": 7,
+      "positions": 4096,
+      "quorum": [
+        1,
+        2,
+        3
+      ],
+      "verified": true
+    }
+  ],
+  "scaling": [
+    {
+      "check": {
+        "max": 0.090604,
+        "mean": 0.07991055555555555,
+        "median": 0.07788099999999999,
+        "min": 0.077321,
+        "n": 9,
+        "rsd": 0.05789632008033439,
+        "sd": 0.004626527102241788
+      },
+      "positions": 16,
+      "prove": {
+        "max": 0.101337,
+        "mean": 0.09357766666666667,
+        "median": 0.092643,
+        "min": 0.091846,
+        "n": 9,
+        "rsd": 0.031364102343603165,
+        "sd": 0.002934979514408916
+      },
+      "verified": true,
+      "wire_bytes": 96
+    },
+    {
+      "check": {
+        "max": 0.094132,
+        "mean": 0.08590911111111112,
+        "median": 0.08377699999999999,
+        "min": 0.08360300000000001,
+        "n": 9,
+        "rsd": 0.04076877335053947,
+        "sd": 0.003502409079635201
+      },
+      "positions": 64,
+      "prove": {
+        "max": 0.11108,
+        "mean": 0.101846,
+        "median": 0.10067,
+        "min": 0.100439,
+        "n": 9,
+        "rsd": 0.034067684581003364,
+        "sd": 0.0034696574038368686
+      },
+      "verified": true,
+      "wire_bytes": 96
+    },
+    {
+      "check": {
+        "max": 0.12024299999999999,
+        "mean": 0.11380977777777776,
+        "median": 0.11347,
+        "min": 0.110233,
+        "n": 9,
+        "rsd": 0.028681350453298005,
+        "sd": 0.0032642181214564115
+      },
+      "positions": 256,
+      "prove": {
+        "max": 0.13752099999999998,
+        "mean": 0.13190977777777776,
+        "median": 0.13124100000000002,
+        "min": 0.130839,
+        "n": 9,
+        "rsd": 0.016156841249917793,
+        "sd": 0.002131245338867489
+      },
+      "verified": true,
+      "wire_bytes": 96
+    },
+    {
+      "check": {
+        "max": 0.229128,
+        "mean": 0.22051822222222223,
+        "median": 0.218777,
+        "min": 0.217764,
+        "n": 9,
+        "rsd": 0.017963301212221124,
+        "sd": 0.003961235248561292
+      },
+      "positions": 1024,
+      "prove": {
+        "max": 0.26208200000000004,
+        "mean": 0.25579488888888885,
+        "median": 0.25398800000000005,
+        "min": 0.252316,
+        "n": 9,
+        "rsd": 0.01377379098123279,
+        "sd": 0.003523265333623221
+      },
+      "verified": true,
+      "wire_bytes": 96
+    },
+    {
+      "check": {
+        "max": 0.650458,
+        "mean": 0.6460688888888888,
+        "median": 0.646233,
+        "min": 0.640115,
+        "n": 9,
+        "rsd": 0.004885656204056392,
+        "sd": 0.0031564704752478196
+      },
+      "positions": 4096,
+      "prove": {
+        "max": 0.7579699999999999,
+        "mean": 0.7451972222222223,
+        "median": 0.745783,
+        "min": 0.731458,
+        "n": 9,
+        "rsd": 0.010171049460839176,
+        "sd": 0.007579437805302186
+      },
+      "verified": true,
+      "wire_bytes": 96
+    }
+  ]
+}

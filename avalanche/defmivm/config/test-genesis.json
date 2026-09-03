@@ -1,0 +1,37 @@
+{
+  "timestamp": 0,
+  "committee": {
+    "epoch": 1,
+    "threshold": 3,
+    "members": [
+      {
+        "nodeId": "node-0",
+        "publicKey": "3676885d9ecaf8f5338d2d585e0799b3dcd6c4c9965f64e59f48a5d75589b33e"
+      },
+      {
+        "nodeId": "node-1",
+        "publicKey": "af9a3819ac2a9e3af8985b1f13b16737ab9bcfdb907acf2aa564604544315a2d"
+      },
+      {
+        "nodeId": "node-2",
+        "publicKey": "629c16e050756e4bd00c2885377e0ea4a13163c40cc5143376c21a73ec97eb2f"
+      },
+      {
+        "nodeId": "node-3",
+        "publicKey": "e487c05c1354bd7fd7b5216c7bd0e04dae59ba3ed5156b7c8e82e818326677cb"
+      },
+      {
+        "nodeId": "node-4",
+        "publicKey": "f29b2baecaca9701c4f6eeeaae006865dadc43e5350cbad069836b8a68bee9b6"
+      },
+      {
+        "nodeId": "node-5",
+        "publicKey": "17fa8002117da2e88d5e1e0f78e0d85ab3a34d5912c14645f61f51eff147d639"
+      },
+      {
+        "nodeId": "node-6",
+        "publicKey": "12370ec2018886348cd5e6bf8c2ea1574e8bf712aa052fae55a1fa3f9aa7ce09"
+      }
+    ]
+  }
+}
