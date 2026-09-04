@@ -134,6 +134,12 @@ to real machines is not published.
 
 Cargo resolves these repositories from the checked-in lock file.
 
+## Enterprise PoC
+
+[Enterprise PoC guide (Japanese)](docs/ENTERPRISE_POC_JA.md) explains the
+installation, role separation, failure cases, evidence to retain and acceptance
+criteria for a company-run evaluation.
+
 ## Running it
 
 ```sh
