@@ -81,7 +81,7 @@ spec="[{\"vm_name\":\"defmivm\",\"genesis\":\"$genesis\"}]"
 "$runner" control start --endpoint="$endpoint" --request-timeout=5m \
   --avalanchego-path="$avalanchego" --plugin-dir="$plugin_dir" \
   --root-data-dir="$data_dir" --network-id=1337 --num-nodes=5 \
-  --reassign-ports-if-used --blockchain-specs="$spec"
+  --dynamic-ports --reassign-ports-if-used --blockchain-specs="$spec"
 "$runner" control wait-for-healthy --endpoint="$endpoint" --request-timeout=5m
 
 strip_ansi() {
