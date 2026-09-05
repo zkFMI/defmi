@@ -201,20 +201,15 @@ fn package(w: &World, rng: &mut OsRng, nonce: u8) -> NoteDvpPackage {
     .unwrap()
 }
 
-/// What the package weighs, counted from the parts rather than serialised ---
-/// there is no wire format for a settlement package yet, and inventing one for
-/// a bench would be measuring the invention.
+/// Count the canonical spend proof bytes plus the surrounding note payload.
 fn weight(p: &NoteDvpPackage) -> usize {
-    let gk = |g: &qomm_zk::oneofmany::GkProof| {
-        32 * (g.cl.len() + g.ca.len() + g.cb.len() + g.gk.len())
-            + 32 * (g.f.len() + g.za.len() + g.zb.len() + 1)
-    };
     let leg = |l: &NoteLeg| {
         // the ring is indices rather than points on the wire, so four bytes each
         4 * l.ring.len()
-            + gk(&l.spend.ring)
-            + l.spend.output_range.to_bytes().len()
-            + 32 * (4 + 5 * l.notes.len())
+            + qomm_defmi::notes::encode_spend_proof(&l.spend)
+                .unwrap()
+                .len()
+            + 32 * 5 * l.notes.len()
     };
     qomm_zkpi::wire::encode(&p.instruction).len() + leg(&p.securities) + leg(&p.cash) + 32 * 6
 }

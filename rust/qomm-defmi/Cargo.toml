@@ -33,6 +33,9 @@ qomm-zk.workspace = true
 qomm-zkpi.workspace = true
 qomm-proofs.workspace = true
 qomm-transport.workspace = true
+# Algorithm core is the unchanged upstream RingCT implementation. See
+# docs/NOTE_PROOF_SECURITY_REVIEW_20260905.md for provenance and audit limits.
+triptych = { git = "https://github.com/tari-project/triptych.git", rev = "bf0cb42fff55636a8bb037020411fb3a050af23f", default-features = false, features = ["std"] }
 curve25519-dalek.workspace = true
 bulletproofs.workspace = true
 merlin.workspace = true

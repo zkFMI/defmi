@@ -4,6 +4,14 @@
 
 Delivery versus payment for committed holdings: two legs that move together or not at all.
 
+> Research software; do not deposit real assets. Native note spends use a pinned,
+> experimental Triptych implementation, not an independently audited production
+> cryptographic stack. The current version rejects legacy proof bytes and
+> unversioned stored state; it does not silently reset or migrate balances.
+> See [security findings and upgrade requirements](docs/NOTE_PROOF_SECURITY_REVIEW_20260905.md).
+> In this native rail, asset IDs and settlement metadata remain public; amount
+> and wallet-key confidentiality must not be described as hiding every field.
+
 ## Deployment target
 
 The deployment target is a dedicated **non-EVM Avalanche L1**. `rust/qomm-avalanche-vm/` contains the Rust state machine, while `avalanche/defmivm/` contains configuration and five-validator acceptance launchers. The full gate covers account-free notes, pre-authorized reserves, seven-party MPC zkPI, atomic multi-RFQ settlement, shared legal-entity caps, restart recovery, and state-root agreement. AvalancheGo remains an external consensus host and launches the Rust VM over RPCChainVM protocol 45.
@@ -16,8 +24,11 @@ Application-neutral pretrade note reservations are described in the
 They bind a DeKYX-verified participant mandate to an anonymous-note lock and a
 credit-facility update, with full monetary proofs verified by each Rust VM.
 This new path does not require an RFQ ticket or a Maker/Taker role. Its OCLOB
-settlement consumption, partial fills and release operations remain pending;
-the guide separates this boundary from the existing QOMM settlement path.
+settlement consumption, partial fills, release operations and recipient-owned
+claim redemption are implemented. A separate OCLOB Docker acceptance connects
+corporate pretrade, seven-node MPC and five-validator settlement; it is not
+independent-operator or production-security acceptance. The guide distinguishes
+this path from the existing QOMM settlement rail.
 
 ```mermaid
 flowchart TB

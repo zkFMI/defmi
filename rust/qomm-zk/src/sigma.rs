@@ -111,6 +111,49 @@ pub fn verify_opening(
     RistrettoPoint::vartime_multiscalar_mul(&scalars, &points) == RistrettoPoint::identity()
 }
 
+/// A fixed-value-zero relation, not general knowledge of two exponents.
+/// Reuse the opening protocol with its value generator disabled and enforce a
+/// canonical zero response for that disabled term. Domain separation prevents
+/// a general opening proof from being reinterpreted as a conservation proof.
+pub fn prove_zero_opening<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    transcript: &mut Transcript,
+    residual: &RistrettoPoint,
+    blinding: &Scalar,
+    rng: &mut R,
+) -> OpeningProof {
+    transcript.append_message(b"relation", b"zero-opening:v2");
+    let zero_key = key.with_value_generator(RistrettoPoint::identity());
+    let mut proof = prove_opening(
+        &zero_key,
+        transcript,
+        residual,
+        &Scalar::ZERO,
+        blinding,
+        rng,
+    );
+    proof.z_value = Scalar::ZERO;
+    proof
+}
+
+pub fn verify_zero_opening(
+    key: &Pedersen,
+    transcript: &mut Transcript,
+    residual: &RistrettoPoint,
+    proof: &OpeningProof,
+) -> bool {
+    if proof.z_value != Scalar::ZERO {
+        return false;
+    }
+    transcript.append_message(b"relation", b"zero-opening:v2");
+    verify_opening(
+        &key.with_value_generator(RistrettoPoint::identity()),
+        transcript,
+        residual,
+        proof,
+    )
+}
+
 /// Two commitments under different value generators hide the same number.
 ///
 /// Needed because the computing quorum issues an instruction before anyone has
@@ -451,7 +494,7 @@ pub fn prove_linear<R: RngCore + CryptoRng>(
 ) -> OpeningProof {
     let combined: Scalar = coefficients.iter().zip(blindings).map(|(c, r)| c * r).sum();
     let residual = linear_residual(key, commitments, coefficients, constant);
-    prove_opening(key, transcript, &residual, &Scalar::ZERO, &combined, rng)
+    prove_zero_opening(key, transcript, &residual, &combined, rng)
 }
 
 pub fn verify_linear(
@@ -462,8 +505,11 @@ pub fn verify_linear(
     constant: &Scalar,
     proof: &OpeningProof,
 ) -> bool {
+    if commitments.len() != coefficients.len() {
+        return false;
+    }
     let residual = linear_residual(key, commitments, coefficients, constant);
-    verify_opening(key, transcript, &residual, proof)
+    verify_zero_opening(key, transcript, &residual, proof)
 }
 
 fn linear_residual(

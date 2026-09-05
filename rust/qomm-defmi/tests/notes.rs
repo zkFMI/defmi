@@ -249,7 +249,7 @@ fn a_reblinded_serial_cannot_stand_in_for_a_fresh_one() {
     };
     assert_eq!(
         p.ledger.check_spend(&ring, &replay, b"ctx", &mut rng),
-        Err("the serial is not a bare power of the base point")
+        Err("no note in the ring carries this serial")
     );
 }
 
@@ -257,11 +257,19 @@ fn a_reblinded_serial_cannot_stand_in_for_a_fresh_one() {
 fn a_tag_for_the_wrong_asset_cannot_spend() {
     let mut rng = OsRng;
     let p = pool(&mut rng);
-    let (ring, proof, _) = spend(&p, &mut rng, 7, 13).unwrap();
-    assert_eq!(
-        p.ledger.check_spend(&ring, &proof, b"ctx", &mut rng),
-        Err("no note in the ring carries this serial")
-    );
+    // Upstream now also rejects the incorrect witness at construction time.
+    if let Ok((ring, proof, _)) = spend(&p, &mut rng, 7, 13) {
+        assert!(p
+            .ledger
+            .check_spend(&ring, &proof, b"ctx", &mut rng)
+            .is_err());
+    }
+    let (ring, mut proof, _) = spend(&p, &mut rng, 3, 13).unwrap();
+    proof.tag = p.registry.blind(7, false, &mut rng).unwrap().0.point;
+    assert!(p
+        .ledger
+        .check_spend(&ring, &proof, b"ctx", &mut rng)
+        .is_err());
 }
 
 #[test]

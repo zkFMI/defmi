@@ -6,13 +6,13 @@
 //! point is computable from public data but `S = H(A^e) + b` is not, so a
 //! sender can address a note it cannot spend.
 //!
-//! Spending publishes `g^S` --- never the scalar, which would hand the sender
-//! the payee's long-term spend key --- with a proof that it is a bare power of
-//! the base point, and a one-out-of-many proof that some note in a ring
-//! satisfies `C_i / (g^S · C') = h^*`. Without the bare-power proof the serial
-//! could be published as `g^S h^u` for any known u, giving a fresh nullifier
-//! every time and making double spending free.
+//! Version 2 uses the pinned upstream parallel Triptych/RingCT proof. It binds
+//! ownership and value at the SAME hidden ring position and publishes `U/S`,
+//! not the note's public owner key `g^S`. Conservation is a fixed-zero proof.
+//! V1 wire is rejected; a live V1 ledger requires an explicit reviewed migration.
 
+use crate::note_membership;
+pub use crate::note_membership::NoteMembershipProof;
 use bulletproofs::{BulletproofGens, PedersenGens, RangeProof};
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
@@ -20,9 +20,8 @@ use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::Identity;
 use ed25519_dalek::{Signature, VerifyingKey};
 use merlin::Transcript;
-use qomm_zk::oneofmany::{self, GkProof};
 use qomm_zk::pedersen::Pedersen;
-use qomm_zk::sigma::{opening_terms, prove_opening, Batch, OpeningProof, TranscriptExt};
+use qomm_zk::sigma::{prove_zero_opening, verify_zero_opening, OpeningProof};
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha512};
 use std::collections::HashSet;
@@ -140,10 +139,10 @@ pub struct Opening {
     pub serial: Scalar,
 }
 
-/// Knowledge of the discrete log of the published serial point.
-pub struct SerialProof {
-    pub t: RistrettoPoint,
-    pub z: Scalar,
+/// Stable, unlinkable linking tag. A valid secret must be nonzero; the
+/// membership verifier rejects the identity produced for a zero secret.
+pub fn note_nullifier(serial: &Scalar) -> RistrettoPoint {
+    note_membership::nullifier(serial)
 }
 
 /// What a spend hands back: the proof that goes on the wire, the notes that go
@@ -157,17 +156,17 @@ pub struct Spend {
 
 pub struct SpendProof {
     pub serial_point: RistrettoPoint,
-    pub serial_proof: SerialProof,
     pub pseudo: RistrettoPoint,
-    pub ring: GkProof,
+    pub ring: NoteMembershipProof,
     pub outputs: Vec<RistrettoPoint>,
+    pub output_notes: Vec<[u8; 32]>,
     pub output_range: RangeProof,
     pub output_range_commitments: Vec<CompressedRistretto>,
     pub balance: OpeningProof,
     pub tag: RistrettoPoint,
 }
 
-const SPEND_PROOF_WIRE_MAGIC: &[u8] = b"QOMMNSP1";
+const SPEND_PROOF_WIRE_MAGIC: &[u8] = b"QOMMNSP2";
 const MAX_SPEND_PROOF_WIRE: usize = 2 << 20;
 const MAX_SPEND_VECTOR: usize = 64;
 
@@ -191,32 +190,21 @@ pub fn encode_spend_proof(proof: &SpendProof) -> Result<Vec<u8>, String> {
         }
         Ok(())
     }
-    fn push_scalars(out: &mut Vec<u8>, values: &[Scalar]) -> Result<(), String> {
-        if values.len() > MAX_SPEND_VECTOR {
-            return Err("note-spend proof scalar vector exceeds its bound".into());
-        }
-        out.extend_from_slice(&(values.len() as u32).to_be_bytes());
-        for value in values {
-            push_scalar(out, value);
-        }
-        Ok(())
-    }
-
     let mut out = Vec::new();
     out.extend_from_slice(SPEND_PROOF_WIRE_MAGIC);
     push_point(&mut out, &proof.serial_point);
-    push_point(&mut out, &proof.serial_proof.t);
-    push_scalar(&mut out, &proof.serial_proof.z);
     push_point(&mut out, &proof.pseudo);
-    push_points(&mut out, &proof.ring.cl)?;
-    push_points(&mut out, &proof.ring.ca)?;
-    push_points(&mut out, &proof.ring.cb)?;
-    push_points(&mut out, &proof.ring.gk)?;
-    push_scalars(&mut out, &proof.ring.f)?;
-    push_scalars(&mut out, &proof.ring.za)?;
-    push_scalars(&mut out, &proof.ring.zb)?;
-    push_scalar(&mut out, &proof.ring.zd);
+    let ring = proof.ring.to_bytes();
+    out.extend_from_slice(&(ring.len() as u32).to_be_bytes());
+    out.extend_from_slice(&ring);
     push_points(&mut out, &proof.outputs)?;
+    if proof.output_notes.len() != proof.outputs.len() {
+        return Err("output note binding count mismatch".into());
+    }
+    out.extend_from_slice(&(proof.output_notes.len() as u32).to_be_bytes());
+    for binding in &proof.output_notes {
+        out.extend_from_slice(binding);
+    }
     let range = proof.output_range.to_bytes();
     if range.is_empty() || range.len() > MAX_SPEND_PROOF_WIRE {
         return Err("note-spend range proof exceeds its bound".into());
@@ -286,10 +274,6 @@ pub fn decode_spend_proof(raw: &[u8]) -> Result<SpendProof, String> {
             let count = self.count()?;
             (0..count).map(|_| self.point()).collect()
         }
-        fn scalars(&mut self) -> Result<Vec<Scalar>, String> {
-            let count = self.count()?;
-            (0..count).map(|_| self.scalar()).collect()
-        }
     }
 
     if raw.len() > MAX_SPEND_PROOF_WIRE || !raw.starts_with(SPEND_PROOF_WIRE_MAGIC) {
@@ -300,22 +284,18 @@ pub fn decode_spend_proof(raw: &[u8]) -> Result<SpendProof, String> {
         at: SPEND_PROOF_WIRE_MAGIC.len(),
     };
     let serial_point = reader.point()?;
-    let serial_proof = SerialProof {
-        t: reader.point()?,
-        z: reader.scalar()?,
-    };
     let pseudo = reader.point()?;
-    let ring = GkProof {
-        cl: reader.points()?,
-        ca: reader.points()?,
-        cb: reader.points()?,
-        gk: reader.points()?,
-        f: reader.scalars()?,
-        za: reader.scalars()?,
-        zb: reader.scalars()?,
-        zd: reader.scalar()?,
-    };
+    let ring_length = u32::from_be_bytes(reader.take(4)?.try_into().unwrap()) as usize;
+    let ring =
+        NoteMembershipProof::from_bytes(reader.take(ring_length)?).map_err(str::to_string)?;
     let outputs = reader.points()?;
+    let output_count = reader.count()?;
+    if output_count != outputs.len() {
+        return Err("output note binding count mismatch".into());
+    }
+    let output_notes = (0..output_count)
+        .map(|_| Ok(reader.take(32)?.try_into().unwrap()))
+        .collect::<Result<Vec<[u8; 32]>, String>>()?;
     let range_length = u32::from_be_bytes(
         reader
             .take(4)?
@@ -349,10 +329,10 @@ pub fn decode_spend_proof(raw: &[u8]) -> Result<SpendProof, String> {
     }
     Ok(SpendProof {
         serial_point,
-        serial_proof,
         pseudo,
         ring,
         outputs,
+        output_notes,
         output_range,
         output_range_commitments,
         balance,
@@ -378,27 +358,18 @@ impl SpendProof {
                 point(hash, value);
             }
         }
-        fn scalars(hash: &mut sha2::Sha256, values: &[Scalar]) {
-            hash.update((values.len() as u64).to_be_bytes());
-            for value in values {
-                scalar(hash, value);
-            }
-        }
         let mut hash = sha2::Sha256::new();
-        hash.update(b"QOMM:DEFMI:NOTE-SPEND-PROOF:v1");
+        hash.update(b"QOMM:DEFMI:NOTE-SPEND-PROOF:v2");
         point(&mut hash, &self.serial_point);
-        point(&mut hash, &self.serial_proof.t);
-        scalar(&mut hash, &self.serial_proof.z);
         point(&mut hash, &self.pseudo);
-        points(&mut hash, &self.ring.cl);
-        points(&mut hash, &self.ring.ca);
-        points(&mut hash, &self.ring.cb);
-        points(&mut hash, &self.ring.gk);
-        scalars(&mut hash, &self.ring.f);
-        scalars(&mut hash, &self.ring.za);
-        scalars(&mut hash, &self.ring.zb);
-        scalar(&mut hash, &self.ring.zd);
+        let ring = self.ring.to_bytes();
+        hash.update((ring.len() as u64).to_be_bytes());
+        hash.update(ring);
         points(&mut hash, &self.outputs);
+        hash.update((self.output_notes.len() as u64).to_be_bytes());
+        for binding in &self.output_notes {
+            hash.update(binding);
+        }
         let range = self.output_range.to_bytes();
         hash.update((range.len() as u64).to_be_bytes());
         hash.update(range);
@@ -412,6 +383,30 @@ impl SpendProof {
         point(&mut hash, &self.tag);
         hash.finalize().into()
     }
+
+    pub fn matches_output_notes(&self, notes: &[Note]) -> bool {
+        notes.len() == self.output_notes.len()
+            && notes.len() == self.outputs.len()
+            && notes.iter().zip(&self.output_notes).zip(&self.outputs).all(
+                |((note, binding), commitment)| {
+                    note_binding(note) == *binding && note.value_commitment == *commitment
+                },
+            )
+    }
+}
+
+/// Hash all delivered bytes, so a proof cannot be redirected by changing only
+/// the one-time destination key or its encrypted opening.
+fn note_binding(note: &Note) -> [u8; 32] {
+    sha2::Sha256::new()
+        .chain_update(b"DEFMI:NOTE:BODY:v2")
+        .chain_update(note.one_time.compress().as_bytes())
+        .chain_update(note.value_commitment.compress().as_bytes())
+        .chain_update(note.ephemeral.compress().as_bytes())
+        .chain_update(note.masked_value.to_bytes())
+        .chain_update(note.masked_blinding.to_bytes())
+        .finalize()
+        .into()
 }
 
 pub struct NoteLedger {
@@ -494,7 +489,9 @@ impl NoteLedger {
     }
 
     pub fn commitment_of(&self, note: &Note) -> RistrettoPoint {
-        note.one_time + note.value_commitment
+        // Issuance signatures bind both components and the complete payload,
+        // not a sum whose decomposition a malicious recipient can change.
+        RistrettoPoint::hash_from_bytes::<Sha512>(&note_binding(note))
     }
 
     /// Append a note without asking where it came from.
@@ -560,9 +557,9 @@ impl NoteLedger {
             let Some(value) = small_scalar(&value_scalar, self.bits) else {
                 continue;
             };
-            let expected = self.one_time_point(&wallet.address, &shared)
-                + asset_key.commit_u64(value, &blinding);
-            if expected == self.commitment_of(note) {
+            if self.one_time_point(&wallet.address, &shared) == note.one_time
+                && asset_key.commit_u64(value, &blinding) == note.value_commitment
+            {
                 found.push((
                     index,
                     Opening {
@@ -597,24 +594,33 @@ impl NoteLedger {
             let Some(value) = small_scalar(&value_scalar, self.bits) else {
                 continue;
             };
-            let expected =
-                self.one_time_point(address, &shared) + asset_key.commit_u64(value, &blinding);
-            if expected == self.commitment_of(note) {
+            if self.one_time_point(address, &shared) == note.one_time
+                && asset_key.commit_u64(value, &blinding) == note.value_commitment
+            {
                 found.push((index, value, blinding));
             }
         }
         found
     }
 
-    fn serial_transcript(context: &[u8]) -> Transcript {
-        let mut t = Transcript::new(b"qomm:note:serial");
-        t.append_message(b"ctx", context);
-        t
-    }
-    fn ring_transcript(context: &[u8]) -> Transcript {
-        let mut t = Transcript::new(b"qomm:note:ring");
-        t.append_message(b"ctx", context);
-        t
+    fn membership_context(
+        context: &[u8],
+        outputs: &[RistrettoPoint],
+        notes: &[[u8; 32]],
+    ) -> Vec<u8> {
+        let mut hash = sha2::Sha256::new();
+        hash.update(b"DEFMI:NOTE:DESTINATIONS:v2");
+        hash.update((context.len() as u64).to_be_bytes());
+        hash.update(context);
+        hash.update((outputs.len() as u64).to_be_bytes());
+        for output in outputs {
+            hash.update(output.compress().as_bytes());
+        }
+        hash.update((notes.len() as u64).to_be_bytes());
+        for note in notes {
+            hash.update(note);
+        }
+        hash.finalize().to_vec()
     }
     fn range_transcript(context: &[u8]) -> Transcript {
         let mut t = Transcript::new(b"qomm:note:range");
@@ -755,7 +761,10 @@ impl NoteLedger {
         if !eligibility[position] {
             return Err("the selected note does not satisfy the spend constraint");
         }
-        let total: u64 = outputs.iter().map(|(_, v)| *v).sum();
+        let total = outputs
+            .iter()
+            .try_fold(0u64, |sum, (_, v)| sum.checked_add(*v))
+            .ok_or("output value sum overflows")?;
         if total != opening.value {
             return Err("outputs do not sum to the note being spent");
         }
@@ -766,30 +775,11 @@ impl NoteLedger {
             B_blinding: self.key.h,
         };
 
-        let serial_point = G * opening.serial;
-        let serial_proof = self.prove_serial(&serial_point, &opening.serial, &ctx, rng);
+        let serial_point = note_nullifier(&opening.serial);
 
         let pseudo_blinding = Scalar::random(rng);
         let pseudo = tagged.commit_u64(opening.value, &pseudo_blinding);
         let pseudo_effective = gamma * Scalar::from(opening.value) + pseudo_blinding;
-
-        let offset = serial_point + pseudo;
-        let members: Vec<RistrettoPoint> = ring
-            .iter()
-            .zip(eligibility)
-            .enumerate()
-            .map(|(position, (i, eligible))| {
-                self.constrained_member(*i, position, *eligible, &offset, &ctx)
-            })
-            .collect();
-        let ring_proof = oneofmany::prove(
-            &self.key,
-            &mut Self::ring_transcript(&ctx),
-            &members,
-            position,
-            &(opening.blinding - pseudo_effective),
-            rng,
-        )?;
 
         let values: Vec<u64> = outputs.iter().map(|(_, v)| *v).collect();
         let blindings: Vec<Scalar> = if output_blindings.is_empty() {
@@ -822,21 +812,34 @@ impl NoteLedger {
         }
         let residual = pseudo - commitments.iter().sum::<RistrettoPoint>();
         let tagged_sum: Scalar = blindings.iter().sum();
-        let balance = prove_opening(
+        let balance = prove_zero_opening(
             &self.key,
             &mut Self::balance_transcript(&ctx),
             &residual,
-            &Scalar::ZERO,
             &(pseudo_blinding - tagged_sum),
             rng,
         );
+        let output_notes = notes.iter().map(note_binding).collect::<Vec<_>>();
+        let membership_context = Self::membership_context(&ctx, &commitments, &output_notes);
+        let ring_proof = note_membership::prove(
+            &self.key,
+            &self.notes,
+            ring,
+            eligibility,
+            position,
+            &opening.serial,
+            &(opening.blinding - pseudo_effective),
+            &pseudo,
+            &membership_context,
+            rng,
+        )?;
         Ok(Spend {
             proof: SpendProof {
                 serial_point,
-                serial_proof,
                 pseudo,
                 ring: ring_proof,
                 outputs: commitments,
+                output_notes,
                 output_range,
                 output_range_commitments,
                 balance,
@@ -849,56 +852,6 @@ impl NoteLedger {
             // is how a tagged leg silently stops verifying.
             tagged_blindings: blindings,
         })
-    }
-
-    fn constrained_member(
-        &self,
-        note_index: usize,
-        position: usize,
-        eligible: bool,
-        offset: &RistrettoPoint,
-        context: &[u8],
-    ) -> RistrettoPoint {
-        let commitment = self.commitment_of(&self.notes[note_index]);
-        if eligible {
-            return commitment - offset;
-        }
-        let position = (position as u64).to_be_bytes();
-        let mut penalty = scalar_from(
-            b"ring-ineligible",
-            &[context, commitment.compress().as_bytes(), &position],
-        );
-        if penalty == Scalar::ZERO {
-            penalty = Scalar::ONE;
-        }
-        commitment - offset + G * penalty
-    }
-
-    fn prove_serial<R: RngCore + CryptoRng>(
-        &self,
-        point: &RistrettoPoint,
-        serial: &Scalar,
-        context: &[u8],
-        rng: &mut R,
-    ) -> SerialProof {
-        let witness = Scalar::random(rng);
-        let t = G * witness;
-        let mut transcript = Self::serial_transcript(context);
-        transcript.append_point(b"N", point);
-        transcript.append_point(b"T", &t);
-        let c = transcript.challenge_scalar(b"c");
-        SerialProof {
-            t,
-            z: witness + c * serial,
-        }
-    }
-
-    fn check_serial(&self, point: &RistrettoPoint, proof: &SerialProof, context: &[u8]) -> bool {
-        let mut transcript = Self::serial_transcript(context);
-        transcript.append_point(b"N", point);
-        transcript.append_point(b"T", &proof.t);
-        let c = transcript.challenge_scalar(b"c");
-        G * proof.z == proof.t + point * c
     }
 
     pub fn check_spend<R: RngCore + CryptoRng>(
@@ -918,15 +871,15 @@ impl NoteLedger {
         proof: &SpendProof,
         eligibility: &[bool],
         context: &[u8],
-        rng: &mut R,
+        _rng: &mut R,
     ) -> Result<(), &'static str> {
         let key = proof.serial_point.compress().to_bytes();
         if self.spent.contains(&key) {
             return Err("serial already spent");
         }
         let ctx = Self::tagged_context(context, &proof.tag);
-        if !self.check_serial(&proof.serial_point, &proof.serial_proof, &ctx) {
-            return Err("the serial is not a bare power of the base point");
+        if proof.outputs.len() != proof.output_notes.len() {
+            return Err("output note binding count mismatch");
         }
         if ring.len() != eligibility.len() || ring.iter().any(|i| *i >= self.notes.len()) {
             return Err("the ring names an absent note");
@@ -936,19 +889,16 @@ impl NoteLedger {
             return Err("the ring repeats a note");
         }
 
-        let offset = proof.serial_point + proof.pseudo;
-        let members: Vec<RistrettoPoint> = ring
-            .iter()
-            .zip(eligibility)
-            .enumerate()
-            .map(|(position, (i, eligible))| {
-                self.constrained_member(*i, position, *eligible, &offset, &ctx)
-            })
-            .collect();
-        if !oneofmany::verify(
+        let membership_context =
+            Self::membership_context(&ctx, &proof.outputs, &proof.output_notes);
+        if !note_membership::verify(
             &self.key,
-            &mut Self::ring_transcript(&ctx),
-            &members,
+            &self.notes,
+            ring,
+            eligibility,
+            &proof.pseudo,
+            &proof.serial_point,
+            &membership_context,
             &proof.ring,
         ) {
             return Err("no note in the ring carries this serial");
@@ -979,16 +929,12 @@ impl NoteLedger {
             .map_err(|_| "an output is not shown to be in range")?;
 
         let residual = proof.pseudo - proof.outputs.iter().sum::<RistrettoPoint>();
-        let mut batch = Batch::new();
-        let (s, p) = opening_terms(
+        if !verify_zero_opening(
             &self.key,
             &mut Self::balance_transcript(&ctx),
             &residual,
             &proof.balance,
-            &Batch::weight(rng),
-        );
-        batch.push(s, p);
-        if !batch.verify() {
+        ) {
             return Err("outputs do not add up to the note being spent");
         }
         Ok(())
@@ -999,6 +945,9 @@ impl NoteLedger {
         proof: &SpendProof,
         notes: Vec<Note>,
     ) -> Result<(), &'static str> {
+        if !proof.matches_output_notes(&notes) {
+            return Err("delivered notes differ from signed destinations");
+        }
         let key = proof.serial_point.compress().to_bytes();
         if !self.spent.insert(key) {
             return Err("serial already spent");
@@ -1035,11 +984,11 @@ impl NoteLedger {
     /// somebody who is not the wallet. Knowing that a serial was spent reveals
     /// nothing on its own --- it appears in public exactly once.
     ///
-    /// What the spent set holds is `g^S` and not `S`, because that is what a
-    /// spend publishes. Comparing the scalar to it silently matched nothing,
-    /// which is the kind of wrong a test finds and a reading does not.
+    /// Version 2 stores the Triptych linking tag `U/S`, never the scalar or the
+    /// note's publicly searchable one-time key `g^S`.
     pub fn is_spent(&self, serial: &Scalar) -> bool {
-        self.spent.contains(&(G * serial).compress().to_bytes())
+        self.spent
+            .contains(&note_nullifier(serial).compress().to_bytes())
     }
 
     pub fn snapshot(&self) -> [u8; 32] {

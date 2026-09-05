@@ -467,7 +467,8 @@ impl NoteSpend {
         ledger
             .check_spend_constrained(ring, proof, &eligibility, context, rng)
             .map_err(str::to_string)?;
-        if notes.len() != proof.outputs.len()
+        if !proof.matches_output_notes(notes)
+            || notes.len() != proof.outputs.len()
             || notes
                 .iter()
                 .zip(&proof.outputs)

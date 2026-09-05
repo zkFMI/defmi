@@ -454,9 +454,19 @@ impl From<ClearingState> for ClearingSnapshot {
     }
 }
 
+/// No default during deserialization: legacy snapshots must not silently gain
+/// the new nullifier rules and make previously spent inputs spendable again.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum NoteProofVersion {
+    #[default]
+    #[serde(rename = "triptych_v2")]
+    TriptychV2,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct State {
+    pub(crate) note_proof_version: NoteProofVersion,
     pub transition_count: u64,
     pub applied_transactions: BTreeSet<[u8; 32]>,
     #[serde(default, skip_serializing_if = "AethelBook::is_empty")]
@@ -1045,6 +1055,11 @@ impl State {
     pub fn root(&self) -> [u8; 32] {
         let mut hash = Sha256::new();
         hash.update(STATE_DOMAIN);
+        // Keep the established empty-genesis root. Nonempty note state commits
+        // the new scheme; missing/legacy scheme markers fail deserialization.
+        if !self.notes.is_empty() || !self.note_serials.is_empty() {
+            hash.update(b"native-note-protocol:triptych-v2");
+        }
         if !self.application_reserve_scopes.is_empty() {
             hash.update(b"application-reserve-scopes:v1");
             let encoded = serde_json::to_vec(&self.application_reserve_scopes)
@@ -1439,6 +1454,19 @@ mod tests {
             },
         );
         assert!(state.encode().is_err());
+    }
+
+    #[test]
+    fn legacy_note_state_cannot_silently_restart_under_new_nullifier_rules() {
+        let state = State::default();
+        let encoded = state.encode().unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(value["noteProofVersion"], "triptych_v2");
+        value.as_object_mut().unwrap().remove("noteProofVersion");
+        assert!(State::decode(&serde_json::to_vec(&value).unwrap()).is_err());
+        value["noteProofVersion"] = serde_json::json!("legacy_v1");
+        assert!(State::decode(&serde_json::to_vec(&value).unwrap()).is_err());
+        assert_eq!(State::decode(&encoded).unwrap(), state);
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub mod ledger;
 pub mod netting;
 #[cfg(feature = "avalanche")]
 pub mod note_chain;
+mod note_membership;
 pub mod note_settlement;
 pub mod notes;
 pub mod participant;
