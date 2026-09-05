@@ -28,13 +28,26 @@ fn dekyx_mandate_and_note_proofs_bind_without_a_circular_dependency() {
         issuer_id: [2; 32],
         key_epoch: 1,
         public_key: signing.verifying_key().to_bytes(),
+        pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+            &zkfmi_crypto::test_support::public_fixture_pq_key(
+                &(signing.verifying_key().to_bytes()),
+            ),
+        ),
+        signature_suite: zkfmi_crypto::suite::Suite::new(
+            zkfmi_crypto::suite::SuiteId::Ed25519MlDsa65,
+        ),
         supported_subjects: BTreeSet::from([SubjectKind::LegalEntity]),
         namespace_digest: [3; 32],
         valid_from: 1,
         valid_until: 1_000,
         status: IssuerStatus::Active,
     };
-    let issuer = CredentialIssuer::new(definition.clone(), signing).unwrap();
+    let issuer = CredentialIssuer::new(
+        definition.clone(),
+        (signing).clone(),
+        zkfmi_crypto::test_support::public_fixture_pq_key(&(signing).verifying_key().to_bytes()),
+    )
+    .unwrap();
     let qualification = Qualification {
         namespace: "defmi.application.participant".into(),
         predicate_digest: [4; 32],
