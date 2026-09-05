@@ -104,7 +104,9 @@ permit. A confidential application can prove to each MPC node that inventory
 or cash was already reserved against a canonical state root while exposing
 only commitments to the amount and private side. The public coordinator sees
 only the permit digest; post-match participant consent is not part of this
-authorization boundary.
+authorization boundary. The same signed permit also binds the anonymous legal
+entity, one-time escrow note, and delegation scope needed to consume the
+reservation without publishing an account address.
 
 Measurement binaries carried by `qomm-harness`:
 

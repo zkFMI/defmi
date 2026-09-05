@@ -11,9 +11,9 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const PERMIT_DOMAIN: &[u8] = b"ZKPI:DEFMI:APPLICATION-RESERVATION-PERMIT:v1";
-const PERMIT_DIGEST_DOMAIN: &[u8] = b"ZKPI:DEFMI:APPLICATION-RESERVATION-DIGEST:v1";
-const PERMIT_VERSION: u16 = 1;
+const PERMIT_DOMAIN: &[u8] = b"ZKPI:DEFMI:APPLICATION-RESERVATION-PERMIT:v2";
+const PERMIT_DIGEST_DOMAIN: &[u8] = b"ZKPI:DEFMI:APPLICATION-RESERVATION-DIGEST:v2";
+const PERMIT_VERSION: u16 = 2;
 const MAX_WIRE_BYTES: usize = 16 * 1024;
 const MAX_UNIX_TIME: u64 = 253_402_300_799;
 const ZERO: [u8; 32] = [0; 32];
@@ -52,10 +52,18 @@ pub struct ReservationPermit {
     pub accepted_height: u64,
     pub order_commitment: [u8; 32],
     pub participant_handle: [u8; 32],
+    /// Anonymous legal-entity commitment accepted by the identity boundary.
+    /// It is not an account address and cannot be used to recover the owner.
+    pub entity_commitment: [u8; 32],
     pub reservation_id: [u8; 32],
     pub facility_id: [u8; 32],
     pub asset_id: [u8; 32],
     pub amount_commitment: [u8; 32],
+    /// One-time covenant note locked by the canonical reservation. Settlement
+    /// consumes this identifier rather than naming an owner account.
+    pub escrow_note_id: [u8; 32],
+    /// Scope under which the application committee may consume the covenant.
+    pub delegation_digest: [u8; 32],
     /// Pedersen commitment to the private buy/sell tag.  Its opening remains
     /// in the participant wallet and is Shamir-shared with the MPC nodes.
     pub side_commitment: [u8; 32],
@@ -84,10 +92,13 @@ impl ReservationPermit {
             ("canonical state root", self.canonical_state_root),
             ("order commitment", self.order_commitment),
             ("participant handle", self.participant_handle),
+            ("entity commitment", self.entity_commitment),
             ("reservation id", self.reservation_id),
             ("facility id", self.facility_id),
             ("asset id", self.asset_id),
             ("amount commitment", self.amount_commitment),
+            ("escrow note id", self.escrow_note_id),
+            ("delegation digest", self.delegation_digest),
             ("side commitment", self.side_commitment),
             ("authority digest", self.authority_digest),
             ("reserve receipt digest", self.reserve_receipt_digest),
@@ -113,7 +124,7 @@ impl ReservationPermit {
 
     fn unsigned_body(&self) -> SdkResult<Vec<u8>> {
         self.validate()?;
-        let mut body = Vec::with_capacity(PERMIT_DOMAIN.len() + 32 * 14 + 32);
+        let mut body = Vec::with_capacity(PERMIT_DOMAIN.len() + 32 * 17 + 32);
         body.extend_from_slice(PERMIT_DOMAIN);
         body.extend_from_slice(&self.version.to_be_bytes());
         body.push(self.role.tag());
@@ -129,10 +140,13 @@ impl ReservationPermit {
         for value in [
             self.order_commitment,
             self.participant_handle,
+            self.entity_commitment,
             self.reservation_id,
             self.facility_id,
             self.asset_id,
             self.amount_commitment,
+            self.escrow_note_id,
+            self.delegation_digest,
             self.side_commitment,
             self.authority_digest,
             self.reserve_receipt_digest,
@@ -241,12 +255,15 @@ mod tests {
             participant_handle: (RISTRETTO_BASEPOINT_POINT * Scalar::from(5_u64))
                 .compress()
                 .to_bytes(),
+            entity_commitment: id(20),
             reservation_id: id(6),
             facility_id: id(7),
             asset_id: id(8),
             amount_commitment: (RISTRETTO_BASEPOINT_POINT * Scalar::from(9_u64))
                 .compress()
                 .to_bytes(),
+            escrow_note_id: id(21),
+            delegation_digest: id(22),
             side_commitment: (RISTRETTO_BASEPOINT_POINT * Scalar::from(10_u64))
                 .compress()
                 .to_bytes(),
