@@ -356,6 +356,9 @@ struct DurableProofState {
     proof_completed: Vec<String>,
     #[serde(default)]
     completed_evidence: BTreeMap<String, DurableCompletedProof>,
+    /// Required in v3. Ordered non-payment operations must retain their action
+    /// binding independently of DvP proofs and across a restart.
+    application_controls: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -457,6 +460,27 @@ pub struct ApplicationStatementAuthorization {
     /// Bind all immutable action bytes. An application may exclude a stale
     /// canonical parent here to re-certify after unrelated ledger activity,
     /// but must not exclude the operation, reserve heads, proofs or outputs.
+    pub action_digest: [u8; 32],
+}
+
+/// In-process extension for an application's ordered control operations, such
+/// as cancellation of a reservation. It is deliberately NOT an RPC method or
+/// an alternative way to certify a payment. The installed application verifier
+/// must check its node-owned ordering/state evidence, owner authorization,
+/// canonical reservation head and exact operation before returning authority.
+pub trait ApplicationControlVerifier {
+    fn verify(
+        &self,
+        committee_public: &frost::keys::PublicKeyPackage,
+    ) -> Result<ApplicationControlAuthorization, String>;
+}
+
+pub struct ApplicationControlAuthorization {
+    /// Domain-separated identity of the immutable ordered control operation.
+    pub control_id: [u8; 32],
+    pub message: [u8; 32],
+    /// Must bind the operation, reservation and head. Only a stale canonical
+    /// parent may be excluded to permit recertification of that same action.
     pub action_digest: [u8; 32],
 }
 
@@ -562,9 +586,20 @@ impl ProofStateStore {
             PROOF_STATE_AAD,
             &raw[at..],
         )?;
-        let state: DurableProofState = serde_json::from_slice(&clear)
+        let mut value: Value = serde_json::from_slice(&clear)
             .map_err(|_| "proof-party state authentication failed".to_string())?;
-        if state.version != 2 {
+        if value.get("version").and_then(Value::as_u64) == Some(2) {
+            // V2 had no control-signing entry point. Only that exact historical
+            // schema may gain an empty map; missing v3 history fails closed.
+            if value.get("application_controls").is_some() {
+                return Err("v2 proof state unexpectedly contains control history".into());
+            }
+            value["version"] = json!(3);
+            value["application_controls"] = json!({});
+        }
+        let state: DurableProofState = serde_json::from_value(value)
+            .map_err(|_| "proof-party state schema is invalid".to_string())?;
+        if state.version != 3 {
             return Err(
                 "unsupported proof-party state version; securely reprovision this non-production node"
                     .into(),
@@ -735,6 +770,7 @@ pub struct ProofParty {
     reserved: BTreeSet<[u8; 32]>,
     completed: BTreeSet<[u8; 32]>,
     completed_evidence: BTreeMap<[u8; 32], CompletedProof>,
+    application_controls: BTreeMap<[u8; 32], [u8; 32]>,
     identity: SigningKey,
     exchange: X25519PrivateKey,
     pending_peers: Option<PendingPeers>,
@@ -772,7 +808,7 @@ impl ProofParty {
             let identity = SigningKey::generate(&mut OsRng);
             let exchange = X25519PrivateKey::generate()?;
             let state = DurableProofState {
-                version: 2,
+                version: 3,
                 generation: 0,
                 proof_configuration_digest: hex::encode(config.security_digest()),
                 node: config.node,
@@ -796,6 +832,7 @@ impl ProofParty {
                 proof_reserved: Vec::new(),
                 proof_completed: Vec::new(),
                 completed_evidence: BTreeMap::new(),
+                application_controls: BTreeMap::new(),
             };
             state_store.write(&state)?;
             state
@@ -1066,6 +1103,21 @@ impl ProofParty {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>, String>>()?;
+        let application_controls = state
+            .application_controls
+            .iter()
+            .map(|(id, action)| {
+                let id = Self::hex32(Some(&Value::String(id.clone())), "stored control id")?;
+                let action = Self::hex32(
+                    Some(&Value::String(action.clone())),
+                    "stored control action",
+                )?;
+                if id == [0; 32] || action == [0; 32] {
+                    return Err("stored control binding is empty".into());
+                }
+                Ok((id, action))
+            })
+            .collect::<Result<BTreeMap<_, _>, String>>()?;
         let frost_key = state
             .frost_key_package
             .as_deref()
@@ -1104,6 +1156,7 @@ impl ProofParty {
             reserved: decode_set(&state.proof_reserved, "stored proof reservations")?,
             completed: decode_set(&state.proof_completed, "stored completed proofs")?,
             completed_evidence,
+            application_controls,
             identity: SigningKey::from_bytes(&decode32(
                 &state.identity_private,
                 "stored FROST identity",
@@ -1143,6 +1196,7 @@ impl ProofParty {
         if !party.reserved.is_disjoint(&party.completed)
             || !party.frost_reserved.is_disjoint(&party.frost_consumed)
             || party.completed_evidence.len() > MAX_COMPLETED_EVIDENCE
+            || party.application_controls.len() > MAX_COMPLETED_EVIDENCE
             || party
                 .completed_evidence
                 .keys()
@@ -1235,7 +1289,7 @@ impl ProofParty {
         let encode_set =
             |values: &BTreeSet<[u8; 32]>| values.iter().map(hex::encode).collect::<Vec<_>>();
         Ok(DurableProofState {
-            version: 2,
+            version: 3,
             generation,
             proof_configuration_digest: hex::encode(self.config.security_digest()),
             node: self.config.node,
@@ -1333,6 +1387,11 @@ impl ProofParty {
                         },
                     )
                 })
+                .collect(),
+            application_controls: self
+                .application_controls
+                .iter()
+                .map(|(id, action)| (hex::encode(id), hex::encode(action)))
                 .collect(),
         })
     }
@@ -1667,6 +1726,51 @@ impl ProofParty {
             .application_action_digest = Some(authorized.action_digest);
         // Persists the action and message together, before nonce generation.
         self.authorize_frost(signing_job, &authorized.message)?;
+        Ok(authorized.message)
+    }
+
+    /// The typed application guard, not the generic proof transport, supplies
+    /// the verifier. No fake completed payment proof or health signature is
+    /// used for a control operation. The existing one-use nonce journal applies.
+    pub fn authorize_application_control<V: ApplicationControlVerifier>(
+        &mut self,
+        verifier: &V,
+    ) -> Result<[u8; 32], String> {
+        if !self.state_healthy || self.frost_key.is_none() {
+            return Err("control signing requires a healthy initialized committee".into());
+        }
+        let authorized = verifier.verify(
+            self.frost_public
+                .as_ref()
+                .ok_or("control signing committee is not initialized")?,
+        )?;
+        if authorized.control_id == [0; 32]
+            || authorized.message == [0; 32]
+            || authorized.action_digest == [0; 32]
+            || self
+                .application_controls
+                .get(&authorized.control_id)
+                .is_some_and(|prior| *prior != authorized.action_digest)
+            || (!self
+                .application_controls
+                .contains_key(&authorized.control_id)
+                && self.application_controls.len() >= MAX_COMPLETED_EVIDENCE)
+        {
+            return Err(
+                "control signing cannot authorize an empty, different or unbounded action".into(),
+            );
+        }
+        let job = Self::signing_job(&authorized.message);
+        if self.frost_reserved.contains(&job)
+            || self.frost_consumed.contains(&job)
+            || self.frost_nonces.contains_key(&job)
+        {
+            return Err("control signing job is already reserved or consumed".into());
+        }
+        self.application_controls
+            .insert(authorized.control_id, authorized.action_digest);
+        // The action and message become durable together before nonce release.
+        self.authorize_frost(job, &authorized.message)?;
         Ok(authorized.message)
     }
 

@@ -100,6 +100,8 @@ fn no_rpc_or_incomplete_evidence_can_enable_application_signing() {
         "authorize_application_statement",
         "authorize_oclob_native_fill",
         "authorize_frost",
+        "authorize_application_control",
+        "authorize_oclob_native_release",
     ] {
         let response = party.handle(ProofRequest {
             id: 1,
@@ -198,4 +200,99 @@ fn application_action_and_one_use_nonce_survive_restart() {
     assert!(party
         .authorize_application_statement([1; 32], &another_action)
         .is_err());
+}
+
+struct ControlVerifier {
+    id: [u8; 32],
+    message: [u8; 32],
+    action: [u8; 32],
+    reject: bool,
+}
+
+impl ApplicationControlVerifier for ControlVerifier {
+    fn verify(
+        &self,
+        public: &frost::keys::PublicKeyPackage,
+    ) -> Result<ApplicationControlAuthorization, String> {
+        assert_eq!(public.verifying_shares().len(), 7);
+        if self.reject {
+            return Err("control refused".into());
+        }
+        Ok(ApplicationControlAuthorization {
+            control_id: self.id,
+            message: self.message,
+            action_digest: self.action,
+        })
+    }
+}
+
+#[test]
+fn control_authority_is_typed_durable_and_cannot_reuse_a_nonce() {
+    let root = TempDir::new().unwrap();
+    let mut party = fixture(root.path());
+    // A cancellation is not a completed DvP proof.
+    party.completed.clear();
+    party.completed_evidence.clear();
+    let first = ControlVerifier {
+        id: [11; 32],
+        message: [12; 32],
+        action: [13; 32],
+        reject: false,
+    };
+    assert!(party
+        .authorize_application_control(&ControlVerifier {
+            reject: true,
+            ..first
+        })
+        .is_err());
+    assert!(party.frost_authorized.is_empty());
+    assert!(party.application_controls.is_empty());
+    assert_eq!(
+        party.authorize_application_control(&first).unwrap(),
+        first.message
+    );
+    drop(party);
+    let mut party = ProofParty::new(config(root.path())).unwrap();
+    assert_eq!(party.application_controls[&first.id], first.action);
+    assert!(party
+        .authorize_application_control(&ControlVerifier {
+            action: [14; 32],
+            ..first
+        })
+        .is_err());
+    assert!(party
+        .authorize_application_control(&ControlVerifier {
+            message: [15; 32],
+            ..first
+        })
+        .is_ok());
+    let job = ProofParty::signing_job(&first.message);
+    assert!(party.handle(ProofRequest {
+        id: 1, method: "frost_commit".into(),
+        params: json!({"job_id": hex::encode(job), "message": BASE64.encode(first.message)}),
+    }).ok);
+    drop(party);
+    let mut party = ProofParty::new(config(root.path())).unwrap();
+    assert!(party.authorize_application_control(&first).is_err());
+    party.state_healthy = false;
+    assert!(party
+        .authorize_application_control(&ControlVerifier {
+            message: [16; 32],
+            ..first
+        })
+        .is_err());
+}
+
+#[test]
+fn control_history_is_required_by_the_new_durable_schema() {
+    let root = TempDir::new().unwrap();
+    let party = fixture(root.path());
+    let state = party.durable_state(1).unwrap();
+    let mut value = serde_json::to_value(&state).unwrap();
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("application_controls");
+    assert!(serde_json::from_value::<DurableProofState>(value).is_err());
+    assert_eq!(state.version, 3);
 }
