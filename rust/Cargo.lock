@@ -2150,12 +2150,16 @@ dependencies = [
 name = "zkpi-defmi-sdk"
 version = "0.1.0"
 dependencies = [
+ "curve25519-dalek",
  "ed25519-dalek",
  "hex",
+ "openssl",
  "qomm-defmi",
  "qomm-transport",
+ "qomm-zk",
  "qomm-zkpi",
  "serde",
+ "serde_json",
  "sha2",
  "thiserror 1.0.69",
 ]

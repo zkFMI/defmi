@@ -1,9 +1,10 @@
 //! Application-neutral proof that a DeFMI reservation already exists.
 //!
-//! A confidential application sends this permit directly to its MPC nodes.
-//! The public application coordinator needs only the permit digest.  In
-//! particular, the permit binds a Pedersen commitment to the private side;
-//! it never discloses whether the owner is buying or selling.
+//! The full permit is confidential settlement material: its asset and note
+//! references may reveal the order side through canonical ledger records.
+//! Each matching node receives only a [`crate::admission::ReservationAdmission`]
+//! and a share of the key protecting the full permit. The settlement service
+//! opens the permit only after threshold authorization of the matched order.
 
 use crate::application::ApplicationManifest;
 use crate::{SdkError, SdkResult};
@@ -92,6 +93,9 @@ pub struct ReservationPermitIssue<'a> {
     pub venue_id: [u8; 32],
     pub defmi_id: [u8; 32],
     pub order_commitment: [u8; 32],
+    /// Fresh wallet secret used only at the private issuance boundary. The
+    /// ledger must not publish the application's order commitment verbatim.
+    pub order_authorization_salt: [u8; 32],
     pub participant_handle: [u8; 32],
     pub side_commitment: [u8; 32],
     pub transition: &'a CreditFacilityTransition,
@@ -146,6 +150,7 @@ impl ReservationPermit {
             venue_id,
             defmi_id,
             order_commitment,
+            order_authorization_salt,
             participant_handle,
             side_commitment,
             transition,
@@ -212,10 +217,11 @@ impl ReservationPermit {
             .before_sequence
             .checked_add(1)
             .ok_or_else(|| invalid("reservation sequence overflows"))?;
-        if transition.query_commitment != order_commitment
+        let authority = order_authorization_commitment(order_commitment, order_authorization_salt)?;
+        if transition.query_commitment != authority
             || hold.hold_id != transition.hold_id
             || hold.facility_id != transition.facility_id
-            || hold.query_commitment != order_commitment
+            || hold.query_commitment != authority
             || hold.amount_commitment != transition.amount_commitment
             || hold.expires_at != transition.expires_at
             || hold.status != "active"
@@ -410,6 +416,22 @@ fn invalid(message: impl Into<String>) -> SdkError {
     SdkError::InvalidExecution(message.into())
 }
 
+/// Private wallet binding used as the DeFMI authorization/query commitment.
+/// The random 32-byte salt is never sent to matching nodes or the coordinator.
+pub fn order_authorization_commitment(order: [u8; 32], salt: [u8; 32]) -> SdkResult<[u8; 32]> {
+    if order == ZERO || salt == ZERO {
+        return Err(invalid(
+            "order authorization needs an order and a fresh secret salt",
+        ));
+    }
+    Ok(Sha256::new()
+        .chain_update(b"ZKPI:DEFMI:PRIVATE-ORDER-AUTHORIZATION:v1")
+        .chain_update(order)
+        .chain_update(salt)
+        .finalize()
+        .into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,18 +484,108 @@ mod tests {
     }
 
     #[test]
-    fn signed_permit_round_trips_and_hides_side() {
+    fn signed_private_permit_round_trips() {
         let (permit, signer) = signed();
         let application = oclob_manifest_v1().digest().unwrap();
         permit
             .verify(application, id(2), &signer.verifying_key(), 1_000)
             .unwrap();
         let wire = permit.encode().unwrap();
-        assert!(!String::from_utf8_lossy(&wire).contains("buy"));
-        assert!(!String::from_utf8_lossy(&wire).contains("sell"));
         let decoded = ReservationPermit::decode(&wire).unwrap();
         assert_eq!(decoded, permit);
         assert_eq!(decoded.digest().unwrap(), permit.digest().unwrap());
+    }
+
+    #[test]
+    fn admission_omits_ledger_references_and_tags_reissued_holds() {
+        use crate::admission::ReservationAdmission;
+        let (permit, signer) = signed();
+        let reblinding = Scalar::from(91_u64);
+        let admission = ReservationAdmission::from_permit(&permit, &reblinding, &signer).unwrap();
+        admission
+            .verify(
+                permit.application_binding,
+                permit.defmi_id,
+                &signer.verifying_key(),
+                1_000,
+            )
+            .unwrap();
+        admission.verify_authority(&permit, &reblinding).unwrap();
+        assert_ne!(admission.amount_commitment, permit.amount_commitment);
+        assert!(admission
+            .verify_authority(&permit, &Scalar::from(92_u64))
+            .is_err());
+        assert!(ReservationAdmission::from_permit(&permit, &Scalar::ZERO, &signer).is_err());
+        let wire = admission.encode().unwrap();
+        assert_eq!(ReservationAdmission::decode(&wire).unwrap(), admission);
+        let object: serde_json::Value = serde_json::from_slice(&wire).unwrap();
+        for forbidden in [
+            "role",
+            "asset_id",
+            "entity_commitment",
+            "reservation_id",
+            "facility_id",
+            "escrow_note_id",
+            "canonical_state_root",
+            "accepted_height",
+            "delegation_digest",
+            "reserve_receipt_digest",
+        ] {
+            assert!(
+                object.get(forbidden).is_none(),
+                "admission disclosed {forbidden}"
+            );
+        }
+        let mut reissued = permit.clone();
+        reissued.canonical_state_root = id(75);
+        reissued.accepted_height += 1;
+        reissued.signature.clear();
+        reissued = reissued.sign(&signer).unwrap();
+        let reissued_admission =
+            ReservationAdmission::from_permit(&reissued, &reblinding, &signer).unwrap();
+        assert_ne!(
+            admission.authority_commitment,
+            reissued_admission.authority_commitment
+        );
+        assert_eq!(
+            admission.reservation_nullifier,
+            reissued_admission.reservation_nullifier
+        );
+        assert!(admission.verify_authority(&reissued, &reblinding).is_err());
+        let mut other_hold = permit.clone();
+        other_hold.reservation_id = id(76);
+        other_hold.signature.clear();
+        other_hold = other_hold.sign(&signer).unwrap();
+        assert_ne!(
+            admission.reservation_nullifier,
+            ReservationAdmission::from_permit(&other_hold, &reblinding, &signer)
+                .unwrap()
+                .reservation_nullifier
+        );
+        let mut tampered = admission.clone();
+        tampered.authority_commitment = id(77);
+        assert!(tampered
+            .verify(
+                permit.application_binding,
+                permit.defmi_id,
+                &signer.verifying_key(),
+                1_000
+            )
+            .is_err());
+        assert!(admission
+            .verify(
+                permit.application_binding,
+                permit.defmi_id,
+                &signer.verifying_key(),
+                2_001
+            )
+            .is_err());
+        assert!(ReservationAdmission::from_permit(
+            &permit,
+            &reblinding,
+            &SigningKey::from_bytes(&id(78))
+        )
+        .is_err());
     }
 
     #[test]
@@ -506,7 +618,7 @@ mod tests {
             facility_id: id(32),
             hold_id: id(33),
             kind: CreditTransitionKind::Hold,
-            query_commitment: id(34),
+            query_commitment: order_authorization_commitment(id(34), id(79)).unwrap(),
             amount_commitment: amount,
             consumed_commitment: ZERO,
             refund_commitment: ZERO,
@@ -671,7 +783,8 @@ mod tests {
             role: ReservationRole::Taker,
             venue_id: id(55),
             defmi_id: id(56),
-            order_commitment: transition.query_commitment,
+            order_commitment: id(34),
+            order_authorization_salt: id(79),
             participant_handle,
             side_commitment,
             transition: &transition,
@@ -684,6 +797,8 @@ mod tests {
         };
         let reader = ReadbackClient::new(&canonical, &transition);
         let permit = issue(&reader, input).expect("accepted readback should issue a permit");
+        assert_ne!(permit.order_commitment, transition.query_commitment);
+        assert_ne!(permit.order_commitment, permit.authority_digest);
         assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
         permit
             .verify(
@@ -732,6 +847,10 @@ mod tests {
         for changed in [
             ReservationPermitIssue {
                 order_commitment: id(72),
+                ..input
+            },
+            ReservationPermitIssue {
+                order_authorization_salt: id(73),
                 ..input
             },
             ReservationPermitIssue {

@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod admission;
 pub mod application;
 pub mod execution;
 pub mod finality;
@@ -44,6 +45,7 @@ pub mod defmi {
 }
 
 pub mod prelude {
+    pub use crate::admission::ReservationAdmission;
     pub use crate::application::{
         oclob_manifest_v1, qomm_manifest_v1, ApplicationId, ApplicationManifest, CommitteeProfile,
         InputVisibility, MarketView, SettlementVisibility, WorkflowKind,
@@ -53,7 +55,9 @@ pub mod prelude {
         accept_canonical_transition, accept_signed_facility_receipt, ApplicationSettlementReceipt,
         CanonicalReadback, CanonicalTransition, ReadbackKind,
     };
-    pub use crate::reservation::{ReservationPermit, ReservationPermitIssue, ReservationRole};
+    pub use crate::reservation::{
+        order_authorization_commitment, ReservationPermit, ReservationPermitIssue, ReservationRole,
+    };
     pub use crate::{SdkError, SdkResult};
 }
 

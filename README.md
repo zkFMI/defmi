@@ -99,19 +99,29 @@ Rust crates:
 - `rust/zkpi-defmi-sdk`
 - `rust/qomm-harness`
 
-`zkpi-defmi-sdk` includes an application-neutral, DeFMI-signed reservation
-permit. A confidential application can prove to each MPC node that inventory
-or cash was already reserved against a canonical state root while exposing
-only commitments to the amount and private side. The public coordinator sees
-only the permit digest; post-match participant consent is not part of this
-authorization boundary. The same signed permit also binds the anonymous legal
-entity, one-time escrow note, and delegation scope needed to consume the
-reservation without publishing an account address.
+`zkpi-defmi-sdk` separates two signed reservation documents. A
+`ReservationAdmission` lets a matching node check the private order's binding
+and reserved amount without receiving a ledger identifier. The confidential
+`ReservationPermit` names the anonymous entity, asset, facility, escrow note
+and delegation needed for account-free settlement. Applications keep this full
+permit under threshold encryption until their matching result authorizes
+settlement. Sending a full permit to every matching node would leak the order
+side through its asset and public ledger references.
+
+Admission uses a fresh Pedersen reblinding of the reserved amount; exposing the
+canonical amount commitment would also allow a ledger lookup. The wallet keeps
+the reblinding difference private with the settlement authority so a later
+verifier can reconcile the two commitments without learning the amount.
+`order_authorization_commitment` similarly uses a fresh secret salt to bind
+the ledger authorization to the application's order. Issuer-keyed HMAC tags
+identify repeated use of one hold without publishing its identifier. Keep the
+issuer key stable while reservations remain active, or migrate the complete
+spent-tag history under a governed key-rotation procedure.
 
 An authorized issuer calls `ReservationPermit::issue_from_avalanche` with its
 own trusted Avalanche client. The SDK reads both the anonymous-note reservation
 and its credit hold, checks that they share one unchanged canonical root, and
-reconciles the creation receipt, exact order commitment, asset, amount,
+reconciles the creation receipt, privately bound order commitment, asset, amount,
 sequence, active status and expiry before signing. A concurrent ledger update
 or a missing read fails the request; the caller may retry the whole read.
 The signature attests to the issuer's readback. It is not a consensus proof,
