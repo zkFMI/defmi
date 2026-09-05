@@ -24,7 +24,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::MAX_UNIX_TIME;
 
-const DOMAIN: &[u8] = b"QOMM:DEFMI:FACILITY:v2";
+const DOMAIN: &[u8] = b"QOMM:DEFMI:FACILITY:v3";
 const ASSET_DOMAIN: &[u8] = b"QOMM:DEFMI:ASSET:v1";
 const ACCOUNT_DOMAIN: &[u8] = b"QOMM:DEFMI:ACCOUNT:v1";
 const GUARANTOR_DOMAIN: &[u8] = b"QOMM:DEFMI:GUARANTOR:v1";
@@ -2114,13 +2114,15 @@ impl ProductSettlementOrder {
 #[derive(Clone, Debug)]
 pub struct NodeApproval {
     pub node_id: String,
-    pub signature: Signature,
+    pub signature: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
 pub struct QuorumApproval {
     pub statement: [u8; 32],
     pub signer_epoch: u64,
+    pub suite: zkfmi_crypto::suite::Suite,
+    pub committee_digest: [u8; 32],
     pub domain: String,
     pub before_root: [u8; 32],
     pub approvals: Vec<NodeApproval>,
@@ -2128,25 +2130,42 @@ pub struct QuorumApproval {
 
 #[derive(Clone, Debug)]
 pub struct QuorumAuthorizer {
-    nodes: BTreeMap<String, VerifyingKey>,
+    nodes: BTreeMap<String, zkfmi_crypto::key::KeyRecord>,
     threshold: usize,
     epoch: u64,
     domain: String,
+    committee_digest: [u8; 32],
+    execution_time: Option<u64>,
 }
 
 impl QuorumAuthorizer {
-    /// Public deployment domain, also used to separate recipient-authorized
-    /// operations. Reading it grants no governance signing authority.
     pub fn domain(&self) -> &str {
         &self.domain
     }
 
+    /// A bridge used only for reads or independently authorized wallet actions.
+    /// It cannot produce or verify a governance approval.
+    pub fn read_only() -> Self {
+        Self {
+            nodes: BTreeMap::new(),
+            threshold: usize::MAX,
+            epoch: 0,
+            domain: "read-only".into(),
+            committee_digest: ZERO,
+            execution_time: None,
+        }
+    }
+
     pub fn new(
-        nodes: BTreeMap<String, VerifyingKey>,
+        nodes: BTreeMap<String, zkfmi_crypto::key::KeyRecord>,
         threshold: usize,
         epoch: u64,
         domain: impl Into<String>,
     ) -> Result<Self, String> {
+        use zkfmi_crypto::{
+            key::KeyPurpose,
+            suite::{Suite, SuiteId},
+        };
         let domain = domain.into();
         if nodes.is_empty()
             || nodes.len() > 64
@@ -2160,36 +2179,67 @@ impl QuorumAuthorizer {
         if nodes
             .keys()
             .any(|node| node.is_empty() || node.len() > 128 || !node.chars().all(allowed))
+            || !domain.is_ascii()
+            || domain.is_empty()
+            || domain.len() > 128
         {
-            return Err("quorum node identifiers contain invalid characters".into());
+            return Err("invalid governance node identity or domain".into());
         }
-        if !domain.is_ascii() || domain.is_empty() || domain.len() > 128 {
-            return Err("approval domain must be ASCII and between 1 and 128 bytes".into());
-        }
-        let mut encoded = BTreeSet::new();
-        for key in nodes.values() {
-            let bytes = key.to_bytes();
-            if bytes == ZERO {
-                return Err("quorum public keys cannot use the all-zero encoding".into());
+        let mut classical = BTreeSet::new();
+        let mut pq = BTreeSet::new();
+        let mut key_ids = BTreeSet::new();
+        for (node, key) in &nodes {
+            key.validate().map_err(|e| e.to_string())?;
+            if key.suite != Suite::new(SuiteId::Ed25519MlDsa65)
+                || key.purpose != KeyPurpose::Governance
+                || key.participant_id.as_str() != node
+                || !key_ids.insert(key.key_id.clone())
+            {
+                return Err("invalid governance key metadata".into());
             }
-            if !encoded.insert(bytes) {
-                return Err("one quorum public key cannot occupy two node identities".into());
+            let ed: [u8; 32] = key.public_key[..32]
+                .try_into()
+                .map_err(|_| "invalid governance key")?;
+            if ed == ZERO
+                || VerifyingKey::from_bytes(&ed).is_err()
+                || key.public_key[32..].iter().all(|byte| *byte == 0)
+                || !classical.insert(ed)
+                || !pq.insert(key.public_key[32..].to_vec())
+            {
+                return Err("governance identities must use distinct valid key components".into());
             }
         }
+        let committee_digest = digest(
+            b"QOMM:DEFMI:GOVERNANCE-COMMITTEE:v2",
+            &json!({"nodes": nodes, "threshold": threshold, "epoch": epoch, "domain": domain}),
+        )?;
         Ok(Self {
             nodes,
             threshold,
             epoch,
             domain,
+            committee_digest,
+            execution_time: None,
         })
     }
 
-    fn signing_body(&self, statement: &[u8; 32], before_root: &[u8; 32]) -> Vec<u8> {
+    /// Bind the host's authoritative execution time once at its transaction entry.
+    /// A request-supplied timestamp must never be used here.
+    pub fn at(&self, now: u64) -> Self {
+        let mut out = self.clone();
+        out.execution_time = Some(now);
+        out
+    }
+
+    fn signing_body(&self, statement: &[u8; 32], before_root: &[u8; 32], node: &str) -> Vec<u8> {
         let domain = self.domain.as_bytes();
         let mut body = DOMAIN.to_vec();
         body.extend(self.epoch.to_be_bytes());
+        body.extend(self.committee_digest);
         body.extend((domain.len() as u16).to_be_bytes());
         body.extend(domain);
+        body.extend((node.len() as u16).to_be_bytes());
+        body.extend(node.as_bytes());
         body.extend(before_root);
         body.extend(statement);
         body
@@ -2201,57 +2251,86 @@ impl QuorumAuthorizer {
         before_root: &[u8; 32],
         approval: &QuorumApproval,
     ) -> bool {
+        use zkfmi_crypto::{
+            hybrid::signature::HybridVerifier,
+            key::KeyPurpose,
+            suite::{Suite, SuiteId},
+            traits::Verifier as _,
+        };
+        let Some(now) = self.execution_time else {
+            return false;
+        };
         if approval.statement != *expected
             || approval.before_root != *before_root
             || approval.domain != self.domain
             || approval.signer_epoch != self.epoch
-            || approval.approvals.len() > 64
+            || approval.suite != Suite::new(SuiteId::Ed25519MlDsa65)
+            || approval.committee_digest != self.committee_digest
+            || approval.approvals.len() > self.nodes.len()
+            || approval.approvals.len() < self.threshold
         {
             return false;
         }
-        let body = self.signing_body(expected, before_root);
         let mut seen = BTreeSet::new();
-        approval
-            .approvals
-            .iter()
-            .filter(|signed| {
-                seen.insert(signed.node_id.clone())
-                    && self
-                        .nodes
-                        .get(&signed.node_id)
-                        .is_some_and(|key| key.verify(&body, &signed.signature).is_ok())
+        approval.approvals.iter().all(|signed| {
+            seen.insert(signed.node_id.clone())
+                && self.nodes.get(&signed.node_id).is_some_and(|key| {
+                    key.valid_at(now).is_ok()
+                        && HybridVerifier
+                            .verify(
+                                KeyPurpose::Governance,
+                                &key.public_key,
+                                &self.signing_body(expected, before_root, &signed.node_id),
+                                &signed.signature,
+                            )
+                            .is_ok()
+                })
+        })
+    }
+
+    /// Wall-clock preflight for native hosts and clients. Consensus execution
+    /// always uses at(block_timestamp) instead, so all validators see one clock.
+    pub fn verify_now(
+        &self,
+        expected: &[u8; 32],
+        before_root: &[u8; 32],
+        approval: &QuorumApproval,
+    ) -> bool {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .is_ok_and(|time| {
+                self.at(time.as_secs())
+                    .verify(expected, before_root, approval)
             })
-            .count()
-            >= self.threshold
     }
 
     pub fn approve(
         &self,
         statement: [u8; 32],
         before_root: [u8; 32],
-        signers: &BTreeMap<String, SigningKey>,
+        signers: &BTreeMap<String, crate::governance::GovernanceSigner>,
     ) -> Result<QuorumApproval, String> {
         if signers.is_empty() || signers.keys().any(|node| !self.nodes.contains_key(node)) {
             return Err("approval signers must be configured quorum nodes".into());
         }
+        let mut approvals = Vec::new();
         for (node, key) in signers {
             if self.nodes[node] != key.verifying_key() {
                 return Err("approval signer key does not match the quorum configuration".into());
             }
+            approvals.push(NodeApproval {
+                node_id: node.clone(),
+                signature: key.sign(&self.signing_body(&statement, &before_root, node))?,
+            });
         }
-        let body = self.signing_body(&statement, &before_root);
         Ok(QuorumApproval {
             statement,
             signer_epoch: self.epoch,
+            suite: zkfmi_crypto::suite::Suite::new(zkfmi_crypto::suite::SuiteId::Ed25519MlDsa65),
+            committee_digest: self.committee_digest,
             domain: self.domain.clone(),
             before_root,
-            approvals: signers
-                .iter()
-                .map(|(node_id, key)| NodeApproval {
-                    node_id: node_id.clone(),
-                    signature: key.sign(&body),
-                })
-                .collect(),
+            approvals,
         })
     }
 }
@@ -3508,7 +3587,15 @@ impl DefmiFacility {
         before_root: &[u8; 32],
         approval: &QuorumApproval,
     ) -> Result<(), String> {
-        if self.authorizer.verify(statement, before_root, approval) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "governance clock is before Unix epoch")?
+            .as_secs();
+        if self
+            .authorizer
+            .at(now)
+            .verify(statement, before_root, approval)
+        {
             Ok(())
         } else {
             Err("the transition lacks the configured k-of-n approval".into())
@@ -7020,7 +7107,8 @@ mod schema_tests {
              INSERT INTO settlement_verifiers VALUES(X'01',X'0203'); PRAGMA user_version=15;"
         ).unwrap();
         drop(database);
-        let node = SigningKey::from_bytes(&[1; 32]);
+        let node =
+            crate::governance::GovernanceSigner::generate("node-1", 0, i64::MAX as u64).unwrap();
         let authorizer = QuorumAuthorizer::new(
             BTreeMap::from([("node-1".into(), node.verifying_key())]),
             1,
@@ -7088,7 +7176,8 @@ mod schema_tests {
             .unwrap();
         drop(legacy);
 
-        let node = SigningKey::generate(&mut OsRng);
+        let node =
+            crate::governance::GovernanceSigner::generate("node-1", 0, i64::MAX as u64).unwrap();
         let authorizer = QuorumAuthorizer::new(
             BTreeMap::from([("node-1".into(), node.verifying_key())]),
             1,

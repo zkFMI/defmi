@@ -7,6 +7,7 @@ publish = false
 description = "Non-EVM Avalanche custom VM for QOMM and DeFMI"
 
 [dependencies]
+zkfmi-crypto.workspace = true
 avalanche-rpcchainvm-qomm = { path = "../vendor/avalanche-rs-qomm/crates/avalanche-rpcchainvm" }
 qomm-defmi.workspace = true
 qomm-transport.workspace = true

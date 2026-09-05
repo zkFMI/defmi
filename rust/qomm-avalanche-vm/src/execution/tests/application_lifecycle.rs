@@ -94,7 +94,11 @@ impl Fixture {
         fixture
     }
 
-    fn reserve(&mut self, index: usize, signers: &BTreeMap<String, SigningKey>) {
+    fn reserve(
+        &mut self,
+        index: usize,
+        signers: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
+    ) {
         let value = self.initial.values[index];
         let blind = self.initial.blindings[index];
         let capacity_blind = Scalar::from(61 + index as u64);

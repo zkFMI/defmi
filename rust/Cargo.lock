@@ -2559,9 +2559,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[patch.unused]]
-name = "qomm-law"
+name = "deccp-core"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "deccp-core"
+name = "qomm-law"
 version = "0.1.0"

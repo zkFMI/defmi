@@ -1,16 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ed25519_dalek::VerifyingKey;
 use qomm_defmi::facility::QuorumAuthorizer;
 use serde::{Deserialize, Serialize};
+use zkfmi_crypto::key::KeyRecord;
 
-const MAGIC: &[u8; 8] = b"QOMMGEN1";
+const MAGIC: &[u8; 8] = b"QOMMGEN2";
 pub const MAX_GENESIS_BYTES: usize = 1 << 20;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitteeMember {
     pub node_id: String,
-    pub public_key: [u8; 32],
+    pub key: KeyRecord,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,7 +41,7 @@ pub struct CommitteeConfig {
 pub struct MemberConfig {
     #[serde(rename = "nodeID", alias = "nodeId")]
     pub node_id: String,
-    pub public_key: String,
+    pub key: KeyRecord,
 }
 
 impl GenesisConfig {
@@ -54,13 +54,9 @@ impl GenesisConfig {
             .members
             .into_iter()
             .map(|member| {
-                let public_key = hex::decode(&member.public_key)
-                    .map_err(|_| format!("member {} publicKey is not hexadecimal", member.node_id))?
-                    .try_into()
-                    .map_err(|_| format!("member {} publicKey is not 32 bytes", member.node_id))?;
                 Ok(CommitteeMember {
                     node_id: member.node_id,
-                    public_key,
+                    key: member.key,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -89,7 +85,6 @@ impl Genesis {
             return Err("genesis contains an invalid k-of-n committee".into());
         }
         let mut node_ids = BTreeSet::new();
-        let mut keys = BTreeSet::new();
         let mut previous: Option<String> = None;
         for member in &self.members {
             if member.node_id.is_empty()
@@ -97,9 +92,7 @@ impl Genesis {
                 || !member.node_id.chars().all(|character| {
                     character.is_ascii_alphanumeric() || "._:/+-".contains(character)
                 })
-                || member.public_key == [0; 32]
                 || !node_ids.insert(member.node_id.clone())
-                || !keys.insert(member.public_key)
             {
                 return Err("genesis committee has an invalid or duplicate member".into());
             }
@@ -109,9 +102,14 @@ impl Genesis {
             {
                 return Err("genesis committee must be sorted by node ID".into());
             }
-            VerifyingKey::from_bytes(&member.public_key)
-                .map_err(|_| "genesis committee contains an invalid Ed25519 key".to_string())?;
             previous = Some(member.node_id.clone());
+        }
+        self.authorizer("genesis-validation")?;
+        for member in &self.members {
+            member
+                .key
+                .valid_at(self.timestamp as u64)
+                .map_err(|error| error.to_string())?;
         }
         Ok(())
     }
@@ -128,7 +126,9 @@ impl Genesis {
             let node = member.node_id.as_bytes();
             encoded.extend_from_slice(&(node.len() as u16).to_be_bytes());
             encoded.extend_from_slice(node);
-            encoded.extend_from_slice(&member.public_key);
+            let key = serde_json::to_vec(&member.key).map_err(|error| error.to_string())?;
+            encoded.extend_from_slice(&(key.len() as u32).to_be_bytes());
+            encoded.extend_from_slice(&key);
         }
         if encoded.len() > MAX_GENESIS_BYTES {
             return Err("genesis exceeds the one-MiB limit".into());
@@ -148,16 +148,25 @@ impl Genesis {
         let epoch = u64::from_be_bytes(reader.array()?);
         let threshold = u16::from_be_bytes(reader.array()?);
         let count = usize::from(u16::from_be_bytes(reader.array()?));
+        if count == 0 || count > 64 {
+            return Err("invalid genesis committee size".into());
+        }
         let mut members = Vec::with_capacity(count);
         for _ in 0..count {
             let length = usize::from(u16::from_be_bytes(reader.array()?));
             let node_id = std::str::from_utf8(reader.take(length)?)
                 .map_err(|_| "genesis node ID is not UTF-8".to_string())?
                 .to_owned();
-            members.push(CommitteeMember {
-                node_id,
-                public_key: reader.array()?,
-            });
+            let key_len = u32::from_be_bytes(reader.array()?) as usize;
+            if key_len > 65_536 {
+                return Err("genesis key record is oversized".into());
+            }
+            let bytes = reader.take(key_len)?;
+            let key: KeyRecord = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+            if serde_json::to_vec(&key).map_err(|e| e.to_string())? != bytes {
+                return Err("genesis key encoding is not canonical".into());
+            }
+            members.push(CommitteeMember { node_id, key });
         }
         if !reader.is_empty() {
             return Err("genesis contains trailing bytes".into());
@@ -176,12 +185,8 @@ impl Genesis {
         let nodes = self
             .members
             .iter()
-            .map(|member| {
-                VerifyingKey::from_bytes(&member.public_key)
-                    .map(|key| (member.node_id.clone(), key))
-                    .map_err(|_| "genesis committee contains an invalid Ed25519 key".to_string())
-            })
-            .collect::<Result<BTreeMap<_, _>, String>>()?;
+            .map(|member| (member.node_id.clone(), member.key.clone()))
+            .collect::<BTreeMap<_, _>>();
         QuorumAuthorizer::new(
             nodes,
             usize::from(self.threshold),
@@ -234,7 +239,8 @@ mod tests {
             threshold: 1,
             members: vec![CommitteeMember {
                 node_id: "node-0".into(),
-                public_key: [1; 32],
+                key: qomm_defmi::governance::public_development_keys().unwrap()["node-0"]
+                    .verifying_key(),
             }],
         }
     }
@@ -244,6 +250,14 @@ mod tests {
         let genesis = fixture();
         let encoded = genesis.encode().expect("encode");
         assert_eq!(Genesis::decode(&encoded).expect("decode"), genesis);
+        let mut legacy = encoded;
+        legacy[..8].copy_from_slice(b"QOMMGEN1");
+        assert!(Genesis::decode(&legacy).is_err());
+        let mut classical = genesis;
+        classical.members[0].key.suite =
+            zkfmi_crypto::suite::Suite::new(zkfmi_crypto::suite::SuiteId::Ed25519);
+        classical.members[0].key.public_key.truncate(32);
+        assert!(classical.validate().is_err());
     }
 
     #[test]
@@ -257,7 +271,8 @@ mod tests {
             0,
             CommitteeMember {
                 node_id: "node-1".into(),
-                public_key: [2; 32],
+                key: qomm_defmi::governance::public_development_keys().unwrap()["node-1"]
+                    .verifying_key(),
             },
         );
         assert!(genesis.validate().is_err());
@@ -273,7 +288,7 @@ mod tests {
                     "threshold": 1,
                     "members": [{
                         node_key: "node-0",
-                        "publicKey": hex::encode([1_u8; 32]),
+                        "key": qomm_defmi::governance::public_development_keys().unwrap()["node-0"].verifying_key(),
                     }],
                 },
             });

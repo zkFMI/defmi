@@ -20,13 +20,25 @@ fn h(label: &str) -> [u8; 32] {
     Sha256::digest(label.as_bytes()).into()
 }
 
-fn keys() -> BTreeMap<String, SigningKey> {
+fn keys() -> BTreeMap<String, qomm_defmi::governance::GovernanceSigner> {
     (0..7)
-        .map(|index| (format!("node-{index}"), SigningKey::generate(&mut OsRng)))
+        .map(|index| {
+            (
+                format!("node-{index}"),
+                qomm_defmi::governance::GovernanceSigner::generate(
+                    &format!("node-{index}"),
+                    0,
+                    i64::MAX as u64,
+                )
+                .unwrap(),
+            )
+        })
         .collect()
 }
 
-fn authorizer(keys: &BTreeMap<String, SigningKey>) -> QuorumAuthorizer {
+fn authorizer(
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
+) -> QuorumAuthorizer {
     QuorumAuthorizer::new(
         keys.iter()
             .map(|(node, key)| (node.clone(), key.verifying_key()))
@@ -40,7 +52,7 @@ fn authorizer(keys: &BTreeMap<String, SigningKey>) -> QuorumAuthorizer {
 
 fn approved(
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     statement: [u8; 32],
     before: [u8; 32],
 ) -> QuorumApproval {
@@ -160,7 +172,7 @@ impl AvalancheClient for InMemoryAvalanche {
 
 fn pair(
     directory: &tempfile::TempDir,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
 ) -> (QuorumAuthorizer, DefmiFacility, InMemoryAvalanche) {
     let authorizer = authorizer(keys);
     let local = DefmiFacility::open(

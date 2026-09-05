@@ -84,18 +84,12 @@ fn trusted_kyb_issuer() -> VerifyingKey {
     SigningKey::from_bytes(&seed).verifying_key()
 }
 
-fn governance_keys() -> BTreeMap<String, SigningKey> {
-    (0..7)
-        .map(|node| {
-            // Acceptance-only keys pinned by the non-EVM Avalanche genesis.
-            let seed: [u8; 32] = Sha256::digest(format!("key:{node}").as_bytes()).into();
-            (format!("node-{node}"), SigningKey::from_bytes(&seed))
-        })
-        .collect()
+fn governance_keys() -> BTreeMap<String, qomm_defmi::governance::GovernanceSigner> {
+    qomm_defmi::governance::public_development_keys().expect("public development governance keys")
 }
 
 fn authorizer(
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     domain: &str,
 ) -> Result<QuorumAuthorizer, String> {
     QuorumAuthorizer::new(
@@ -111,7 +105,7 @@ fn authorizer(
 fn approve(
     facility: &DefmiFacility,
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     statement: [u8; 32],
 ) -> Result<QuorumApproval, String> {
     let signers = keys
@@ -125,7 +119,7 @@ fn approve(
 fn approve_root(
     root: [u8; 32],
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     statement: [u8; 32],
 ) -> Result<QuorumApproval, String> {
     let signers = keys
@@ -834,7 +828,7 @@ fn settle_account_free_note_batch(
     handoff: &SettlementHandoffBundle,
     certified: &[qomm_transport::order::CertifiedAdmissionLane],
     venue: &Venue,
-    governance: &BTreeMap<String, SigningKey>,
+    governance: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     authorizer: &QuorumAuthorizer,
     client: &AvalancheRpcClient,
     peer_endpoints: &[String],

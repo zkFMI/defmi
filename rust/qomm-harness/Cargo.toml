@@ -67,3 +67,7 @@ path = "src/bin/settle_finalized_batch.rs"
 [[bin]]
 name = "run_viewing"
 path = "src/bin/run_viewing.rs"
+
+[[bin]]
+name = "export_pqc_genesis"
+path = "src/bin/export_pqc_genesis.rs"

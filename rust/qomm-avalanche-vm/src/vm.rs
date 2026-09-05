@@ -847,7 +847,7 @@ impl QommVm {
                         "threshold": runtime.genesis.threshold,
                         "members": runtime.genesis.members.iter().map(|member| json!({
                             "nodeID": member.node_id,
-                            "publicKey": hex::encode(member.public_key),
+                            "key": member.key,
                         })).collect::<Vec<_>>()
                     }
                 }}))

@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use ed25519_dalek::SigningKey;
 use qomm_avalanche_vm::{
     application::{ApplicationRuntime, NoApplications},
     state::State,
@@ -12,7 +11,8 @@ use qomm_defmi::facility::QuorumAuthorizer;
 use serde_json::{json, Map, Value};
 
 fn authorizer() -> QuorumAuthorizer {
-    let key = SigningKey::from_bytes(&[1; 32]);
+    let key =
+        qomm_defmi::governance::GovernanceSigner::generate("node-0", 0, i64::MAX as u64).unwrap();
     QuorumAuthorizer::new(
         BTreeMap::from([("node-0".into(), key.verifying_key())]),
         1,

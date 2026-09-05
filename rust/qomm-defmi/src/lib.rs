@@ -22,6 +22,7 @@ pub mod cross_domain;
 pub mod cross_domain_finality;
 #[cfg(feature = "avalanche")]
 pub mod facility;
+pub mod governance;
 pub mod ledger;
 pub mod netting;
 #[cfg(feature = "avalanche")]

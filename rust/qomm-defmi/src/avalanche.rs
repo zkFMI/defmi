@@ -891,11 +891,13 @@ fn approval_json(approval: &QuorumApproval) -> Value {
     json!({
         "statement": hex::encode(approval.statement),
         "signerEpoch": approval.signer_epoch,
+        "suite": approval.suite,
+        "committeeDigest": hex::encode(approval.committee_digest),
         "domain": approval.domain,
         "beforeRoot": hex::encode(approval.before_root),
         "approvals": approval.approvals.iter().map(|signed| json!({
             "nodeID": signed.node_id,
-            "signature": hex::encode(signed.signature.to_bytes()),
+            "signature": hex::encode(&signed.signature),
         })).collect::<Vec<_>>(),
     })
 }
@@ -3602,7 +3604,7 @@ impl<'a, C: AvalancheClient> AvalancheNoteBridge<'a, C> {
         F: FnOnce(&C, &QuorumApproval, [u8; 32]) -> Result<String, String>,
     {
         let before = approval.before_root;
-        if !self.authorizer.verify(&statement, &before, approval) {
+        if !self.authorizer.verify_now(&statement, &before, approval) {
             return Err(
                 "the note transition approval is invalid or names another statement".into(),
             );
@@ -3815,7 +3817,7 @@ impl<'a, C: AvalancheClient> AvalancheNoteBridge<'a, C> {
         let statement = authorization.statement(transition)?;
         if !self
             .authorizer
-            .verify(&statement, &approval.before_root, approval)
+            .verify_now(&statement, &approval.before_root, approval)
         {
             return Err("standing allocation preview has an invalid approval".into());
         }
@@ -4038,7 +4040,7 @@ impl<'a, C: AvalancheClient> AvalancheNoteBridge<'a, C> {
             .allocation_authorization
             .statement(request.allocation_transition)?;
         if request.allocation_approval.before_root != approval.before_root
-            || !self.authorizer.verify(
+            || !self.authorizer.verify_now(
                 &allocation_statement,
                 &request.allocation_approval.before_root,
                 request.allocation_approval,
@@ -4092,7 +4094,11 @@ impl<'a, C: AvalancheClient> FacilityAvalancheBridge<'a, C> {
         before: &[u8; 32],
         approval: &QuorumApproval,
     ) -> Result<(), String> {
-        if self.facility.authorizer.verify(statement, before, approval) {
+        if self
+            .facility
+            .authorizer
+            .verify_now(statement, before, approval)
+        {
             Ok(())
         } else {
             Err("the transition approval is not bound to this L1 and state root".into())

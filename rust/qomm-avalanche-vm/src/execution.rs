@@ -82,6 +82,8 @@ mod participant;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApprovalDto {
+    suite: zkfmi_crypto::suite::Suite,
+    committee_digest: String,
     statement: String,
     signer_epoch: u64,
     domain: String,
@@ -983,6 +985,7 @@ pub(crate) fn execute(
     timestamp: u64,
     application: &dyn crate::application::ApplicationRuntime,
 ) -> Result<[u8; 32], String> {
+    let authorizer = &authorizer.at(timestamp);
     let params = transaction
         .params
         .as_object()
@@ -2466,6 +2469,7 @@ pub(crate) fn preview_standing_note_pool_allocation(
     authorizer: &QuorumAuthorizer,
     timestamp: u64,
 ) -> Result<Value, String> {
+    let authorizer = &authorizer.at(timestamp);
     require_keys(
         params,
         &[
@@ -6882,14 +6886,19 @@ pub fn authorize(
             }
             Ok(NodeApproval {
                 node_id: signed.node_id,
-                signature: Signature::from_bytes(&hex_array::<64>(
-                    &signed.signature,
-                    "approval.signature",
-                )?),
+                signature: {
+                    let bytes = hex::decode(&signed.signature)
+                        .map_err(|_| "approval signature is not hex")?;
+                    zkfmi_crypto::hybrid::signature::HybridSignature::decode(&bytes)
+                        .map_err(|_| "approval requires a complete hybrid signature")?;
+                    bytes
+                },
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
     let approval = QuorumApproval {
+        suite: dto.suite,
+        committee_digest: hex_array(&dto.committee_digest, "approval.committeeDigest")?,
         statement: hex_array(&dto.statement, "approval.statement")?,
         signer_epoch: dto.signer_epoch,
         domain: dto.domain,
@@ -7283,12 +7292,20 @@ mod tests {
         assert_eq!(restored.root(), state.root());
     }
 
-    fn committee() -> (QuorumAuthorizer, BTreeMap<String, SigningKey>) {
+    fn committee() -> (
+        QuorumAuthorizer,
+        BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
+    ) {
         let signers = (0u8..3)
             .map(|index| {
                 (
                     format!("node-{index}"),
-                    SigningKey::from_bytes(&[index.saturating_add(1); 32]),
+                    qomm_defmi::governance::GovernanceSigner::generate(
+                        &format!("node-{index}"),
+                        0,
+                        i64::MAX as u64,
+                    )
+                    .unwrap(),
                 )
             })
             .collect::<BTreeMap<_, _>>();
@@ -7306,11 +7323,13 @@ mod tests {
         json!({
             "statement": hex::encode(approval.statement),
             "signerEpoch": approval.signer_epoch,
+        "suite": approval.suite,
+        "committeeDigest": hex::encode(approval.committee_digest),
             "domain": approval.domain,
             "beforeRoot": hex::encode(approval.before_root),
             "approvals": approval.approvals.iter().map(|signed| json!({
                 "nodeID": signed.node_id,
-                "signature": hex::encode(signed.signature.to_bytes()),
+                "signature": hex::encode(&signed.signature),
             })).collect::<Vec<_>>(),
         })
     }
@@ -7319,7 +7338,7 @@ mod tests {
     fn apply(
         state: &mut State,
         authorizer: &QuorumAuthorizer,
-        signers: &BTreeMap<String, SigningKey>,
+        signers: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
         method: &str,
         field_name: &str,
         field_value: Value,
@@ -7339,10 +7358,87 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn vm_rejects_legacy_or_invalid_hybrid_governance_without_changing_state() {
+        let keys = (0..3)
+            .map(|index| {
+                let node = format!("node-{index}");
+                let key =
+                    qomm_defmi::governance::GovernanceSigner::generate(&node, 10, 200).unwrap();
+                (node, key)
+            })
+            .collect::<BTreeMap<_, _>>();
+        let authority = QuorumAuthorizer::new(
+            keys.iter()
+                .map(|(id, key)| (id.clone(), key.verifying_key()))
+                .collect(),
+            2,
+            1,
+            "pqc-vm",
+        )
+        .unwrap();
+        let mut state = State::default();
+        let before = state.clone();
+        let asset = AssetDefinition {
+            asset_id: [87; 32],
+            code: "PQASSET".into(),
+            kind: AssetKind::Other,
+            decimals: 0,
+            terms_digest: [88; 32],
+        };
+        let approval = authority
+            .approve(asset.statement().unwrap(), state.root(), &keys)
+            .unwrap();
+        let asset_json = json!({"assetID": hex::encode(asset.asset_id), "code": asset.code,
+            "kind": "other", "decimals": 0, "termsDigest": hex::encode(asset.terms_digest)});
+        let transaction = |approval: Value| {
+            TransactionEnvelope::new("defmivm.issueAsset",
+            json!({"asset": asset_json, "approval": approval, "expectedBeforeRoot": hex::encode(before.root())})).unwrap().encode().unwrap()
+        };
+        for mutation in 0..9 {
+            let mut bad = approval.clone();
+            match mutation {
+                0 => bad.approvals[0].signature.truncate(64),
+                1 => bad.approvals[0].signature[64] ^= 1,
+                2 => bad.approvals[0].signature[0] ^= 1,
+                3 => bad.committee_digest[0] ^= 1,
+                4 => bad.signer_epoch += 1,
+                5 => bad.approvals[1] = bad.approvals[0].clone(),
+                6 => bad.approvals.truncate(1),
+                7 => {
+                    bad.suite =
+                        zkfmi_crypto::suite::Suite::new(zkfmi_crypto::suite::SuiteId::Ed25519)
+                }
+                _ => bad.statement[0] ^= 1,
+            }
+            assert!(
+                state
+                    .apply(&transaction(approval_json(&bad)), &authority, 100)
+                    .is_err(),
+                "mutation {mutation}"
+            );
+            assert_eq!(state, before);
+        }
+        let mut legacy = approval_json(&approval);
+        legacy.as_object_mut().unwrap().remove("suite");
+        assert!(state.apply(&transaction(legacy), &authority, 100).is_err());
+        assert_eq!(state, before);
+        let valid = transaction(approval_json(&approval));
+        for time in [9, 200] {
+            // The VM overwrites a caller's pre-bound clock with the block time.
+            assert!(state.apply(&valid, &authority.at(100), time).is_err());
+            assert_eq!(state, before);
+        }
+        state.apply(&valid, &authority, 100).unwrap();
+        let after = state.clone();
+        assert!(state.apply(&valid, &authority, 100).is_err());
+        assert_eq!(state, after);
+    }
+
     fn authorized_transaction(
         state: &State,
         authorizer: &QuorumAuthorizer,
-        signers: &BTreeMap<String, SigningKey>,
+        signers: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
         method: &str,
         field_name: &str,
         field_value: Value,
@@ -7378,7 +7474,7 @@ mod tests {
     fn authorized_note_product_transaction(
         state: &State,
         authorizer: &QuorumAuthorizer,
-        signers: &BTreeMap<String, SigningKey>,
+        signers: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
         order: &ProductNoteSettlementOrder,
         evidence: &ProductSettlementEvidence,
     ) -> Result<Vec<u8>, String> {
@@ -7536,7 +7632,7 @@ mod tests {
     fn authorized_reservation_transaction(
         state: &State,
         authorizer: &QuorumAuthorizer,
-        signers: &BTreeMap<String, SigningKey>,
+        signers: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
         transition: &CreditFacilityTransition,
         authorization: &ReservationAuthorization,
         escrow: &ReservationEscrow,
@@ -7966,7 +8062,7 @@ mod tests {
     fn authorized_standing_pool_allocation_transaction(
         state: &State,
         authorizer: &QuorumAuthorizer,
-        signers: &BTreeMap<String, SigningKey>,
+        signers: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
         transition: &CreditFacilityTransition,
         authorization: &ReservationAuthorization,
         allocation: &StandingNotePoolAllocation,
@@ -7990,7 +8086,7 @@ mod tests {
     fn authorized_note_reservation_transaction(
         state: &State,
         authorizer: &QuorumAuthorizer,
-        signers: &BTreeMap<String, SigningKey>,
+        signers: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
         transition: &CreditFacilityTransition,
         authorization: &ReservationAuthorization,
         escrow: &NoteReservationEscrow,

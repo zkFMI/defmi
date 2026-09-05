@@ -250,13 +250,25 @@ fn product_batch_rejects_every_cross_order_double_spend_surface() {
     );
 }
 
-fn keys() -> BTreeMap<String, SigningKey> {
+fn keys() -> BTreeMap<String, qomm_defmi::governance::GovernanceSigner> {
     (0..7)
-        .map(|index| (format!("node-{index}"), SigningKey::generate(&mut OsRng)))
+        .map(|index| {
+            (
+                format!("node-{index}"),
+                qomm_defmi::governance::GovernanceSigner::generate(
+                    &format!("node-{index}"),
+                    0,
+                    i64::MAX as u64,
+                )
+                .unwrap(),
+            )
+        })
         .collect()
 }
 
-fn authorizer(keys: &BTreeMap<String, SigningKey>) -> QuorumAuthorizer {
+fn authorizer(
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
+) -> QuorumAuthorizer {
     QuorumAuthorizer::new(
         keys.iter()
             .map(|(node, key)| (node.clone(), key.verifying_key()))
@@ -271,7 +283,7 @@ fn authorizer(keys: &BTreeMap<String, SigningKey>) -> QuorumAuthorizer {
 fn approve(
     facility: &DefmiFacility,
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     statement: [u8; 32],
     count: usize,
 ) -> QuorumApproval {
@@ -386,7 +398,7 @@ fn certified_admission_population(
 fn register(
     facility: &DefmiFacility,
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     label: &str,
     kind: AssetKind,
     decimals: u8,
@@ -410,7 +422,7 @@ fn register(
 fn opening(
     facility: &DefmiFacility,
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     label: &str,
     asset: &AssetDefinition,
     commitment: [u8; 32],
@@ -433,7 +445,7 @@ fn opening(
 fn opening_with_handle(
     facility: &DefmiFacility,
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     label: &str,
     handle: [u8; 32],
     asset: &AssetDefinition,
@@ -648,7 +660,7 @@ struct CreditFixture {
     _directory: tempfile::TempDir,
     facility: DefmiFacility,
     authorizer: QuorumAuthorizer,
-    nodes: BTreeMap<String, SigningKey>,
+    nodes: BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     guarantor: SigningKey,
     facility_id: [u8; 32],
     cap_blinding: Scalar,
@@ -1429,18 +1441,24 @@ fn asset_and_account_retries_are_idempotent_but_conflicts_fail() {
 
 #[test]
 fn quorum_is_bound_to_unique_keys_domain_and_before_root() {
-    let repeated = SigningKey::generate(&mut OsRng);
+    let repeated =
+        qomm_defmi::governance::GovernanceSigner::generate("node-a", 0, i64::MAX as u64).unwrap();
     assert!(QuorumAuthorizer::new(
         BTreeMap::from([
             ("node-a".into(), repeated.verifying_key()),
-            ("node-b".into(), repeated.verifying_key()),
+            ("node-b".into(), {
+                let mut key = repeated.verifying_key();
+                key.participant_id = zkfmi_crypto::key::ParticipantId::new("node-b").unwrap();
+                key.key_id = zkfmi_crypto::key::KeyId::new("another-key-id").unwrap();
+                key
+            }),
         ]),
         2,
         1,
         "defmi:local",
     )
     .unwrap_err()
-    .contains("two node identities"));
+    .contains("distinct valid key components"));
 
     let directory = tempfile::tempdir().unwrap();
     let keys = keys();
@@ -1465,6 +1483,27 @@ fn quorum_is_bound_to_unique_keys_domain_and_before_root() {
         pending.statement().unwrap(),
         3,
     );
+    let unchanged_root = facility.state_root().unwrap();
+    for mutation in 0..8 {
+        let mut bad = stale.clone();
+        match mutation {
+            0 => bad.approvals[0].signature.truncate(64),
+            1 => bad.approvals[0].signature[64] ^= 1,
+            2 => bad.approvals[0].signature[0] ^= 1,
+            3 => bad.committee_digest[0] ^= 1,
+            4 => bad.signer_epoch += 1,
+            5 => bad.approvals[1] = bad.approvals[0].clone(),
+            6 => {
+                bad.approvals.pop();
+            }
+            _ => bad.suite = zkfmi_crypto::suite::Suite::new(zkfmi_crypto::suite::SuiteId::Ed25519),
+        }
+        assert!(
+            facility.register_asset(&pending, &bad).is_err(),
+            "mutation {mutation}"
+        );
+        assert_eq!(facility.state_root().unwrap(), unchanged_root);
+    }
     register(&facility, &authorizer, &keys, "OTHER", AssetKind::Other, 0);
     assert!(facility
         .register_asset(&pending, &stale)

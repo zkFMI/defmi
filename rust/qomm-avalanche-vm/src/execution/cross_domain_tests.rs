@@ -7,12 +7,20 @@ use qomm_defmi::cross_domain::{hash_release_witness, LegStatus};
 use qomm_defmi::facility::QuorumApproval;
 use serde_json::{json, Map, Value};
 
-fn local_committee() -> (QuorumAuthorizer, BTreeMap<String, SigningKey>) {
+fn local_committee() -> (
+    QuorumAuthorizer,
+    BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
+) {
     let signers = (0u8..3)
         .map(|index| {
             (
                 format!("node-{index}"),
-                SigningKey::from_bytes(&[index + 1; 32]),
+                qomm_defmi::governance::GovernanceSigner::generate(
+                    &format!("node-{index}"),
+                    0,
+                    i64::MAX as u64,
+                )
+                .unwrap(),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -30,11 +38,13 @@ fn approval_json(approval: &QuorumApproval) -> Value {
     json!({
         "statement": hex::encode(approval.statement),
         "signerEpoch": approval.signer_epoch,
+        "suite": approval.suite,
+        "committeeDigest": hex::encode(approval.committee_digest),
         "domain": approval.domain,
         "beforeRoot": hex::encode(approval.before_root),
         "approvals": approval.approvals.iter().map(|signed| json!({
             "nodeID": signed.node_id,
-            "signature": hex::encode(signed.signature.to_bytes()),
+            "signature": hex::encode(&signed.signature),
         })).collect::<Vec<_>>(),
     })
 }
@@ -178,7 +188,7 @@ fn sign_receipt(
 fn authorized_transaction(
     state: &State,
     authorizer: &QuorumAuthorizer,
-    signers: &BTreeMap<String, SigningKey>,
+    signers: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     method: &str,
     mut params: Map<String, Value>,
     statement: [u8; 32],
@@ -197,7 +207,7 @@ fn authorized_transaction(
 fn apply_single(
     state: &mut State,
     authorizer: &QuorumAuthorizer,
-    signers: &BTreeMap<String, SigningKey>,
+    signers: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     method: &str,
     field: &str,
     value: Value,
@@ -213,7 +223,7 @@ fn apply_single(
 fn install_domains(
     state: &mut State,
     authorizer: &QuorumAuthorizer,
-    signers: &BTreeMap<String, SigningKey>,
+    signers: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     local: &CrossDomain,
     remote: &CrossDomainCommittee,
 ) {
@@ -402,7 +412,7 @@ fn prepare(
 fn submit_prepare(
     state: &mut State,
     authorizer: &QuorumAuthorizer,
-    signers: &BTreeMap<String, SigningKey>,
+    signers: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     prepare: &CrossDomainPrepareLeg,
     reserve: &SettlementOrder,
 ) {
@@ -430,7 +440,7 @@ fn submit_prepare(
 fn submit_claim(
     state: &mut State,
     authorizer: &QuorumAuthorizer,
-    signers: &BTreeMap<String, SigningKey>,
+    signers: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     prepare: &CrossDomainPrepareLeg,
     claim: &SettlementOrder,
     witness: &[u8],

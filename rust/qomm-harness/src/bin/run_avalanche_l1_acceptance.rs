@@ -1,6 +1,6 @@
 //! End-to-end acceptance for the QOMM Rust VM under AvalancheGo consensus.
 
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::SigningKey;
 use qomm_defmi::avalanche::{AvalancheClient, AvalancheRpcClient, FacilityAvalancheBridge};
 use qomm_defmi::facility::{
     AccountOpening, AssetDefinition, AssetKind, DefmiFacility, QuorumApproval, QuorumAuthorizer,
@@ -297,19 +297,18 @@ fn digest(label: &str) -> [u8; 32] {
     Sha256::digest(label.as_bytes()).into()
 }
 
-fn committee(domain: &str) -> HarnessResult<(QuorumAuthorizer, BTreeMap<String, SigningKey>)> {
-    let keys = (0..7)
-        .map(|index| {
-            (
-                format!("node-{index}"),
-                SigningKey::from_bytes(&digest(&format!("key:{index}"))),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+fn committee(
+    domain: &str,
+) -> HarnessResult<(
+    QuorumAuthorizer,
+    BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
+)> {
+    let keys =
+        qomm_defmi::governance::public_development_keys().map_err(|error| error.to_string())?;
     let nodes = keys
         .iter()
         .map(|(name, key)| (name.clone(), key.verifying_key()))
-        .collect::<BTreeMap<String, VerifyingKey>>();
+        .collect::<BTreeMap<_, _>>();
     let authorizer =
         QuorumAuthorizer::new(nodes, 3, 1, domain.to_string()).map_err(string_error)?;
     Ok((authorizer, keys))
@@ -317,7 +316,7 @@ fn committee(domain: &str) -> HarnessResult<(QuorumAuthorizer, BTreeMap<String, 
 
 fn approval(
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     statement: [u8; 32],
     before_root: [u8; 32],
 ) -> HarnessResult<QuorumApproval> {

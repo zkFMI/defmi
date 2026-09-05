@@ -73,20 +73,12 @@ fn trusted_kyb_issuer() -> ed25519_dalek::VerifyingKey {
     SigningKey::from_bytes(&seed).verifying_key()
 }
 
-fn governance_keys() -> BTreeMap<String, SigningKey> {
-    (0..7)
-        .map(|node| {
-            // Matches avalanche/defmivm/config/test-genesis.json and the
-            // independent Avalanche acceptance harness. Production replaces
-            // these acceptance-only deterministic keys in genesis.
-            let seed: [u8; 32] = Sha256::digest(format!("key:{node}").as_bytes()).into();
-            (format!("node-{node}"), SigningKey::from_bytes(&seed))
-        })
-        .collect()
+fn governance_keys() -> BTreeMap<String, qomm_defmi::governance::GovernanceSigner> {
+    qomm_defmi::governance::public_development_keys().expect("public development governance keys")
 }
 
 fn authorizer(
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     domain: &str,
 ) -> Result<QuorumAuthorizer, String> {
     QuorumAuthorizer::new(
@@ -102,7 +94,7 @@ fn authorizer(
 fn approve(
     facility: &DefmiFacility,
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     statement: [u8; 32],
 ) -> Result<QuorumApproval, String> {
     let signers = keys
@@ -116,7 +108,7 @@ fn approve(
 fn approve_root(
     root: [u8; 32],
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     statement: [u8; 32],
 ) -> Result<QuorumApproval, String> {
     let signers = keys
@@ -220,7 +212,7 @@ fn issue_note_source(
     bridge: &AvalancheNoteBridge<'_, AvalancheRpcClient>,
     client: &AvalancheRpcClient,
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     issuer: &Issuer,
     csd_issuer: &CsdIssuerDefinition,
     csd_signer: &dyn Ed25519MessageSigner,
@@ -322,7 +314,7 @@ fn register_asset(
     facility: &DefmiFacility,
     bridge: Option<&FacilityAvalancheBridge<'_, AvalancheRpcClient>>,
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     asset_id: [u8; 32],
     code: &str,
     kind: AssetKind,
@@ -354,7 +346,7 @@ fn open_source_account(
     facility: &DefmiFacility,
     bridge: Option<&FacilityAvalancheBridge<'_, AvalancheRpcClient>>,
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     request: SourceAccountRequest<'_>,
 ) -> Result<SourcePlan, String> {
     let SourceAccountRequest {
@@ -407,7 +399,7 @@ fn ensure_destination_account(
     facility: &DefmiFacility,
     bridge: Option<&FacilityAvalancheBridge<'_, AvalancheRpcClient>>,
     authorizer: &QuorumAuthorizer,
-    keys: &BTreeMap<String, SigningKey>,
+    keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     owner_handle: [u8; 32],
     asset: &AssetDefinition,
 ) -> Result<(), String> {

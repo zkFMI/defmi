@@ -572,7 +572,12 @@ pub fn settle_product_threshold_batch<R: RngCore + CryptoRng>(
     batch.validate_orders(&orders)?;
     let root = facility.state_root()?;
     let statement = batch.statement()?;
-    if root != approval.before_root || !facility.authorizer.verify(&statement, &root, approval) {
+    if root != approval.before_root
+        || !facility
+            .authorizer
+            .at(now)
+            .verify(&statement, &root, approval)
+    {
         return Err("product settlement batch lacks approval for the current DeFMI state".into());
     }
     for item in items {
