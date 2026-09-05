@@ -2879,13 +2879,44 @@ fn product_settlement_for(kind: GuarantorKind) {
     let issuer = Issuer::new(Pedersen::new(b"qomm:defmi:v1"), Bounds::default());
     let venue_id = h("venue:qomm");
     let defmi_id = h("defmi:avalanche-local");
+    let pq_committee =
+        zkfmi_crypto::test_support::committee(Sha256::digest(public.serialize().unwrap()).into());
+    let verifier = qomm_defmi::settlement_verifier::SettlementVerifierConfig {
+        venue_id,
+        defmi_id,
+        epoch: 9,
+        quote_registry_digest: h("test:registered:quote-registry"),
+        quote_eligibility_bits: 32,
+        quote_span_bits: 32,
+        amount_bits: issuer.bounds.amount_bits as u16,
+        price_bits: issuer.bounds.price_bits as u16,
+        max_horizon: issuer.bounds.max_horizon,
+        frost_public_package: public.serialize().unwrap(),
+        pq_committee: pq_committee.clone(),
+        valid_from: 1,
+        valid_until: 10_000,
+    };
+    fixture
+        .facility
+        .register_settlement_verifier(
+            &verifier,
+            &approve(
+                &fixture.facility,
+                &fixture.authorizer,
+                &fixture.nodes,
+                verifier.statement().unwrap(),
+                3,
+            ),
+            100,
+        )
+        .unwrap();
     let maker_policy = h("maker-policy:v7");
     let rfq_nullifier = h("rfq:nullifier:product");
     let admission_ticket_id = h("admission-ticket:product");
 
     // The eventual price is produced and signed by the quorum.  No Maker or
     // Taker signature below contains that exact quote.
-    let (payment, settlement_openings) = threshold_settlement_payment(
+    let (mut payment, settlement_openings) = threshold_settlement_payment(
         &issuer,
         10,
         4,
@@ -2898,6 +2929,12 @@ fn product_settlement_for(kind: GuarantorKind) {
         &shares,
         &public,
     );
+
+    payment.pq_approval = Some(zkfmi_crypto::test_support::approve(
+        &pq_committee,
+        &payment.digest_for(DEFAULT_DOMAIN),
+        100,
+    ));
 
     // Build the two Reserve zkPIs first; their hidden amount commitments are
     // the exact maxima that the mandates sign and the facility locks.
@@ -3664,8 +3701,13 @@ fn product_settlement_for(kind: GuarantorKind) {
         &public,
         &typed_digest_for(&payment, &context, DEFAULT_DOMAIN).unwrap(),
     );
+    let pq_authorization = Some(zkfmi_crypto::test_support::approve(
+        &pq_committee,
+        &typed_digest_for(&payment, &context, DEFAULT_DOMAIN).unwrap(),
+        100,
+    ));
     let typed = TypedInstruction {
-        pq_authorization: None,
+        pq_authorization,
         payment,
         context,
         authorization,
@@ -3821,6 +3863,47 @@ fn product_settlement_for(kind: GuarantorKind) {
         3,
     );
     let venue = Venue::new(Pedersen::new(b"qomm:defmi:v1"), &Bounds::default(), public);
+    let before = fixture.facility.state_root().unwrap();
+    for mutation in 0..5 {
+        let mut changed = typed.clone();
+        let mut changed_order = product.clone();
+        match mutation {
+            0 => changed.payment.pq_approval = None,
+            1 => changed.pq_authorization = None,
+            2 => changed.pq_authorization.as_mut().unwrap().signatures[0].signature[0] ^= 1,
+            3 => changed.pq_authorization.as_mut().unwrap().epoch += 1,
+            4 => changed_order.admission_epoch += 1,
+            _ => unreachable!(),
+        }
+        let error = settle_product_threshold_authorized(
+            &fixture.facility,
+            &changed_order,
+            &[],
+            &changed,
+            &venue,
+            &asset_link,
+            &dvp_package,
+            &price_limit_proof,
+            &maker_mandate,
+            &maker_identity,
+            &taker_mandate,
+            &taker_identity,
+            &approval,
+            200,
+            &mut OsRng,
+        )
+        .unwrap_err();
+        assert!(
+            if mutation == 4 {
+                error.contains("registered verifier")
+            } else {
+                error.contains("PQ")
+            },
+            "wrong rejection: {error}"
+        );
+        assert_eq!(fixture.facility.state_root().unwrap(), before);
+    }
+    // Caller-supplied classical-only venue cannot disable the enrolled policy.
     let receipt = settle_product_threshold_authorized(
         &fixture.facility,
         &product,

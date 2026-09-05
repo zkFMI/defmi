@@ -6050,7 +6050,7 @@ impl DefmiFacility {
         order: &ProductSettlementOrder,
         relation_proofs: &[CreditFacilityRelationProof],
         typed_instruction: &qomm_zkpi::typed::TypedInstruction,
-        typed_venue: &qomm_zkpi::Venue,
+        _typed_venue: &qomm_zkpi::Venue,
         asset_link: &crate::asset_link::AssetLinkProof,
         dvp_package: ProductDvpEvidence<'_>,
         approval: Option<&QuorumApproval>,
@@ -6060,6 +6060,18 @@ impl DefmiFacility {
         commit: bool,
     ) -> Result<SettlementReceipt, String> {
         let request = order.body()?;
+        let enrolled = self
+            .settlement_verifier(&order.venue_id, order.admission_epoch)?
+            .ok_or("product settlement lacks its registered verifier")?;
+        if enrolled.defmi_id != order.defmi_id {
+            return Err("registered verifier belongs to another DeFMI".into());
+        }
+        let typed_venue = enrolled.venue(now)?;
+        let typed_venue = if matches!(&dvp_package, ProductDvpEvidence::Threshold(_)) {
+            typed_venue.require_threshold_ranges()
+        } else {
+            typed_venue
+        };
         if relation_proofs.is_empty() && matches!(&dvp_package, ProductDvpEvidence::Threshold(_)) {
             for reservation in &order.reservations {
                 verify_threshold_dvp_relation(

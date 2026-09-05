@@ -38,6 +38,7 @@ pub struct ApplicationReserveScope {
     pub venue_id: [u8; 32],
     pub defmi_id: [u8; 32],
     pub committee_key_digest: [u8; 32],
+    pub pq_committee_digest: [u8; 32],
     pub committee_epoch: u64,
     pub amount_bits: u16,
 }
@@ -51,6 +52,7 @@ impl ApplicationReserveScope {
                 self.venue_id,
                 self.defmi_id,
                 self.committee_key_digest,
+                self.pq_committee_digest,
             ]
             .contains(&ZERO)
         {
@@ -73,11 +75,44 @@ impl ApplicationReserveScope {
 
     pub fn statement(&self) -> Result<[u8; 32], String> {
         Ok(Sha256::new()
+            .chain_update(b"DEFMI:APPLICATION:HYBRID-RESERVE-SCOPE:v2")
             .chain_update(self.key()?)
             .chain_update(self.committee_key_digest)
+            .chain_update(self.pq_committee_digest)
             .chain_update(self.amount_bits.to_be_bytes())
             .finalize()
             .into())
+    }
+
+    /// Both key sets are fixed before the participant authorizes a reserve.
+    pub fn verify_committee(
+        &self,
+        classical: &[u8],
+        policy: &qomm_zkpi::QuorumPolicy,
+    ) -> Result<qomm_zkpi::frost::keys::PublicKeyPackage, String> {
+        self.validate()?;
+        if classical.len() > 64 * 1024
+            || <[u8; 32]>::from(Sha256::digest(classical)) != self.committee_key_digest
+            || policy.digest().map_err(|error| error.to_string())? != self.pq_committee_digest
+            || policy.epoch != self.committee_epoch
+            || policy.threshold != 3
+            || policy.members.len() != 7
+        {
+            return Err(
+                "application committee differs from its pre-authorized classical/PQ keys".into(),
+            );
+        }
+        let public = qomm_zkpi::frost::keys::PublicKeyPackage::deserialize(classical)
+            .map_err(|_| "application committee key is malformed")?;
+        if public
+            .serialize()
+            .map_err(|_| "application committee cannot be serialized")?
+            != classical
+        {
+            return Err("application committee is not canonical".into());
+        }
+        qomm_zkpi::validate_settlement_committee(policy, &public).map_err(str::to_string)?;
+        Ok(public)
     }
 }
 

@@ -79,6 +79,27 @@ impl SettlementVerifierConfig {
         Ok(())
     }
 
+    /// Build the execution verifier exclusively from the enrolled record.
+    pub fn venue(&self, now: u64) -> Result<qomm_zkpi::Venue, String> {
+        self.validate()?;
+        if now < self.valid_from || now > self.valid_until {
+            return Err("settlement verifier is not currently valid".into());
+        }
+        let public = frost::keys::PublicKeyPackage::deserialize(&self.frost_public_package)
+            .map_err(|_| "registered settlement committee is malformed".to_string())?;
+        qomm_zkpi::Venue::new(
+            qomm_zk::pedersen::Pedersen::new(b"qomm:defmi:v1"),
+            &qomm_zkpi::Bounds {
+                amount_bits: usize::from(self.amount_bits),
+                price_bits: usize::from(self.price_bits),
+                max_horizon: self.max_horizon,
+            },
+            public,
+        )
+        .require_pq_committee(self.pq_committee.clone())
+        .map_err(str::to_string)
+    }
+
     pub fn key(&self) -> [u8; 32] {
         settlement_verifier_key(self.venue_id, self.epoch)
     }

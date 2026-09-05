@@ -905,6 +905,7 @@ mod tests {
             venue_id: id(55),
             defmi_id: id(56),
             committee_key_digest: id(57),
+            pq_committee_digest: [231; 32],
             committee_epoch: 1,
             amount_bits: 32,
         };

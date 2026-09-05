@@ -32,6 +32,7 @@ struct Fixture {
     key: Pedersen,
     keys: BTreeMap<frost::Identifier, frost::keys::KeyPackage>,
     public: frost::keys::PublicKeyPackage,
+    pq_committee: qomm_zkpi::QuorumPolicy,
     scope: ApplicationReserveScope,
     wallets: [Wallet; 2],
     initial: Witness,
@@ -39,13 +40,24 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_pq_expiry(4_102_444_801)
+    }
+
+    fn with_pq_expiry(not_after: u64) -> Self {
         let (authorizer, signers) = committee();
         let (shares, public) = qomm_zkpi::deal_quorum(7, 3, &mut OsRng).unwrap();
+        let mut pq_committee = zkfmi_crypto::test_support::committee(
+            Sha256::digest(public.serialize().unwrap()).into(),
+        );
+        for member in &mut pq_committee.members {
+            member.key.not_after = not_after;
+        }
         let scope = ApplicationReserveScope {
             application_binding: [207; 32],
             venue_id: [208; 32],
             defmi_id: [209; 32],
             committee_key_digest: Sha256::digest(public.serialize().unwrap()).into(),
+            pq_committee_digest: pq_committee.digest().unwrap(),
             committee_epoch: 1,
             amount_bits: 32,
         };
@@ -55,6 +67,7 @@ impl Fixture {
             key: Pedersen::new(b"qomm:defmi:v1"),
             keys: frost_key_packages(shares),
             public,
+            pq_committee,
             scope,
             wallets: VIEW_SECRETS
                 .map(|value| Wallet::from_parts(Scalar::from(value), Scalar::from(value + 10))),
@@ -253,6 +266,11 @@ impl Fixture {
     }
 
     fn sign_fill(&self, fill: &mut ApplicationNoteFill) {
+        fill.pq_authorization = Some(zkfmi_crypto::test_support::approve(
+            &self.pq_committee,
+            &fill.signing_message().unwrap(),
+            100,
+        ));
         fill.signature = frost_sign(&self.keys, &self.public, &fill.signing_message().unwrap())
             .serialize()
             .unwrap();
@@ -312,7 +330,12 @@ impl Fixture {
             &self.public,
             &partial.digest_for(DEFAULT_DOMAIN),
         );
-        let payment = partial.sealed(signature);
+        let pq = zkfmi_crypto::test_support::approve(
+            &self.pq_committee,
+            &partial.digest_for(DEFAULT_DOMAIN),
+            100,
+        );
+        let payment = partial.sealed_hybrid(signature, pq);
         let proofs = DvpProofs {
             product: prove_product(
                 &self.key,
@@ -355,7 +378,9 @@ impl Fixture {
             }
         };
         let mut fill = ApplicationNoteFill {
-            version: 1,
+            version: 2,
+            pq_committee: self.pq_committee.clone(),
+            pq_authorization: None,
             batch: None,
             scope: self.scope.clone(),
             before_root: self.state.root(),
@@ -415,6 +440,8 @@ impl Fixture {
     ) -> ApplicationNoteRelease {
         let record = &self.state.application_reservations[&id_key(&HOLDS[index])];
         let mut release = ApplicationNoteRelease {
+            pq_committee: None,
+            pq_authorization: None,
             scope: self.scope.clone(),
             before_root: self.state.root(),
             operation_id: [tag; 32],
@@ -427,6 +454,12 @@ impl Fixture {
         };
         if reason == ApplicationReleaseReason::Cancelled {
             release.committee_public = self.public.serialize().unwrap();
+            release.pq_committee = Some(self.pq_committee.clone());
+            release.pq_authorization = Some(zkfmi_crypto::test_support::approve(
+                &self.pq_committee,
+                &release.signing_message().unwrap(),
+                100,
+            ));
             release.signature = frost_sign(
                 &self.keys,
                 &self.public,
@@ -743,6 +776,7 @@ fn unsigned_candidate_verification_never_authorizes_native_execution() {
     assert!(signed.verify_unsigned(&fixture.scope, 200).is_err());
     let mut candidate = signed.clone();
     candidate.signature.clear();
+    candidate.pq_authorization = None;
     candidate.verify_unsigned(&fixture.scope, 200).unwrap();
     assert!(candidate.verify(&fixture.scope, 200).is_err());
     let before = fixture.state.root();
@@ -916,6 +950,7 @@ fn partial_expiry_and_ordered_cancellation_release_exact_current_head() {
     let cancel = fixture.release(0, ApplicationReleaseReason::Cancelled, 22);
     let mut unsigned = cancel.clone();
     unsigned.signature.clear();
+    unsigned.pq_authorization = None;
     assert!(fixture
         .state
         .apply(&release_tx(&unsigned), &fixture.authorizer, 201)
@@ -1330,4 +1365,100 @@ fn native_claim_redemption_rejects_rebinding_and_legacy_approval_bypass() {
     )
     .is_err());
     assert_eq!(fixture.state.root(), before);
+}
+
+#[test]
+fn native_hybrid_fill_and_cancel_reject_missing_corrupt_or_substituted_approval() {
+    let mut fixture = Fixture::new();
+    let (fill, _) = fixture.fill(fixture.initial, 40, 14, [false; 2]);
+    let release = fixture.release(0, ApplicationReleaseReason::Cancelled, 15);
+    let before = serde_json::to_vec(&fixture.state).unwrap();
+    for mutation in 0..9 {
+        let mut changed = fill.clone();
+        match mutation {
+            0 => changed.pq_authorization = None,
+            1 => changed.pq_authorization.as_mut().unwrap().signatures[0].signature[0] ^= 1,
+            2 => changed.signature[0] ^= 1,
+            3 => {
+                changed
+                    .pq_authorization
+                    .as_mut()
+                    .unwrap()
+                    .signatures
+                    .pop()
+                    .unwrap();
+            }
+            4 => {
+                let approval = changed.pq_authorization.as_mut().unwrap();
+                approval.signatures[1] = approval.signatures[0].clone();
+            }
+            5 => changed.pq_committee.epoch += 1,
+            6 => changed.scope.pq_committee_digest[0] ^= 1,
+            7 | 8 => {
+                let mut payment = qomm_zkpi::wire::decode(&changed.instruction).unwrap();
+                if mutation == 7 {
+                    payment.pq_approval = None;
+                } else {
+                    payment.pq_approval.as_mut().unwrap().signatures[0].signature[0] ^= 1;
+                }
+                changed.instruction = qomm_zkpi::wire::encode(&payment);
+                fixture.sign_fill(&mut changed);
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            fixture
+                .state
+                .apply(&fill_tx(&changed), &fixture.authorizer, 200)
+                .is_err(),
+            "accepted hybrid fill mutation {mutation}"
+        );
+        assert_eq!(serde_json::to_vec(&fixture.state).unwrap(), before);
+    }
+    for mutation in 0..6 {
+        let mut changed = release.clone();
+        match mutation {
+            0 => changed.pq_authorization = None,
+            1 => changed.pq_committee = None,
+            2 => changed.pq_authorization.as_mut().unwrap().signatures[0].signature[0] ^= 1,
+            3 => changed.signature[0] ^= 1,
+            4 => changed.pq_committee.as_mut().unwrap().epoch += 1,
+            5 => changed.scope.pq_committee_digest[0] ^= 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            fixture
+                .state
+                .apply(&release_tx(&changed), &fixture.authorizer, 200)
+                .is_err(),
+            "accepted hybrid cancellation mutation {mutation}"
+        );
+        assert_eq!(serde_json::to_vec(&fixture.state).unwrap(), before);
+    }
+    fixture
+        .state
+        .apply(&fill_tx(&fill), &fixture.authorizer, 200)
+        .unwrap();
+}
+
+#[test]
+fn expired_pq_keys_block_new_execution_but_preserve_accepted_fill_integrity() {
+    let mut fixture = Fixture::with_pq_expiry(250);
+    let (fill, _) = fixture.fill(fixture.initial, 40, 16, [false; 2]);
+    assert!(qomm_zkpi::wire::decode(&fill.instruction).unwrap().deadline > 250);
+    let before = fixture.state.root();
+    assert!(fixture
+        .state
+        .apply(&fill_tx(&fill), &fixture.authorizer, 251)
+        .is_err());
+    assert_eq!(fixture.state.root(), before);
+    fixture
+        .state
+        .apply(&fill_tx(&fill), &fixture.authorizer, 200)
+        .unwrap();
+    assert!(fill.verify(&fixture.scope, 251).is_err());
+    fill.verify_archived(&fixture.scope).unwrap();
+    let mut corrupt = fill;
+    corrupt.pq_authorization.as_mut().unwrap().signatures[0].signature[0] ^= 1;
+    assert!(corrupt.verify_archived(&fixture.scope).is_err());
 }

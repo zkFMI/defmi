@@ -96,6 +96,7 @@ fn dekyx_mandate_and_note_proofs_bind_without_a_circular_dependency() {
         venue_id: [13; 32],
         defmi_id: [14; 32],
         committee_key_digest: [15; 32],
+        pq_committee_digest: [231; 32],
         committee_epoch: 1,
         amount_bits: 32,
     };

@@ -21,8 +21,8 @@ use qomm_zkpi::{frost, Bounds, QuoteBinding, Venue};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const FILL_DOMAIN: &[u8] = b"DEFMI:APPLICATION:NOTE-FILL:v1";
-const RELEASE_DOMAIN: &[u8] = b"DEFMI:APPLICATION:NOTE-RELEASE:v1";
+const FILL_DOMAIN: &[u8] = b"DEFMI:APPLICATION:NOTE-FILL:v2";
+const RELEASE_DOMAIN: &[u8] = b"DEFMI:APPLICATION:NOTE-RELEASE:v2";
 const MAX_PROOF_BYTES: usize = 1024 * 1024;
 
 mod batch;
@@ -147,7 +147,7 @@ impl ApplicationSpendHead {
     }
 }
 
-/// All fields except `signature` are bound by the authorized committee.
+/// All fields except the two certificate components are bound by the committee.
 /// Securities and cash are explicit canonical rails; user identities and
 /// orders are not present. The signed zkPI carries pseudonymous recipients.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -170,7 +170,9 @@ pub struct ApplicationNoteFill {
     /// Delivery and refund, first securities then cash.
     pub openings: [ApplicationOpening; 4],
     pub committee_public: Vec<u8>,
+    pub pq_committee: qomm_zkpi::QuorumPolicy,
     pub signature: Vec<u8>,
+    pub pq_authorization: Option<qomm_zkpi::QuorumApproval>,
     /// Omitted for the existing standalone wire, so its signing bytes remain
     /// unchanged. A signed group member cannot execute through that endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,7 +187,7 @@ impl ApplicationNoteFill {
         if let Some(batch) = &self.batch {
             batch.validate()?;
         }
-        if self.version != 1
+        if self.version != 2
             || [
                 self.before_root,
                 self.operation_id,
@@ -209,8 +211,11 @@ impl ApplicationNoteFill {
         for opening in &self.openings {
             opening.domain()?;
         }
+        self.scope
+            .verify_committee(&self.committee_public, &self.pq_committee)?;
         let mut unsigned = self.clone();
         unsigned.signature.clear();
+        unsigned.pq_authorization = None;
         let raw = serde_json::to_vec(&unsigned).map_err(|error| error.to_string())?;
         if raw.len() > 2 * MAX_PROOF_BYTES {
             return Err("application fill exceeds its total wire bound".into());
@@ -227,22 +232,49 @@ impl ApplicationNoteFill {
         expected_scope: &ApplicationReserveScope,
         now: u64,
     ) -> Result<VerifiedApplicationFill, String> {
+        self.verify_at(expected_scope, now, false)
+    }
+
+    /// Check a canonically accepted fill without treating a recovery-time
+    /// clock or the payment deadline as its signing time. The canonical
+    /// receipt and registered scope must be authenticated by the caller.
+    /// This returns no execution authorization.
+    pub fn verify_archived(&self, expected_scope: &ApplicationReserveScope) -> Result<(), String> {
+        let instruction =
+            qomm_zkpi::wire::decode(&self.instruction).map_err(|error| error.to_string())?;
+        self.verify_at(expected_scope, instruction.deadline, true)
+            .map(|_| ())
+    }
+
+    fn verify_at(
+        &self,
+        expected_scope: &ApplicationReserveScope,
+        now: u64,
+        archived: bool,
+    ) -> Result<VerifiedApplicationFill, String> {
         let statement = self.signing_message()?;
-        if &self.scope != expected_scope
-            || <[u8; 32]>::from(Sha256::digest(&self.committee_public))
-                != expected_scope.committee_key_digest
-        {
+        if &self.scope != expected_scope {
             return Err("application fill committee or scope is not the pre-authorized one".into());
         }
-        let public = frost::keys::PublicKeyPackage::deserialize(&self.committee_public)
-            .map_err(|_| "application committee key is malformed")?;
+        let public = expected_scope.verify_committee(&self.committee_public, &self.pq_committee)?;
         let signature = frost::Signature::deserialize(&self.signature)
             .map_err(|_| "application fill signature is malformed")?;
         public
             .verifying_key()
             .verify(&statement, &signature)
             .map_err(|_| "application fill committee signature is invalid")?;
-        self.verify_body(statement, public, now)
+        let approval = self
+            .pq_authorization
+            .as_ref()
+            .ok_or("application fill lacks its PQ authorization")?;
+        if archived {
+            self.pq_committee
+                .verify_archived_signatures(approval, &statement)
+        } else {
+            self.pq_committee.verify(approval, &statement, now)
+        }
+        .map_err(|error| format!("application fill PQ authorization is invalid: {error}"))?;
+        self.verify_body(statement, public, now, archived)
     }
 
     /// Check a candidate before the authorized MPC nodes sign it. This does
@@ -256,15 +288,13 @@ impl ApplicationNoteFill {
     ) -> Result<(), String> {
         let statement = self.signing_message()?;
         if !self.signature.is_empty()
+            || self.pq_authorization.is_some()
             || &self.scope != expected_scope
-            || <[u8; 32]>::from(Sha256::digest(&self.committee_public))
-                != expected_scope.committee_key_digest
         {
             return Err("unsigned application fill has another scope, key, or a signature".into());
         }
-        let public = frost::keys::PublicKeyPackage::deserialize(&self.committee_public)
-            .map_err(|_| "application committee key is malformed")?;
-        self.verify_body(statement, public, now).map(|_| ())
+        let public = expected_scope.verify_committee(&self.committee_public, &self.pq_committee)?;
+        self.verify_body(statement, public, now, false).map(|_| ())
     }
 
     fn verify_body(
@@ -272,6 +302,7 @@ impl ApplicationNoteFill {
         statement: [u8; 32],
         public: frost::keys::PublicKeyPackage,
         now: u64,
+        archived: bool,
     ) -> Result<VerifiedApplicationFill, String> {
         let instruction =
             qomm_zkpi::wire::decode(&self.instruction).map_err(|error| error.to_string())?;
@@ -286,10 +317,16 @@ impl ApplicationNoteFill {
             price_bits: usize::from(self.scope.amount_bits),
             max_horizon: 3_600,
         };
-        Venue::new(key.clone(), &bounds, public)
+        let venue = Venue::new(key.clone(), &bounds, public)
             .require_threshold_ranges()
-            .verify(&instruction, now)
+            .require_pq_committee(self.pq_committee.clone())
             .map_err(str::to_string)?;
+        if archived {
+            venue.verify_archived(&instruction)
+        } else {
+            venue.verify(&instruction, now)
+        }
+        .map_err(str::to_string)?;
         let link = AssetLinkProof {
             announcement: point(self.asset_link_announcement)?,
             response: scalar(self.asset_link_response)?,
@@ -438,7 +475,9 @@ pub struct ApplicationNoteRelease {
     pub reason: ApplicationReleaseReason,
     /// Required for ordered cancellation; empty for time-based expiry.
     pub committee_public: Vec<u8>,
+    pub pq_committee: Option<qomm_zkpi::QuorumPolicy>,
     pub signature: Vec<u8>,
+    pub pq_authorization: Option<qomm_zkpi::QuorumApproval>,
 }
 
 impl ApplicationNoteRelease {
@@ -459,6 +498,7 @@ impl ApplicationNoteRelease {
         }
         let mut unsigned = self.clone();
         unsigned.signature.clear();
+        unsigned.pq_authorization = None;
         Ok(Sha256::new()
             .chain_update(RELEASE_DOMAIN)
             .chain_update(serde_json::to_vec(&unsigned).map_err(|error| error.to_string())?)
@@ -480,7 +520,9 @@ impl ApplicationNoteRelease {
             ApplicationReleaseReason::Expired => {
                 if now <= valid_until
                     || !self.committee_public.is_empty()
+                    || self.pq_committee.is_some()
                     || !self.signature.is_empty()
+                    || self.pq_authorization.is_some()
                 {
                     return Err(
                         "expiry needs an expired reservation and no discretionary signature".into(),
@@ -488,19 +530,28 @@ impl ApplicationNoteRelease {
                 }
             }
             ApplicationReleaseReason::Cancelled => {
-                if <[u8; 32]>::from(Sha256::digest(&self.committee_public))
-                    != scope.committee_key_digest
-                {
-                    return Err("cancellation is not from its pre-authorized committee".into());
-                }
-                let public = frost::keys::PublicKeyPackage::deserialize(&self.committee_public)
-                    .map_err(|_| "cancellation key is malformed")?;
+                let policy = self
+                    .pq_committee
+                    .as_ref()
+                    .ok_or("cancellation lacks its PQ committee")?;
+                let public = scope.verify_committee(&self.committee_public, policy)?;
                 let signature = frost::Signature::deserialize(&self.signature)
                     .map_err(|_| "cancellation signature is malformed")?;
                 public
                     .verifying_key()
                     .verify(&statement, &signature)
                     .map_err(|_| "cancellation signature is invalid")?;
+                policy
+                    .verify(
+                        self.pq_authorization
+                            .as_ref()
+                            .ok_or("cancellation lacks its PQ authorization")?,
+                        &statement,
+                        now,
+                    )
+                    .map_err(|error| {
+                        format!("cancellation PQ authorization is invalid: {error}")
+                    })?;
             }
         }
         Ok(statement)
