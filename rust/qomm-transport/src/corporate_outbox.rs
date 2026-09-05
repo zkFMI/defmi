@@ -549,6 +549,7 @@ impl CorporateOutbox {
                 OutboxState::Queued
                 | OutboxState::Dispatching { .. }
                 | OutboxState::Expired { .. }
+                | OutboxState::ReleasePending { .. }
                 | OutboxState::ManualReview { .. } => {
                     entry.state = OutboxState::AbortedBeforeReserve { finalized_at };
                     Ok(())
@@ -1330,6 +1331,34 @@ mod tests {
         assert_eq!(metrics.expired, 0);
         assert_eq!(metrics.aborted_before_reserve, 1);
         assert_eq!(metrics.oldest_unfinalized_age_seconds, None);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn pending_release_can_finish_when_canonical_reconciliation_proves_no_reserve() {
+        let path = temporary_path("pending-release-pre-reserve-abort");
+        let store = outbox(&path);
+        store.initialize().unwrap();
+        store.enqueue("request-1", b"signed-one", 10, 20).unwrap();
+        assert!(matches!(
+            store.claim_next(20, false, 5).unwrap(),
+            Some(QueueAction::Expire { .. })
+        ));
+        store
+            .mark_release_pending("request-1", digest(b"signed-one"), 20)
+            .unwrap();
+        // Pending means the result was unknown, not that a reserve existed.
+        // Only the authenticated corporate reconciler calls this after reads.
+        store
+            .record_pre_reserve_abort("request-1", digest(b"signed-one"), 21)
+            .unwrap();
+        store
+            .record_pre_reserve_abort("request-1", digest(b"signed-one"), 22)
+            .unwrap();
+        let metrics = store.metrics(23).unwrap();
+        assert_eq!(metrics.release_pending, 0);
+        assert_eq!(metrics.aborted_before_reserve, 1);
+        assert_eq!(store.claim_next(24, true, 5).unwrap(), None);
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
