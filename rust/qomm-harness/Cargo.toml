@@ -6,13 +6,13 @@ license.workspace = true
 autobins = false
 
 [dependencies]
-qomm-defmi = { path = "../qomm-defmi" }
-qomm-measure = { path = "../qomm-measure" }
-qomm-proofs = { path = "../qomm-proofs" }
-qomm-sim = { path = "../qomm-sim" }
-qomm-transport = { path = "../qomm-transport" }
-qomm-zk = { path = "../qomm-zk" }
-qomm-zkpi = { path = "../qomm-zkpi" }
+qomm-defmi.workspace = true
+qomm-measure.workspace = true
+qomm-proofs.workspace = true
+qomm-sim.workspace = true
+qomm-transport.workspace = true
+qomm-zk.workspace = true
+qomm-zkpi.workspace = true
 curve25519-dalek.workspace = true
 ed25519-dalek.workspace = true
 merlin.workspace = true
