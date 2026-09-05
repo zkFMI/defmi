@@ -198,7 +198,8 @@ fn nonzero(value: &[u8; 32], name: &str) -> Result<String, String> {
     Ok(hex::encode(value))
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NoteOutput {
     pub note_id: [u8; 32],
     pub asset_id: [u8; 32],

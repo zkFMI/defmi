@@ -46,6 +46,7 @@ pub const ISSUE_METHODS: &[&str] = &[
     "defmivm.issueAccount",
     "defmivm.issueNote",
     "defmivm.issueNoteClaimMaterialization",
+    "defmivm.issueNoteClaimRedemption",
     "defmivm.issueGuarantor",
     "defmivm.issueCreditGrant",
     "defmivm.issueCreditTransition",

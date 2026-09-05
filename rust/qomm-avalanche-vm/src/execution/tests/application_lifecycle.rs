@@ -1019,3 +1019,170 @@ fn closing_one_order_does_not_release_the_counterpartys_remaining_reserve() {
     );
     restored(&fixture.state);
 }
+
+#[test]
+fn native_recipient_redeems_final_refund_without_governance_or_destination_keys() {
+    use qomm_defmi::claim_redemption::redeem_claim;
+    let mut fixture = Fixture::new();
+    let (fill, remainder) = fixture.fill(fixture.initial, 40, 7, [false, true]);
+    let claim = fill
+        .verify(&fixture.scope, 200)
+        .unwrap()
+        .claims
+        .into_iter()
+        .find(|c| c.kind == NoteClaimKind::Refund && c.asset_id == ASSETS[1])
+        .unwrap();
+    fixture
+        .state
+        .apply(&fill_tx(&fill), &fixture.authorizer, 200)
+        .unwrap();
+    let destination = Wallet::new(&mut OsRng);
+    let redemption = redeem_claim(
+        &claim,
+        &fixture.key,
+        32,
+        &Scalar::from(VIEW_SECRETS[1]),
+        &destination.address,
+        &[1, 4, 7],
+        fixture.authorizer.domain(),
+        fixture.state.root(),
+        [71; 32],
+        &mut OsRng,
+    )
+    .unwrap();
+    assert_ne!(
+        redemption.output.one_time,
+        destination.address.view.compress().to_bytes()
+    );
+    assert_ne!(
+        redemption.output.one_time,
+        destination.address.spend.compress().to_bytes()
+    );
+    let tx = TransactionEnvelope::new(
+        "defmivm.issueNoteClaimRedemption",
+        json!({"redemption": redemption}),
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    let before = fixture.state.root();
+    let receipt = fixture.state.apply(&tx, &fixture.authorizer, 201).unwrap();
+    assert_eq!(receipt.before_root, before);
+    assert_eq!(receipt.statement, redemption.signing_message().unwrap());
+    assert_eq!(
+        fixture.state.note_claims[&id_key(&claim.claim_id)].status,
+        "materialized"
+    );
+    let output =
+        fixture.state.notes[&id_key(&redemption.output.note_id)].output(redemption.output.note_id);
+    assert_eq!(output, redemption.output);
+    let mut ledger = NoteLedger::new(fixture.key.clone(), 32);
+    ledger.add(output.to_note().unwrap());
+    let notes = ledger.scan(&destination, &fixture.key);
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].1.value, remainder.values[1]);
+    assert_eq!(notes[0].1.blinding, remainder.blindings[1]);
+    assert!(ledger.scan(&fixture.wallets[1], &fixture.key).is_empty());
+    assert!(fixture.state.accounts.is_empty());
+    fixture.state = restored(&fixture.state);
+    let after = fixture.state.root();
+    assert!(fixture.state.apply(&tx, &fixture.authorizer, 202).is_err());
+    assert_eq!(after, fixture.state.root());
+}
+
+#[test]
+fn native_claim_redemption_rejects_rebinding_and_legacy_approval_bypass() {
+    use qomm_defmi::claim_redemption::redeem_claim;
+    let mut fixture = Fixture::new();
+    let (fill, _) = fixture.fill(fixture.initial, 40, 8, [false, true]);
+    let claim = fill
+        .verify(&fixture.scope, 200)
+        .unwrap()
+        .claims
+        .into_iter()
+        .find(|c| c.kind == NoteClaimKind::Refund && c.asset_id == ASSETS[1])
+        .unwrap();
+    fixture
+        .state
+        .apply(&fill_tx(&fill), &fixture.authorizer, 200)
+        .unwrap();
+    let redemption = redeem_claim(
+        &claim,
+        &fixture.key,
+        32,
+        &Scalar::from(VIEW_SECRETS[1]),
+        &fixture.wallets[1].address,
+        &[1, 4, 7],
+        fixture.authorizer.domain(),
+        fixture.state.root(),
+        [72; 32],
+        &mut OsRng,
+    )
+    .unwrap();
+    assert!(redeem_claim(
+        &claim,
+        &fixture.key,
+        32,
+        &Scalar::from(VIEW_SECRETS[0]),
+        &fixture.wallets[0].address,
+        &[1, 4, 7],
+        fixture.authorizer.domain(),
+        fixture.state.root(),
+        [73; 32],
+        &mut OsRng
+    )
+    .is_err());
+    for mutation in 0..10 {
+        let mut bad = redemption.clone();
+        match mutation {
+            0 => bad.domain.push('x'),
+            1 => bad.before_root[0] ^= 1,
+            2 => bad.operation_id[0] ^= 1,
+            3 => bad.claim_id[0] ^= 1,
+            4 => bad.output.asset_id = ASSETS[0],
+            5 => bad.output.one_time = fixture.wallets[0].address.spend.compress().to_bytes(),
+            6 => bad.output.masked_value = Scalar::ONE.to_bytes(),
+            7 => bad.output.lock_id = HOLDS[0],
+            8 => bad.recipient_signature[40] ^= 1,
+            _ => bad.recipient_signature.push(0),
+        }
+        if (4..=7).contains(&mutation) {
+            bad.output.note_id = bad.output.derived_id().unwrap();
+        }
+        let tx = TransactionEnvelope::new(
+            "defmivm.issueNoteClaimRedemption",
+            json!({"redemption": bad}),
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        let before = fixture.state.root();
+        assert!(
+            fixture.state.apply(&tx, &fixture.authorizer, 201).is_err(),
+            "mutation {mutation}"
+        );
+        assert_eq!(fixture.state.root(), before);
+    }
+    // Even a valid governance quorum must not replace ownership of native
+    // claims with the old digest-only approval boundary.
+    let (_, signers) = committee();
+    let legacy = NoteClaimMaterialization {
+        operation_id: [74; 32],
+        claim_id: claim.claim_id,
+        output: redemption.output,
+        ownership_proof_digest: [75; 32],
+    };
+    let before = fixture.state.root();
+    assert!(apply(
+        &mut fixture.state,
+        &fixture.authorizer,
+        &signers,
+        "defmivm.issueNoteClaimMaterialization",
+        "materialization",
+        note_materialization_json(&legacy),
+        legacy.statement().unwrap(),
+        201
+    )
+    .is_err());
+    assert_eq!(fixture.state.root(), before);
+}

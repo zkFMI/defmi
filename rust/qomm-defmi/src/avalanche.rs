@@ -2412,6 +2412,12 @@ pub trait AvalancheClient: Send + Sync {
     ) -> Result<String, String> {
         Err("Avalanche client does not support note-claim materialization".into())
     }
+    fn issue_note_claim_redemption(
+        &self,
+        _redemption: &crate::claim_redemption::NoteClaimRedemption,
+    ) -> Result<String, String> {
+        Err("Avalanche client does not support recipient note-claim redemption".into())
+    }
     fn issue_guarantor(
         &self,
         _guarantor: &GuarantorDefinition,
@@ -3156,6 +3162,16 @@ impl AvalancheClient for AvalancheRpcClient {
         )?)
     }
 
+    fn issue_note_claim_redemption(
+        &self,
+        redemption: &crate::claim_redemption::NoteClaimRedemption,
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueNoteClaimRedemption",
+            json!({"redemption": redemption}),
+        )?)
+    }
+
     fn issue_guarantor(
         &self,
         guarantor: &GuarantorDefinition,
@@ -3860,6 +3876,19 @@ impl<'a, C: AvalancheClient> AvalancheNoteBridge<'a, C> {
         self.submit_application(fill.signing_message()?, fill.before_root, |client| {
             client.issue_application_note_fill(fill)
         })
+    }
+
+    /// The recipient's complete Schnorr signature is checked in every VM;
+    /// governance approval cannot substitute for ownership of a native claim.
+    pub fn redeem_note_claim(
+        &self,
+        redemption: &crate::claim_redemption::NoteClaimRedemption,
+    ) -> Result<AcceptedTransition, String> {
+        self.submit_application(
+            redemption.signing_message()?,
+            redemption.before_root,
+            |client| client.issue_note_claim_redemption(redemption),
+        )
     }
 
     /// Ordered cancellation carries the pre-authorized committee certificate;

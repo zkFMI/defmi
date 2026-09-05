@@ -14,6 +14,8 @@ pub mod avalanche;
 pub mod ccp;
 pub mod central_bank_liquidity;
 pub mod chain;
+#[cfg(feature = "avalanche")]
+pub mod claim_redemption;
 pub mod credit;
 pub mod cross_domain;
 #[cfg(feature = "avalanche")]

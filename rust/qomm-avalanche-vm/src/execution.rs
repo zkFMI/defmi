@@ -1052,6 +1052,7 @@ pub(crate) fn execute(
         "defmivm.issueNoteClaimMaterialization" => {
             materialize_note_claim(state, params, authorizer)
         }
+        "defmivm.issueNoteClaimRedemption" => redeem_note_claim(state, params, authorizer),
         "defmivm.issueNoteSettlement" => settle_notes(state, params, authorizer, timestamp),
         "defmivm.issueAdmissionCommittee" => {
             register_admission_committee(state, params, authorizer, timestamp)
@@ -2623,6 +2624,14 @@ fn materialize_note_claim(
         .get(&claim_key)
         .cloned()
         .ok_or_else(|| "note claim is unknown".to_string())?;
+    if state
+        .application_reservations
+        .contains_key(&id_key(&claim.source_hold_id))
+    {
+        return Err(
+            "native application claims require the full recipient redemption signature".into(),
+        );
+    }
     if claim.status != "active"
         || claim.materialization != ZERO
         || claim.asset_id != materialization.output.asset_id
@@ -2637,6 +2646,56 @@ fn materialize_note_claim(
     state
         .operations
         .insert(id_key(&materialization.operation_id), statement);
+    Ok(statement)
+}
+
+fn redeem_note_claim(
+    state: &mut State,
+    params: &Map<String, Value>,
+    authorizer: &QuorumAuthorizer,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["redemption"])?;
+    let redemption: qomm_defmi::claim_redemption::NoteClaimRedemption =
+        field(params, "redemption")?;
+    if redemption.before_root != state.root()
+        || state
+            .operations
+            .contains_key(&id_key(&redemption.operation_id))
+    {
+        return Err("claim redemption has a stale parent or reused operation".into());
+    }
+    let key = id_key(&redemption.claim_id);
+    let mut record = state
+        .note_claims
+        .get(&key)
+        .cloned()
+        .ok_or("note claim is unknown")?;
+    if record.status != "active" || record.materialization != ZERO {
+        return Err("claim was already redeemed".into());
+    }
+    let kind = match record.kind.as_str() {
+        "delivery" => NoteClaimKind::Delivery,
+        "refund" => NoteClaimKind::Refund,
+        _ => return Err("claim kind is invalid".into()),
+    };
+    let claim = NoteClaim {
+        claim_id: redemption.claim_id,
+        asset_id: record.asset_id,
+        value_commitment: record.value_commitment,
+        recipient_commitment: record.recipient_commitment,
+        source_hold_id: record.source_hold_id,
+        kind,
+        opening_envelope: record.opening_envelope.domain()?,
+    };
+    redemption.verify(&claim, authorizer.domain())?;
+    let statement = redemption.signing_message()?;
+    insert_note(state, &redemption.output)?;
+    record.status = "materialized".into();
+    record.materialization = statement;
+    state.note_claims.insert(key, record);
+    state
+        .operations
+        .insert(id_key(&redemption.operation_id), statement);
     Ok(statement)
 }
 

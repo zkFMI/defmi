@@ -2135,6 +2135,12 @@ pub struct QuorumAuthorizer {
 }
 
 impl QuorumAuthorizer {
+    /// Public deployment domain, also used to separate recipient-authorized
+    /// operations. Reading it grants no governance signing authority.
+    pub fn domain(&self) -> &str {
+        &self.domain
+    }
+
     pub fn new(
         nodes: BTreeMap<String, VerifyingKey>,
         threshold: usize,
