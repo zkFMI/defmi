@@ -59,6 +59,8 @@ fn dekyx_mandate_and_note_proofs_bind_without_a_circular_dependency() {
         issuer_key_epoch: 1,
         subject_kind: SubjectKind::LegalEntity,
         subject_commitment: witness.subject_commitment(),
+        holder_public_key: witness.holder_public_key(),
+        holder_suite: witness.holder_suite(),
         scope_digest: [6; 32],
         policy_digest: [7; 32],
         qualifications: vec![qualification.clone()],
