@@ -598,6 +598,33 @@ fn successive_partial_fills_keep_only_remainders_locked_and_recover_after_restar
 }
 
 #[test]
+fn unsigned_candidate_verification_never_authorizes_native_execution() {
+    let mut fixture = Fixture::new();
+    let (signed, _) = fixture.fill(fixture.initial, 40, 3, [false; 2]);
+    assert!(signed.verify_unsigned(&fixture.scope, 200).is_err());
+    let mut candidate = signed.clone();
+    candidate.signature.clear();
+    candidate.verify_unsigned(&fixture.scope, 200).unwrap();
+    assert!(candidate.verify(&fixture.scope, 200).is_err());
+    let before = fixture.state.root();
+    assert!(fixture
+        .state
+        .apply(&fill_tx(&candidate), &fixture.authorizer, 200)
+        .is_err());
+    assert_eq!(fixture.state.root(), before);
+    let mut bad = candidate.clone();
+    bad.dvp_proofs[80] ^= 1;
+    assert!(bad.verify_unsigned(&fixture.scope, 200).is_err());
+    let mut other_scope = fixture.scope.clone();
+    other_scope.committee_epoch += 1;
+    assert!(candidate.verify_unsigned(&other_scope, 200).is_err());
+    fixture
+        .state
+        .apply(&fill_tx(&signed), &fixture.authorizer, 200)
+        .unwrap();
+}
+
+#[test]
 fn native_monetary_and_head_checks_reject_even_freshly_committee_signed_forgery() {
     let mut fixture = Fixture::new();
     let (first, _) = fixture.fill(fixture.initial, 40, 3, [false; 2]);

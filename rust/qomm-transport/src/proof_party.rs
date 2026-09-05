@@ -404,6 +404,10 @@ struct DurableCompletedProof {
     securities_reserve: Option<String>,
     #[serde(default)]
     cash_reserve: Option<String>,
+    #[serde(default)]
+    opening_shares: BTreeMap<String, Value>,
+    #[serde(default)]
+    application_action_digest: Option<String>,
 }
 
 #[derive(Clone)]
@@ -417,6 +421,43 @@ struct CompletedProof {
     maker_is_payer: Option<bool>,
     securities_reserve: Option<[u8; 32]>,
     cash_reserve: Option<[u8; 32]>,
+    opening_shares: BTreeMap<String, Value>,
+    application_action_digest: Option<[u8; 32]>,
+}
+
+/// Public-only evidence retained by this particular proof node. No secret
+/// share or opening is exported. Applications use this in an in-process
+/// verifier, never accept it from an RPC caller as a `verified` assertion.
+pub struct CompletedApplicationProof<'a> {
+    pub job_id: [u8; 32],
+    pub payment_digest: [u8; 64],
+    pub quote_digest: [u8; 32],
+    pub maker_handle: [u8; 32],
+    pub taker_handle: [u8; 32],
+    pub maker_is_payer: bool,
+    pub securities_reserve: [u8; 32],
+    pub cash_reserve: [u8; 32],
+    pub opening_shares: &'a BTreeMap<String, Value>,
+    pub committee_public: &'a frost::keys::PublicKeyPackage,
+}
+
+/// Deliberately has no generic RPC dispatch. An application listener must
+/// install its own typed verifier, including executed-job/policy, reservation
+/// authority, complete public proofs, and exact encrypted-opening bindings.
+/// The transport retains one-use FROST nonces and durable action binding.
+pub trait ApplicationStatementVerifier {
+    fn verify(
+        &self,
+        evidence: CompletedApplicationProof<'_>,
+    ) -> Result<ApplicationStatementAuthorization, String>;
+}
+
+pub struct ApplicationStatementAuthorization {
+    pub message: [u8; 32],
+    /// Bind all immutable action bytes. An application may exclude a stale
+    /// canonical parent here to re-certify after unrelated ledger activity,
+    /// but must not exclude the operation, reserve heads, proofs or outputs.
+    pub action_digest: [u8; 32],
 }
 
 struct ProofStateStore {
@@ -628,6 +669,7 @@ struct ProofJob {
     /// the public response. A standing-pool allocation cannot be authorized
     /// from evaluations alone.
     dvp_response_issued: bool,
+    opening_shares: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1009,6 +1051,17 @@ impl ProofParty {
                             &proof.cash_reserve,
                             "completed cash reserve",
                         )?,
+                        opening_shares: proof.opening_shares.clone(),
+                        application_action_digest: proof
+                            .application_action_digest
+                            .as_deref()
+                            .map(|value| {
+                                Self::hex32(
+                                    Some(&Value::String(value.into())),
+                                    "stored application action",
+                                )
+                            })
+                            .transpose()?,
                     },
                 ))
             })
@@ -1273,6 +1326,10 @@ impl ProofParty {
                             maker_is_payer: proof.maker_is_payer,
                             securities_reserve: proof.securities_reserve.map(hex::encode),
                             cash_reserve: proof.cash_reserve.map(hex::encode),
+                            opening_shares: proof.opening_shares.clone(),
+                            application_action_digest: proof
+                                .application_action_digest
+                                .map(hex::encode),
                         },
                     )
                 })
@@ -1549,6 +1606,68 @@ impl ProofParty {
             return Err("FROST signing authorization was changed".into());
         }
         self.persist()
+    }
+
+    /// Local extension point; `handle`/`dispatch` cannot select a verifier or
+    /// call this method. Failed verification never authorizes a FROST nonce.
+    pub fn authorize_application_statement<V: ApplicationStatementVerifier>(
+        &mut self,
+        job_id: [u8; 32],
+        verifier: &V,
+    ) -> Result<[u8; 32], String> {
+        if !self.state_healthy || !self.completed.contains(&job_id) {
+            return Err("application signing requires a healthy completed local proof".into());
+        }
+        let proof = self
+            .completed_evidence
+            .get(&job_id)
+            .ok_or_else(|| "application signing lacks local completed evidence".to_string())?;
+        if proof.opening_shares.len() != 4 || self.frost_key.is_none() {
+            return Err(
+                "application signing requires the node's four encrypted openings and key".into(),
+            );
+        }
+        let public = self
+            .frost_public
+            .as_ref()
+            .ok_or_else(|| "application signing committee is not initialized".to_string())?;
+        let missing =
+            || "application signing lacks locally bound payment endpoints or reserves".to_string();
+        let authorized = verifier.verify(CompletedApplicationProof {
+            job_id,
+            payment_digest: proof.payment_digest,
+            quote_digest: proof.quote_digest,
+            maker_handle: proof.maker_handle.ok_or_else(missing)?,
+            taker_handle: proof.taker_handle.ok_or_else(missing)?,
+            maker_is_payer: proof.maker_is_payer.ok_or_else(missing)?,
+            securities_reserve: proof.securities_reserve.ok_or_else(missing)?,
+            cash_reserve: proof.cash_reserve.ok_or_else(missing)?,
+            opening_shares: &proof.opening_shares,
+            committee_public: public,
+        })?;
+        if authorized.message == [0; 32]
+            || authorized.action_digest == [0; 32]
+            || proof
+                .application_action_digest
+                .is_some_and(|prior| prior != authorized.action_digest)
+        {
+            return Err("application proof cannot authorize an empty or different action".into());
+        }
+        let signing_job = Self::signing_job(&authorized.message);
+        // Check replay before changing even the in-memory action binding.
+        if self.frost_reserved.contains(&signing_job)
+            || self.frost_consumed.contains(&signing_job)
+            || self.frost_nonces.contains_key(&signing_job)
+        {
+            return Err("application signing job is already reserved or consumed".into());
+        }
+        self.completed_evidence
+            .get_mut(&job_id)
+            .ok_or_else(|| "application proof evidence disappeared".to_string())?
+            .application_action_digest = Some(authorized.action_digest);
+        // Persists the action and message together, before nonce generation.
+        self.authorize_frost(signing_job, &authorized.message)?;
+        Ok(authorized.message)
     }
 
     fn identity_body(
@@ -3096,6 +3215,7 @@ impl ProofParty {
                         securities_reserve: None,
                         cash_reserve: None,
                         dvp_response_issued: false,
+                        opening_shares: BTreeMap::new(),
                     },
                 );
                 self.reserved.insert(job_id);
@@ -3849,6 +3969,9 @@ impl ProofParty {
                             .into(),
                     );
                 }
+                if let Some(prior) = job.opening_shares.get(leg) {
+                    return Ok(prior.clone());
+                }
                 let (value_share, blinding_share) = match leg {
                     "securities_delivery" => job
                         .zkpi_bound
@@ -3880,14 +4003,20 @@ impl ProofParty {
                     &recipient_view,
                     &mut OsRng,
                 )?;
-                Ok(json!({
+                let response = json!({
                     "party": encrypted.party,
                     "context": hex::encode(opening_context(&job_id, leg)?),
                     "recipient_view": hex::encode(recipient_view.compress().to_bytes()),
                     "ephemeral": hex::encode(encrypted.ephemeral.compress().to_bytes()),
                     "masked_value": hex::encode(encrypted.masked_value.to_bytes()),
                     "masked_blinding": hex::encode(encrypted.masked_blinding.to_bytes()),
-                }))
+                });
+                self.jobs
+                    .get_mut(&job_id)
+                    .ok_or_else(|| "claim opening proof job disappeared".to_string())?
+                    .opening_shares
+                    .insert(leg.to_owned(), response.clone());
+                Ok(response)
             }
             "sign_admission_attestation" => {
                 let slot = params
@@ -4033,6 +4162,8 @@ impl ProofParty {
                                 .securities_reserve
                                 .map(|value| value.compress().to_bytes()),
                             cash_reserve: job.cash_reserve.map(|value| value.compress().to_bytes()),
+                            opening_shares: job.opening_shares,
+                            application_action_digest: None,
                         },
                     );
                 }
@@ -4197,6 +4328,10 @@ pub fn serve<R: BufRead, W: Write>(
         writer.flush().map_err(|error| error.to_string())?;
     }
 }
+
+#[cfg(test)]
+#[path = "proof_party_application_tests.rs"]
+mod application_signing_tests;
 
 #[cfg(test)]
 mod bounded_request_tests {

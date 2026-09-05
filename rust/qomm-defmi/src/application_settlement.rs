@@ -229,6 +229,37 @@ impl ApplicationNoteFill {
             .verifying_key()
             .verify(&statement, &signature)
             .map_err(|_| "application fill committee signature is invalid")?;
+        self.verify_body(statement, public, now)
+    }
+
+    /// Check a candidate before the authorized MPC nodes sign it. This does
+    /// not yield `VerifiedApplicationFill`: only `verify` can authorize native
+    /// execution. The caller must independently bind this candidate to its
+    /// locally executed application job and registered scope.
+    pub fn verify_unsigned(
+        &self,
+        expected_scope: &ApplicationReserveScope,
+        now: u64,
+    ) -> Result<(), String> {
+        let statement = self.signing_message()?;
+        if !self.signature.is_empty()
+            || &self.scope != expected_scope
+            || <[u8; 32]>::from(Sha256::digest(&self.committee_public))
+                != expected_scope.committee_key_digest
+        {
+            return Err("unsigned application fill has another scope, key, or a signature".into());
+        }
+        let public = frost::keys::PublicKeyPackage::deserialize(&self.committee_public)
+            .map_err(|_| "application committee key is malformed")?;
+        self.verify_body(statement, public, now).map(|_| ())
+    }
+
+    fn verify_body(
+        &self,
+        statement: [u8; 32],
+        public: frost::keys::PublicKeyPackage,
+        now: u64,
+    ) -> Result<VerifiedApplicationFill, String> {
         let instruction =
             qomm_zkpi::wire::decode(&self.instruction).map_err(|error| error.to_string())?;
         if qomm_zkpi::wire::encode(&instruction) != self.instruction
@@ -238,8 +269,8 @@ impl ApplicationNoteFill {
         }
         let key = Pedersen::new(b"qomm:defmi:v1");
         let bounds = Bounds {
-            amount_bits: usize::from(expected_scope.amount_bits),
-            price_bits: usize::from(expected_scope.amount_bits),
+            amount_bits: usize::from(self.scope.amount_bits),
+            price_bits: usize::from(self.scope.amount_bits),
             max_horizon: 3_600,
         };
         Venue::new(key.clone(), &bounds, public)
