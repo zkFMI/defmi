@@ -1429,7 +1429,7 @@ fn canonical_state_snapshot(
                 "quorumWeight": committee.quorum_weight,
                 "members": committee.members.iter().map(|member| json!({
                     "memberID": hex::encode(member.member_id),
-                    "publicKey": hex::encode(member.public_key),
+                    "key": member.key,
                     "weight": member.weight,
                 })).collect::<Vec<_>>(),
             }))

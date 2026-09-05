@@ -1,9 +1,9 @@
-use ed25519_dalek::{Signer, SigningKey};
 use qomm_defmi::cross_domain::{
     derive_leg_id, hash_release_witness, Committee, CommitteeMember, CrossDomainBook,
     CrossDomainError, Domain, FinalityContext, FinalityReceipt, LegStatus, PrepareLeg,
     ReceiptEvent, ReceiptSignature,
 };
+use zkfmi_crypto::{hybrid::signature::HybridSigner, key::KeyPurpose, traits::Signer as _};
 
 fn domain(marker: u8) -> Domain {
     Domain {
@@ -13,11 +13,11 @@ fn domain(marker: u8) -> Domain {
     }
 }
 
-fn committee(domain: Domain, marker: u8, epoch: u64) -> (Committee, Vec<SigningKey>) {
+fn committee(domain: Domain, marker: u8, epoch: u64) -> (Committee, Vec<HybridSigner>) {
     let keys = vec![
-        SigningKey::from_bytes(&[marker; 32]),
-        SigningKey::from_bytes(&[marker.wrapping_add(1); 32]),
-        SigningKey::from_bytes(&[marker.wrapping_add(2); 32]),
+        HybridSigner::generate().unwrap(),
+        HybridSigner::generate().unwrap(),
+        HybridSigner::generate().unwrap(),
     ];
     let members = keys
         .iter()
@@ -28,7 +28,7 @@ fn committee(domain: Domain, marker: u8, epoch: u64) -> (Committee, Vec<SigningK
                 member_id,
                 CommitteeMember {
                     member_id,
-                    public_key: key.verifying_key().to_bytes(),
+                    key: finality_key(member_id, key),
                     weight: 1,
                 },
             )
@@ -49,7 +49,7 @@ fn committee(domain: Domain, marker: u8, epoch: u64) -> (Committee, Vec<SigningK
 fn sign(
     mut receipt: FinalityReceipt,
     committee: &Committee,
-    keys: &[SigningKey],
+    keys: &[HybridSigner],
 ) -> FinalityReceipt {
     let digest = receipt.signing_digest();
     receipt.signatures = committee
@@ -60,7 +60,7 @@ fn sign(
         .take(2)
         .map(|(member_id, key)| ReceiptSignature {
             member_id: *member_id,
-            signature: key.sign(&digest).to_bytes().to_vec(),
+            signature: key.sign(KeyPurpose::Attestation, &digest).unwrap(),
         })
         .collect();
     receipt
@@ -75,8 +75,8 @@ struct Pair {
     b_book: CrossDomainBook,
     a_committee: Committee,
     b_committee: Committee,
-    a_keys: Vec<SigningKey>,
-    b_keys: Vec<SigningKey>,
+    a_keys: Vec<HybridSigner>,
+    b_keys: Vec<HybridSigner>,
     witness: Vec<u8>,
 }
 
@@ -166,6 +166,7 @@ fn prepared_receipts(pair: &Pair) -> (FinalityReceipt, FinalityReceipt) {
                 source_height: 101,
                 finalised_at: 12,
                 validator_epoch: pair.a_committee.epoch,
+                committee_digest: pair.a_committee.digest().unwrap(),
             },
         )
         .unwrap();
@@ -183,6 +184,7 @@ fn prepared_receipts(pair: &Pair) -> (FinalityReceipt, FinalityReceipt) {
                 source_height: 202,
                 finalised_at: 13,
                 validator_epoch: pair.b_committee.epoch,
+                committee_digest: pair.b_committee.digest().unwrap(),
             },
         )
         .unwrap();
@@ -253,6 +255,41 @@ fn rejects_replay_wrong_order_and_wrong_destination() {
 fn rejects_bad_quorum_epoch_signature_and_release_witness() {
     let mut pair = prepared_pair();
     let (_, from_b) = prepared_receipts(&pair);
+
+    let before = pair.a_book.clone();
+    for mutation in 0..6 {
+        let mut bad = from_b.clone();
+        match mutation {
+            0 => bad.signatures[0].signature.truncate(64),
+            1 => bad.signatures[0].signature[64] ^= 1,
+            2 => bad.signatures[0].signature[0] ^= 1,
+            3 => bad.committee_digest[0] ^= 1,
+            4 => bad.suite = zkfmi_crypto::suite::Suite::new(zkfmi_crypto::suite::SuiteId::Ed25519),
+            _ => bad.signatures[1] = bad.signatures[0].clone(),
+        }
+        assert!(pair
+            .a_book
+            .arm(pair.a_id, &bad, &pair.b_committee, 14)
+            .is_err());
+        assert_eq!(pair.a_book, before);
+    }
+    for revoked in [false, true] {
+        let mut expired = prepared_pair();
+        for member in &mut expired.b_committee.members {
+            if revoked {
+                member.key.revoked_at = Some(14);
+            } else {
+                member.key.not_after = 14;
+            }
+        }
+        let (_, signed) = prepared_receipts(&expired);
+        let before = expired.a_book.clone();
+        assert!(expired
+            .a_book
+            .arm(expired.a_id, &signed, &expired.b_committee, 14)
+            .is_err());
+        assert_eq!(expired.a_book, before);
+    }
 
     let mut one_signature = from_b.clone();
     one_signature.signatures.truncate(1);
@@ -353,6 +390,7 @@ fn observes_remote_claim_once_and_rejects_future_receipt() {
                 source_height: 203,
                 finalised_at: 16,
                 validator_epoch: pair.b_committee.epoch,
+                committee_digest: pair.b_committee.digest().unwrap(),
             },
         )
         .unwrap();
@@ -385,4 +423,27 @@ fn prepare_with_missing_private_event_binding_never_enters_state() {
         CrossDomainError::MissingCommitment
     );
     assert!(book.legs.is_empty());
+}
+
+fn finality_key(
+    member: [u8; 32],
+    signer: &zkfmi_crypto::hybrid::signature::HybridSigner,
+) -> zkfmi_crypto::key::KeyRecord {
+    use zkfmi_crypto::{
+        key::{KeyId, KeyPurpose, KeyRecord, ParticipantId},
+        traits::Signer as _,
+    };
+    KeyRecord {
+        participant_id: ParticipantId::new(hex::encode(member)).unwrap(),
+        key_id: KeyId::new(format!("finality:{}", hex::encode(member))).unwrap(),
+        suite: signer.suite(),
+        key_version: 1,
+        purpose: KeyPurpose::Attestation,
+        public_key: signer.public_key(),
+        not_before: 0,
+        not_after: i64::MAX as u64,
+        revoked_at: None,
+        rotation_proof: None,
+        dekyx_binding: None,
+    }
 }

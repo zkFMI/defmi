@@ -318,7 +318,7 @@ struct CrossDomainDto {
 struct CrossDomainMemberDto {
     #[serde(rename = "memberID")]
     member_id: String,
-    public_key: String,
+    key: zkfmi_crypto::key::KeyRecord,
     weight: u64,
 }
 
@@ -367,6 +367,8 @@ struct CrossDomainReceiptSignatureDto {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CrossDomainReceiptDto {
+    suite: zkfmi_crypto::suite::Suite,
+    committee_digest: String,
     source_domain: CrossDomainDto,
     destination_domain: CrossDomainDto,
     #[serde(rename = "destinationLegID")]
@@ -1226,7 +1228,7 @@ fn cross_domain_committee_from_dto(
         let member_id = hex_array(&member.member_id, "committee.members.memberID")?;
         let record = CrossDomainCommitteeMember {
             member_id,
-            public_key: hex_array(&member.public_key, "committee.members.publicKey")?,
+            key: member.key,
             weight: member.weight,
         };
         if !member_ids.insert(member_id) {
@@ -1250,6 +1252,8 @@ fn cross_domain_receipt_from_dto(dto: CrossDomainReceiptDto) -> Result<FinalityR
         return Err("cross-domain receipt contains too many signatures".into());
     }
     Ok(FinalityReceipt {
+        suite: dto.suite,
+        committee_digest: hex_array(&dto.committee_digest, "receipt.committeeDigest")?,
         source_domain: cross_domain_from_dto(dto.source_domain, "receipt.sourceDomain")?,
         destination_domain: cross_domain_from_dto(
             dto.destination_domain,

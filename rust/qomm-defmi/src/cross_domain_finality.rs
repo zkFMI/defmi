@@ -10,11 +10,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use ed25519_dalek::Verifier;
-use qomm_transport::external_signer::Ed25519MessageSigner;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use zkfmi_crypto::{
+    hybrid::signature::HybridVerifier,
+    key::KeyPurpose,
+    suite::{Suite, SuiteId},
+    traits::{Signer, Verifier as _},
+};
 
 use crate::avalanche::{AcceptedTransition, AvalancheClient, AvalancheRpcClient};
 use crate::cross_domain::{
@@ -150,14 +154,14 @@ pub fn fetch_accepted_leg(
 
 /// One finality committee member.  `S` may be the process-isolated HSM/KMS
 /// adapter; private key bytes therefore need not enter this process.
-pub struct FinalitySigner<S: Ed25519MessageSigner> {
+pub struct FinalitySigner<S: Signer> {
     committee: Committee,
     member_id: [u8; 32],
     signer: S,
     bindings: BTreeMap<[u8; 32], FinalityBinding>,
 }
 
-impl<S: Ed25519MessageSigner> FinalitySigner<S> {
+impl<S: Signer> FinalitySigner<S> {
     pub fn new(
         committee: Committee,
         member_id: [u8; 32],
@@ -170,7 +174,7 @@ impl<S: Ed25519MessageSigner> FinalitySigner<S> {
             .iter()
             .find(|member| member.member_id == member_id)
             .ok_or_else(|| "finality signer is not in the configured committee".to_string())?;
-        if member.public_key != signer.verifying_key().to_bytes() {
+        if member.key.public_key != signer.public_key() || member.key.suite != signer.suite() {
             return Err("finality signer key differs from the committee key".into());
         }
         let mut registered = BTreeMap::new();
@@ -222,7 +226,17 @@ impl<S: Ed25519MessageSigner> FinalitySigner<S> {
                 "accepted source snapshot does not satisfy the private finality binding".into(),
             );
         }
+        self.committee
+            .members
+            .iter()
+            .find(|member| member.member_id == self.member_id)
+            .ok_or("finality signer is no longer enrolled")?
+            .key
+            .valid_at(observed_at)
+            .map_err(|error| error.to_string())?;
         let mut receipt = FinalityReceipt {
+            suite: Suite::new(SuiteId::Ed25519MlDsa65),
+            committee_digest: self.committee.digest().map_err(|error| error.to_string())?,
             source_domain: binding.source_domain.clone(),
             destination_domain: binding.destination_domain.clone(),
             destination_leg_id: binding.destination_leg_id,
@@ -236,14 +250,21 @@ impl<S: Ed25519MessageSigner> FinalitySigner<S> {
             signatures: Vec::new(),
         };
         let message = receipt.signing_digest();
-        let signature = self.signer.sign_message(&message)?;
-        self.signer
-            .verifying_key()
-            .verify(&message, &signature)
-            .map_err(|_| "finality signer returned an invalid signature".to_string())?;
+        let signature = self
+            .signer
+            .sign(KeyPurpose::Attestation, &message)
+            .map_err(|error| error.to_string())?;
+        HybridVerifier
+            .verify(
+                KeyPurpose::Attestation,
+                &self.signer.public_key(),
+                &message,
+                &signature,
+            )
+            .map_err(|_| "finality signer returned an invalid hybrid signature".to_string())?;
         receipt.signatures.push(ReceiptSignature {
             member_id: self.member_id,
-            signature: signature.to_bytes().to_vec(),
+            signature,
         });
         Ok(receipt)
     }
@@ -254,6 +275,7 @@ impl<S: Ed25519MessageSigner> FinalitySigner<S> {
 pub fn aggregate_receipt(
     committee: &Committee,
     shares: Vec<FinalityReceipt>,
+    now: u64,
 ) -> Result<FinalityReceipt, String> {
     committee.validate().map_err(|error| error.to_string())?;
     let first = shares
@@ -276,7 +298,7 @@ pub fn aggregate_receipt(
     let mut receipt = first.clone();
     receipt.signatures = signatures;
     receipt
-        .verify(committee)
+        .verify(committee, now)
         .map_err(|error| error.to_string())?;
     Ok(receipt)
 }
@@ -297,6 +319,8 @@ pub fn receipt_rpc_json(receipt: &FinalityReceipt) -> Value {
         "sourceHeight": receipt.source_height,
         "finalisedAt": receipt.finalised_at,
         "validatorEpoch": receipt.validator_epoch,
+        "suite": receipt.suite,
+        "committeeDigest": hex::encode(receipt.committee_digest),
         "signatures": receipt.signatures.iter().map(|signature| json!({
             "memberID": hex::encode(signature.member_id),
             "signature": hex::encode(&signature.signature),
@@ -389,10 +413,33 @@ fn hex32(object: &Map<String, Value>, name: &str) -> Result<[u8; 32], String> {
 
 #[cfg(test)]
 mod tests {
-    use ed25519_dalek::SigningKey;
+    use zkfmi_crypto::hybrid::signature::HybridSigner;
 
     use super::*;
     use crate::cross_domain::CommitteeMember;
+
+    fn finality_key(
+        member: [u8; 32],
+        signer: &zkfmi_crypto::hybrid::signature::HybridSigner,
+    ) -> zkfmi_crypto::key::KeyRecord {
+        use zkfmi_crypto::{
+            key::{KeyId, KeyPurpose, KeyRecord, ParticipantId},
+            traits::Signer as _,
+        };
+        KeyRecord {
+            participant_id: ParticipantId::new(hex::encode(member)).unwrap(),
+            key_id: KeyId::new(format!("finality:{}", hex::encode(member))).unwrap(),
+            suite: signer.suite(),
+            key_version: 1,
+            purpose: KeyPurpose::Attestation,
+            public_key: signer.public_key(),
+            not_before: 0,
+            not_after: i64::MAX as u64,
+            revoked_at: None,
+            rotation_proof: None,
+            dekyx_binding: None,
+        }
+    }
 
     fn id(value: u8) -> [u8; 32] {
         [value; 32]
@@ -447,11 +494,11 @@ mod tests {
     }
 
     #[test]
-    fn independent_hsm_bound_shares_aggregate_to_one_destination_receipt() {
+    fn independent_hybrid_shares_aggregate_to_one_destination_receipt() {
         let keys = [
-            SigningKey::from_bytes(&id(30)),
-            SigningKey::from_bytes(&id(31)),
-            SigningKey::from_bytes(&id(32)),
+            HybridSigner::generate().unwrap(),
+            HybridSigner::generate().unwrap(),
+            HybridSigner::generate().unwrap(),
         ];
         let committee = Committee {
             domain: source(),
@@ -462,7 +509,7 @@ mod tests {
                 .enumerate()
                 .map(|(index, key)| CommitteeMember {
                     member_id: id(40 + index as u8),
-                    public_key: key.verifying_key().to_bytes(),
+                    key: finality_key(id(40 + index as u8), key),
                     weight: 1,
                 })
                 .collect(),
@@ -490,12 +537,12 @@ mod tests {
                 .unwrap()
             })
             .collect();
-        let receipt = aggregate_receipt(&committee, shares).unwrap();
+        let receipt = aggregate_receipt(&committee, shares, 110).unwrap();
         assert_eq!(receipt.destination_leg_id, id(13));
         assert_eq!(receipt.event_binding, id(14));
         assert_eq!(receipt.source_block_id, id(21));
         assert_eq!(receipt.signatures.len(), 2);
-        receipt.verify(&committee).unwrap();
+        receipt.verify(&committee, 110).unwrap();
         assert_eq!(
             receipt_rpc_json(&receipt)["sourceBlockID"],
             hex::encode(id(21))
@@ -504,14 +551,14 @@ mod tests {
 
     #[test]
     fn signer_refuses_unprovisioned_stale_or_unclaimed_events() {
-        let key = SigningKey::from_bytes(&id(30));
+        let key = HybridSigner::generate().unwrap();
         let committee = Committee {
             domain: source(),
             epoch: 9,
             quorum_weight: 1,
             members: vec![CommitteeMember {
                 member_id: id(40),
-                public_key: key.verifying_key().to_bytes(),
+                key: finality_key(id(40), &key),
                 weight: 1,
             }],
         };

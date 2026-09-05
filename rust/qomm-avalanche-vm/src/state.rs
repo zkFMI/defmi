@@ -1360,7 +1360,7 @@ impl State {
             hash.update(encoded);
         }
         for (key, committee) in &self.cross_domain_committees {
-            hash.update(b"cross-domain-committee:v1");
+            hash.update(b"cross-domain-committee:v2");
             hash.update((key.len() as u64).to_be_bytes());
             hash.update(key.as_bytes());
             let encoded = serde_json::to_vec(committee)

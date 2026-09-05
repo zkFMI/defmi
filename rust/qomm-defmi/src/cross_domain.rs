@@ -5,15 +5,21 @@
 //! destination-bound finality receipt.  This avoids publishing one global
 //! settlement identifier while still preventing replay and re-ordering.
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use zkfmi_crypto::{
+    hybrid::signature::HybridVerifier,
+    key::{KeyPurpose, KeyRecord},
+    suite::{Suite, SuiteId},
+    traits::Verifier as _,
+};
 
 const LEG_ID_DOMAIN: &[u8] = b"qomm:defmi:cross-domain-leg:v1";
 const RECORD_DOMAIN: &[u8] = b"qomm:defmi:cross-domain-record:v1";
-const RECEIPT_DOMAIN: &[u8] = b"qomm:defmi:cross-domain-receipt:v1";
+const RECEIPT_DOMAIN: &[u8] = b"qomm:defmi:cross-domain-receipt:v2";
 const HANDLE_DOMAIN: &[u8] = b"qomm:defmi:cross-domain-handle:v1";
 const ASSET_DOMAIN: &[u8] = b"qomm:defmi:cross-domain-asset:v1";
 
@@ -155,13 +161,15 @@ impl LegRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CommitteeMember {
     pub member_id: [u8; 32],
-    pub public_key: [u8; 32],
+    pub key: KeyRecord,
     pub weight: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Committee {
     pub domain: Domain,
     pub epoch: u64,
@@ -172,18 +180,44 @@ pub struct Committee {
 
 impl Committee {
     pub fn validate(&self) -> Result<(), CrossDomainError> {
-        if self.quorum_weight == 0 {
+        if self.quorum_weight == 0
+            || self.epoch == 0
+            || self.members.is_empty()
+            || self.members.len() > 128
+        {
             return Err(CrossDomainError::InvalidCommittee);
         }
         let mut total = 0u64;
         let mut previous = None;
+        let mut classical = BTreeSet::new();
+        let mut pq = BTreeSet::new();
+        let mut participants = BTreeSet::new();
+        let mut ids = BTreeSet::new();
         for member in &self.members {
-            if previous.is_some_and(|id| id >= member.member_id) || member.weight == 0 {
+            let key = &member.key;
+            if previous.is_some_and(|id| id >= member.member_id)
+                || member.member_id == [0; 32]
+                || member.weight == 0
+                || key.validate().is_err()
+                || key.suite != Suite::new(SuiteId::Ed25519MlDsa65)
+                || key.purpose != KeyPurpose::Attestation
+                || !participants.insert(key.participant_id.clone())
+                || !ids.insert(key.key_id.clone())
+            {
+                return Err(CrossDomainError::InvalidCommittee);
+            }
+            let ed: [u8; 32] = key.public_key[..32]
+                .try_into()
+                .map_err(|_| CrossDomainError::InvalidCommittee)?;
+            if ed == [0; 32]
+                || VerifyingKey::from_bytes(&ed).is_err()
+                || key.public_key[32..].iter().all(|byte| *byte == 0)
+                || !classical.insert(ed)
+                || !pq.insert(key.public_key[32..].to_vec())
+            {
                 return Err(CrossDomainError::InvalidCommittee);
             }
             previous = Some(member.member_id);
-            VerifyingKey::from_bytes(&member.public_key)
-                .map_err(|_| CrossDomainError::InvalidCommittee)?;
             total = total
                 .checked_add(member.weight)
                 .ok_or(CrossDomainError::ArithmeticOverflow)?;
@@ -193,9 +227,18 @@ impl Committee {
         }
         Ok(())
     }
+
+    pub fn digest(&self) -> Result<Commitment, CrossDomainError> {
+        self.validate()?;
+        Ok(canonical_hash(
+            b"qomm:defmi:cross-domain-committee:v2",
+            self,
+        ))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReceiptSignature {
     pub member_id: [u8; 32],
     pub signature: Vec<u8>,
@@ -208,7 +251,10 @@ pub struct ReceiptSignature {
 /// from the private paired zkPI. A public receipt therefore cannot be joined
 /// to a source-ledger record by equality.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FinalityReceipt {
+    pub suite: Suite,
+    pub committee_digest: Commitment,
     pub source_domain: Domain,
     pub destination_domain: Domain,
     pub destination_leg_id: LegId,
@@ -225,6 +271,7 @@ pub struct FinalityReceipt {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinalityContext {
+    pub committee_digest: Commitment,
     pub destination_domain: Domain,
     pub destination_leg_id: LegId,
     pub event_binding: Commitment,
@@ -239,6 +286,8 @@ impl FinalityReceipt {
     pub fn signing_digest(&self) -> Commitment {
         #[derive(Serialize)]
         struct Unsigned<'a> {
+            suite: Suite,
+            committee_digest: &'a Commitment,
             source_domain: &'a Domain,
             destination_domain: &'a Domain,
             destination_leg_id: &'a LegId,
@@ -253,6 +302,8 @@ impl FinalityReceipt {
         canonical_hash(
             RECEIPT_DOMAIN,
             &Unsigned {
+                suite: self.suite,
+                committee_digest: &self.committee_digest,
                 source_domain: &self.source_domain,
                 destination_domain: &self.destination_domain,
                 destination_leg_id: &self.destination_leg_id,
@@ -271,10 +322,17 @@ impl FinalityReceipt {
         canonical_hash(RECEIPT_DOMAIN, self)
     }
 
-    pub fn verify(&self, committee: &Committee) -> Result<(), CrossDomainError> {
+    pub fn verify(&self, committee: &Committee, now: u64) -> Result<(), CrossDomainError> {
         committee.validate()?;
-        if committee.domain != self.source_domain || committee.epoch != self.validator_epoch {
+        if committee.domain != self.source_domain
+            || committee.epoch != self.validator_epoch
+            || self.suite != Suite::new(SuiteId::Ed25519MlDsa65)
+            || self.committee_digest != committee.digest()?
+        {
             return Err(CrossDomainError::WrongCommittee);
+        }
+        if self.finalised_at > now || self.signatures.len() > committee.members.len() {
+            return Err(CrossDomainError::InvalidReceipt);
         }
         let message = self.signing_digest();
         let mut seen = BTreeSet::new();
@@ -288,11 +346,17 @@ impl FinalityReceipt {
                 .iter()
                 .find(|member| member.member_id == approval.member_id)
                 .ok_or(CrossDomainError::UnknownSigner)?;
-            let key = VerifyingKey::from_bytes(&member.public_key)
+            member
+                .key
+                .valid_at(now)
                 .map_err(|_| CrossDomainError::InvalidSignature)?;
-            let signature = Signature::from_slice(&approval.signature)
-                .map_err(|_| CrossDomainError::InvalidSignature)?;
-            key.verify(&message, &signature)
+            HybridVerifier
+                .verify(
+                    KeyPurpose::Attestation,
+                    &member.key.public_key,
+                    &message,
+                    &approval.signature,
+                )
                 .map_err(|_| CrossDomainError::InvalidSignature)?;
             weight = weight
                 .checked_add(member.weight)
@@ -426,7 +490,7 @@ impl CrossDomainBook {
         {
             return Err(CrossDomainError::ReceiptOutsideWindow);
         }
-        remote_receipt.verify(remote_committee)?;
+        remote_receipt.verify(remote_committee, now)?;
         record.status = LegStatus::Armed;
         record.armed_at = Some(now);
         record.remote_prepare_receipt = Some(receipt_digest);
@@ -481,7 +545,7 @@ impl CrossDomainBook {
         if remote_receipt.finalised_at > now {
             return Err(CrossDomainError::ReceiptOutsideWindow);
         }
-        remote_receipt.verify(remote_committee)?;
+        remote_receipt.verify(remote_committee, now)?;
         record.remote_claim_receipt = Some(receipt_digest);
         self.consumed_receipts.insert(receipt_digest);
         Ok(record.digest())
@@ -539,10 +603,13 @@ impl CrossDomainBook {
             || context.source_height == 0
             || context.finalised_at == 0
             || context.validator_epoch == 0
+            || context.committee_digest == [0; 32]
         {
             return Err(CrossDomainError::InvalidReceipt);
         }
         Ok(FinalityReceipt {
+            suite: Suite::new(SuiteId::Ed25519MlDsa65),
+            committee_digest: context.committee_digest,
             source_domain: record.prepare.local_domain.clone(),
             destination_domain: context.destination_domain,
             destination_leg_id: context.destination_leg_id,

@@ -2,10 +2,10 @@ use super::*;
 
 use std::collections::BTreeMap;
 
-use ed25519_dalek::{Signer, SigningKey};
 use qomm_defmi::cross_domain::{hash_release_witness, LegStatus};
 use qomm_defmi::facility::QuorumApproval;
 use serde_json::{json, Map, Value};
+use zkfmi_crypto::{hybrid::signature::HybridSigner, key::KeyPurpose, traits::Signer as _};
 
 fn local_committee() -> (
     QuorumAuthorizer,
@@ -60,11 +60,11 @@ fn domain_json(domain: &CrossDomain) -> Value {
 fn receipt_committee(
     domain: CrossDomain,
     marker: u8,
-) -> (CrossDomainCommittee, BTreeMap<[u8; 32], SigningKey>) {
+) -> (CrossDomainCommittee, BTreeMap<[u8; 32], HybridSigner>) {
     let keys = (0u8..3)
         .map(|offset| {
             let id = [marker + offset; 32];
-            (id, SigningKey::from_bytes(&[marker + offset + 10; 32]))
+            (id, HybridSigner::generate().unwrap())
         })
         .collect::<BTreeMap<_, _>>();
     let members = keys
@@ -74,7 +74,7 @@ fn receipt_committee(
                 *id,
                 CrossDomainCommitteeMember {
                     member_id: *id,
-                    public_key: key.verifying_key().to_bytes(),
+                    key: finality_key(*id, key),
                     weight: 1,
                 },
             )
@@ -99,7 +99,7 @@ fn committee_json(committee: &CrossDomainCommittee) -> Value {
         "quorumWeight": committee.quorum_weight,
         "members": committee.members.iter().map(|member| json!({
             "memberID": hex::encode(member.member_id),
-            "publicKey": hex::encode(member.public_key),
+            "key": member.key,
             "weight": member.weight,
         })).collect::<Vec<_>>(),
     })
@@ -162,6 +162,8 @@ fn receipt_json(receipt: &FinalityReceipt) -> Value {
         "sourceHeight": receipt.source_height,
         "finalisedAt": receipt.finalised_at,
         "validatorEpoch": receipt.validator_epoch,
+        "suite": receipt.suite,
+        "committeeDigest": hex::encode(receipt.committee_digest),
         "signatures": receipt.signatures.iter().map(|signed| json!({
             "memberID": hex::encode(signed.member_id),
             "signature": hex::encode(&signed.signature),
@@ -171,7 +173,7 @@ fn receipt_json(receipt: &FinalityReceipt) -> Value {
 
 fn sign_receipt(
     mut receipt: FinalityReceipt,
-    keys: &BTreeMap<[u8; 32], SigningKey>,
+    keys: &BTreeMap<[u8; 32], HybridSigner>,
 ) -> FinalityReceipt {
     let digest = receipt.signing_digest();
     receipt.signatures = keys
@@ -179,7 +181,7 @@ fn sign_receipt(
         .take(2)
         .map(|(member_id, key)| ReceiptSignature {
             member_id: *member_id,
-            signature: key.sign(&digest).to_bytes().to_vec(),
+            signature: key.sign(KeyPurpose::Attestation, &digest).unwrap(),
         })
         .collect();
     receipt
@@ -592,6 +594,7 @@ fn executes_cash_against_securities_across_two_vm_states() {
                 source_height: 10,
                 finalised_at: 11,
                 validator_epoch: 1,
+                committee_digest: committee_a.digest().unwrap(),
             },
         )
         .unwrap();
@@ -609,11 +612,49 @@ fn executes_cash_against_securities_across_two_vm_states() {
                 source_height: 20,
                 finalised_at: 11,
                 validator_epoch: 1,
+                committee_digest: committee_b.digest().unwrap(),
             },
         )
         .unwrap();
     let receipt_a = sign_receipt(receipt_a, &receipt_keys_a);
     let receipt_b = sign_receipt(receipt_b, &receipt_keys_b);
+
+    let before = cash.clone();
+    for mutation in 0..6 {
+        let mut bad = receipt_b.clone();
+        match mutation {
+            0 => bad.signatures[0].signature.truncate(64),
+            1 => bad.signatures[0].signature[64] ^= 1,
+            2 => bad.signatures[0].signature[0] ^= 1,
+            3 => bad.committee_digest[0] ^= 1,
+            4 => bad.validator_epoch += 1,
+            _ => bad.signatures[1] = bad.signatures[0].clone(),
+        }
+        let transaction = TransactionEnvelope::new(
+            "defmivm.issueCrossDomainArm",
+            json!({
+                "localLegID": hex::encode([61; 32]), "remoteReceipt": receipt_json(&bad),
+            }),
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        assert!(cash.apply(&transaction, &authorizer_a, 12).is_err());
+        assert_eq!(cash, before);
+    }
+    let mut legacy = receipt_json(&receipt_b);
+    legacy.as_object_mut().unwrap().remove("suite");
+    let transaction = TransactionEnvelope::new(
+        "defmivm.issueCrossDomainArm",
+        json!({
+            "localLegID": hex::encode([61; 32]), "remoteReceipt": legacy,
+        }),
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    assert!(cash.apply(&transaction, &authorizer_a, 12).is_err());
+    assert_eq!(cash, before);
 
     for (state, authorizer, leg_id, receipt) in [
         (&mut cash, &authorizer_a, [61; 32], &receipt_b),
@@ -730,4 +771,27 @@ fn refunds_local_reserve_after_remote_partition() {
         state.cross_domain.legs[&prepare.local_leg_id].status,
         LegStatus::Refunded
     );
+}
+
+fn finality_key(
+    member: [u8; 32],
+    signer: &zkfmi_crypto::hybrid::signature::HybridSigner,
+) -> zkfmi_crypto::key::KeyRecord {
+    use zkfmi_crypto::{
+        key::{KeyId, KeyPurpose, KeyRecord, ParticipantId},
+        traits::Signer as _,
+    };
+    KeyRecord {
+        participant_id: ParticipantId::new(hex::encode(member)).unwrap(),
+        key_id: KeyId::new(format!("finality:{}", hex::encode(member))).unwrap(),
+        suite: signer.suite(),
+        key_version: 1,
+        purpose: KeyPurpose::Attestation,
+        public_key: signer.public_key(),
+        not_before: 0,
+        not_after: i64::MAX as u64,
+        revoked_at: None,
+        rotation_proof: None,
+        dekyx_binding: None,
+    }
 }
