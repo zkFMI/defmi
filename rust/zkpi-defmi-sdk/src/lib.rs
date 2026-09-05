@@ -53,7 +53,7 @@ pub mod prelude {
         accept_canonical_transition, accept_signed_facility_receipt, ApplicationSettlementReceipt,
         CanonicalReadback, CanonicalTransition, ReadbackKind,
     };
-    pub use crate::reservation::{ReservationPermit, ReservationRole};
+    pub use crate::reservation::{ReservationPermit, ReservationPermitIssue, ReservationRole};
     pub use crate::{SdkError, SdkResult};
 }
 

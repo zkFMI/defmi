@@ -5,9 +5,15 @@
 //! particular, the permit binds a Pedersen commitment to the private side;
 //! it never discloses whether the owner is buying or selling.
 
+use crate::application::ApplicationManifest;
 use crate::{SdkError, SdkResult};
 use curve25519_dalek::ristretto::CompressedRistretto;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use qomm_defmi::avalanche::{AvalancheClient, CanonicalCreditHold, CanonicalNoteReservation};
+use qomm_defmi::facility::{
+    CreditFacilityTransition, CreditTransitionKind, ReservationAuthorization,
+    ReservationRole as DefmiReservationRole,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -75,7 +81,181 @@ pub struct ReservationPermit {
     pub signature: Vec<u8>,
 }
 
+/// Private request to an authorized DeFMI permit issuer. The issuer obtains
+/// canonical evidence from its own trusted Avalanche client; the caller cannot
+/// supply a purported readback. The authorization must bind this exact order
+/// commitment, and the participant proves the commitment opening to the MPC.
+#[derive(Clone, Copy)]
+pub struct ReservationPermitIssue<'a> {
+    pub application: &'a ApplicationManifest,
+    pub role: ReservationRole,
+    pub venue_id: [u8; 32],
+    pub defmi_id: [u8; 32],
+    pub order_commitment: [u8; 32],
+    pub participant_handle: [u8; 32],
+    pub side_commitment: [u8; 32],
+    pub transition: &'a CreditFacilityTransition,
+    pub authorization: &'a ReservationAuthorization,
+    pub valid_until: u64,
+    pub observed_at: u64,
+}
+
 impl ReservationPermit {
+    /// Read an active anonymous-note reservation and credit hold at one stable
+    /// canonical root before signing an application permit. Any read error or
+    /// concurrent state change fails closed; callers can retry the whole read.
+    ///
+    /// `client` must be configured by the issuer, not selected by a requesting
+    /// participant. The permit is an issuer attestation to a canonical readback,
+    /// not a consensus proof or a substitute for checking the live hold when
+    /// settling. No owner account or post-match owner signature is required.
+    pub fn issue_from_avalanche<C: AvalancheClient + ?Sized>(
+        client: &C,
+        input: ReservationPermitIssue<'_>,
+        signer: &SigningKey,
+    ) -> SdkResult<Self> {
+        let before_root = client.state_root().map_err(SdkError::InvalidFinality)?;
+        let canonical = client
+            .note_reservation_snapshot(input.transition.hold_id)
+            .map_err(SdkError::InvalidFinality)?;
+        let hold = client
+            .credit_hold_snapshot(input.transition.hold_id)
+            .map_err(SdkError::InvalidFinality)?;
+        let after_root = client.state_root().map_err(SdkError::InvalidFinality)?;
+        if before_root == ZERO
+            || before_root != after_root
+            || canonical.state_root != before_root
+            || hold.state_root != before_root
+        {
+            return Err(SdkError::InvalidFinality(
+                "reservation reads do not share one stable canonical state root".into(),
+            ));
+        }
+        Self::issue_from_canonical_note(input, &canonical, &hold, signer)
+    }
+
+    fn issue_from_canonical_note(
+        input: ReservationPermitIssue<'_>,
+        canonical: &CanonicalNoteReservation,
+        hold: &CanonicalCreditHold,
+        signer: &SigningKey,
+    ) -> SdkResult<Self> {
+        let ReservationPermitIssue {
+            application,
+            role,
+            venue_id,
+            defmi_id,
+            order_commitment,
+            participant_handle,
+            side_commitment,
+            transition,
+            authorization,
+            valid_until,
+            observed_at,
+        } = input;
+
+        let expected_role = match role {
+            ReservationRole::Maker => DefmiReservationRole::Maker,
+            ReservationRole::Taker => DefmiReservationRole::Taker,
+        };
+        if authorization.role != expected_role {
+            return Err(invalid(
+                "reservation permit role does not match the DeFMI authorization",
+            ));
+        }
+        if transition.kind != CreditTransitionKind::Hold
+            || canonical.status != "active"
+            || canonical.settlement_digest != ZERO
+        {
+            return Err(invalid(
+                "reservation permit requires an active, unconsumed canonical hold",
+            ));
+        }
+        if canonical.accepted_height == 0
+            || canonical.state_root == ZERO
+            || canonical.proof_digest == ZERO
+            || canonical.escrow_note_id == ZERO
+            || canonical.delegation_digest == ZERO
+        {
+            return Err(invalid(
+                "canonical note reservation lacks accepted readback evidence",
+            ));
+        }
+        if canonical.hold_id != transition.hold_id
+            || canonical.amount_commitment != transition.amount_commitment
+            || canonical.asset_id != authorization.asset_id
+        {
+            return Err(invalid(
+                "canonical note reservation does not match its transition or authorization",
+            ));
+        }
+        let reserve_receipt_digest = authorization.statement(transition).map_err(|error| {
+            invalid(format!(
+                "DeFMI reservation authorization is invalid: {error}"
+            ))
+        })?;
+        if canonical.reserve_receipt_digest != reserve_receipt_digest {
+            return Err(invalid(
+                "canonical note reservation names another reserve receipt",
+            ));
+        }
+        if observed_at == 0
+            || valid_until < observed_at
+            || valid_until > transition.expires_at
+            || valid_until > MAX_UNIX_TIME
+        {
+            return Err(invalid(
+                "reservation permit validity is outside the canonical hold lifetime",
+            ));
+        }
+        let reservation_sequence = transition
+            .before_sequence
+            .checked_add(1)
+            .ok_or_else(|| invalid("reservation sequence overflows"))?;
+        if transition.query_commitment != order_commitment
+            || hold.hold_id != transition.hold_id
+            || hold.facility_id != transition.facility_id
+            || hold.query_commitment != order_commitment
+            || hold.amount_commitment != transition.amount_commitment
+            || hold.expires_at != transition.expires_at
+            || hold.status != "active"
+            || hold.settlement_digest != ZERO
+            || hold.created_sequence != reservation_sequence
+            || hold.updated_sequence != reservation_sequence
+        {
+            return Err(invalid(
+                "canonical credit hold is not the untouched reservation for this exact order",
+            ));
+        }
+
+        Self {
+            version: PERMIT_VERSION,
+            role,
+            application_binding: application.digest()?,
+            venue_id,
+            defmi_id,
+            canonical_state_root: canonical.state_root,
+            accepted_height: canonical.accepted_height,
+            order_commitment,
+            participant_handle,
+            entity_commitment: authorization.entity_commitment,
+            reservation_id: transition.hold_id,
+            facility_id: transition.facility_id,
+            asset_id: authorization.asset_id,
+            amount_commitment: transition.amount_commitment,
+            escrow_note_id: canonical.escrow_note_id,
+            delegation_digest: canonical.delegation_digest,
+            side_commitment,
+            authority_digest: authorization.authorization_digest,
+            reserve_receipt_digest,
+            reservation_sequence,
+            valid_until,
+            signer_public: signer.verifying_key().to_bytes(),
+            signature: Vec::new(),
+        }
+        .sign(signer)
+    }
+
     pub fn validate(&self) -> SdkResult<()> {
         if self.version != PERMIT_VERSION
             || self.accepted_height == 0
@@ -236,6 +416,8 @@ mod tests {
     use crate::application::oclob_manifest_v1;
     use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
     use curve25519_dalek::scalar::Scalar;
+    use qomm_defmi::facility::{CreditFacilityTransition, ReservationAuthorization};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn id(value: u8) -> [u8; 32] {
         [value; 32]
@@ -309,5 +491,267 @@ mod tests {
         assert!(permit
             .verify(id(88), id(2), &signer.verifying_key(), 1_000)
             .is_err());
+    }
+
+    fn canonical_issue_inputs() -> (
+        CanonicalNoteReservation,
+        CreditFacilityTransition,
+        ReservationAuthorization,
+    ) {
+        let amount = (RISTRETTO_BASEPOINT_POINT * Scalar::from(23_u64))
+            .compress()
+            .to_bytes();
+        let transition = CreditFacilityTransition {
+            operation_id: id(31),
+            facility_id: id(32),
+            hold_id: id(33),
+            kind: CreditTransitionKind::Hold,
+            query_commitment: id(34),
+            amount_commitment: amount,
+            consumed_commitment: ZERO,
+            refund_commitment: ZERO,
+            before_available_commitment: amount,
+            after_available_commitment: amount,
+            before_held_commitment: amount,
+            after_held_commitment: amount,
+            before_outstanding_commitment: amount,
+            after_outstanding_commitment: amount,
+            before_sequence: 7,
+            expires_at: 4_000,
+            settlement_digest: ZERO,
+            relation_proof_digest: id(35),
+        };
+        let authorization = ReservationAuthorization {
+            role: DefmiReservationRole::Taker,
+            entity_commitment: id(36),
+            asset_id: id(37),
+            direction: 1,
+            authorization_digest: transition.query_commitment,
+            mandate_digest: id(38),
+            typed_reserve_digest: id(39),
+            reserve_nullifier: id(40),
+            asset_link_proof_digest: id(41),
+            limit_price_commitment: (RISTRETTO_BASEPOINT_POINT * Scalar::from(42_u64))
+                .compress()
+                .to_bytes(),
+            escrow_digest: id(43),
+            rfq_nullifier: id(44),
+            policy_version: 0,
+            admission_ticket_id: id(45),
+            admission_slot: 1,
+            admission_receipt_digest: id(46),
+            admission_epoch: 1,
+            admission_sequence: 1,
+            admission_batch_id: id(47),
+        };
+        let canonical = CanonicalNoteReservation {
+            state_root: id(48),
+            accepted_height: 99,
+            hold_id: transition.hold_id,
+            escrow_note_id: id(49),
+            asset_id: authorization.asset_id,
+            amount_commitment: transition.amount_commitment,
+            proof_digest: id(50),
+            delegation_digest: id(51),
+            reserve_receipt_digest: authorization.statement(&transition).unwrap(),
+            status: "active".into(),
+            settlement_digest: ZERO,
+        };
+        (canonical, transition, authorization)
+    }
+
+    // Unit-level readback fixture. Live validator acceptance is a separate gate.
+    struct ReadbackClient {
+        note: CanonicalNoteReservation,
+        hold: CanonicalCreditHold,
+        after_root: [u8; 32],
+        reads: AtomicUsize,
+        fail_note: bool,
+    }
+
+    impl ReadbackClient {
+        fn new(note: &CanonicalNoteReservation, transition: &CreditFacilityTransition) -> Self {
+            Self {
+                note: note.clone(),
+                hold: CanonicalCreditHold {
+                    state_root: note.state_root,
+                    hold_id: transition.hold_id,
+                    facility_id: transition.facility_id,
+                    query_commitment: transition.query_commitment,
+                    amount_commitment: transition.amount_commitment,
+                    expires_at: transition.expires_at,
+                    status: "active".into(),
+                    settlement_digest: ZERO,
+                    created_sequence: transition.before_sequence + 1,
+                    updated_sequence: transition.before_sequence + 1,
+                },
+                after_root: note.state_root,
+                reads: AtomicUsize::new(0),
+                fail_note: false,
+            }
+        }
+    }
+
+    impl AvalancheClient for ReadbackClient {
+        fn state_root(&self) -> Result<[u8; 32], String> {
+            Ok(if self.reads.fetch_add(1, Ordering::SeqCst) == 0 {
+                id(48)
+            } else {
+                self.after_root
+            })
+        }
+
+        fn note_reservation_snapshot(
+            &self,
+            hold_id: [u8; 32],
+        ) -> Result<CanonicalNoteReservation, String> {
+            if self.fail_note || hold_id != id(33) {
+                return Err("canonical reservation is unavailable".into());
+            }
+            Ok(self.note.clone())
+        }
+
+        fn credit_hold_snapshot(&self, hold_id: [u8; 32]) -> Result<CanonicalCreditHold, String> {
+            if hold_id != id(33) {
+                return Err("canonical hold is unavailable".into());
+            }
+            Ok(self.hold.clone())
+        }
+
+        fn issue_asset(
+            &self,
+            _: &qomm_defmi::facility::AssetDefinition,
+            _: &qomm_defmi::facility::QuorumApproval,
+            _: [u8; 32],
+        ) -> Result<String, String> {
+            panic!("permit issuance must not mutate the ledger")
+        }
+
+        fn issue_account(
+            &self,
+            _: &qomm_defmi::facility::AccountOpening,
+            _: &qomm_defmi::facility::QuorumApproval,
+            _: [u8; 32],
+        ) -> Result<String, String> {
+            panic!("permit issuance must not create an account")
+        }
+
+        fn issue_settlement(
+            &self,
+            _: &qomm_defmi::facility::SettlementOrder,
+            _: &qomm_defmi::facility::QuorumApproval,
+            _: [u8; 32],
+        ) -> Result<String, String> {
+            panic!("permit issuance must not settle a trade")
+        }
+
+        fn wait_accepted(
+            &self,
+            _: &str,
+            _: std::time::Duration,
+            _: std::time::Duration,
+        ) -> Result<qomm_defmi::avalanche::AcceptedTransition, String> {
+            panic!("permit issuance reads already accepted state")
+        }
+    }
+
+    #[test]
+    fn issues_only_from_matching_active_canonical_note_reservation() {
+        let signer = SigningKey::from_bytes(&id(52));
+        let (canonical, transition, authorization) = canonical_issue_inputs();
+        let application = oclob_manifest_v1();
+        let participant_handle = (RISTRETTO_BASEPOINT_POINT * Scalar::from(53_u64))
+            .compress()
+            .to_bytes();
+        let side_commitment = (RISTRETTO_BASEPOINT_POINT * Scalar::from(54_u64))
+            .compress()
+            .to_bytes();
+        let input = ReservationPermitIssue {
+            application: &application,
+            role: ReservationRole::Taker,
+            venue_id: id(55),
+            defmi_id: id(56),
+            order_commitment: transition.query_commitment,
+            participant_handle,
+            side_commitment,
+            transition: &transition,
+            authorization: &authorization,
+            valid_until: 3_500,
+            observed_at: 3_000,
+        };
+        let issue = |reader: &ReadbackClient, input| {
+            ReservationPermit::issue_from_avalanche(reader, input, &signer)
+        };
+        let reader = ReadbackClient::new(&canonical, &transition);
+        let permit = issue(&reader, input).expect("accepted readback should issue a permit");
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
+        permit
+            .verify(
+                oclob_manifest_v1().digest().unwrap(),
+                id(56),
+                &signer.verifying_key(),
+                3_100,
+            )
+            .unwrap();
+        assert_eq!(permit.escrow_note_id, canonical.escrow_note_id);
+        assert_eq!(permit.delegation_digest, canonical.delegation_digest);
+        assert_eq!(permit.reservation_sequence, 8);
+
+        let mutations: &[fn(&mut ReadbackClient)] = &[
+            |r| r.after_root = id(60),
+            |r| r.note.state_root = id(61),
+            |r| r.hold.state_root = id(62),
+            |r| r.note.status = "consumed".into(),
+            |r| r.note.settlement_digest = id(63),
+            |r| r.note.reserve_receipt_digest = id(64),
+            |r| r.note.amount_commitment = id(65),
+            |r| r.note.asset_id = id(66),
+            |r| r.note.hold_id = id(67),
+            |r| r.note.escrow_note_id = ZERO,
+            |r| r.note.delegation_digest = ZERO,
+            |r| r.note.proof_digest = ZERO,
+            |r| r.note.accepted_height = 0,
+            |r| r.hold.facility_id = id(68),
+            |r| r.hold.query_commitment = id(69),
+            |r| r.hold.amount_commitment = id(70),
+            |r| r.hold.created_sequence += 1,
+            |r| r.hold.updated_sequence += 1,
+            |r| r.hold.expires_at += 1,
+            |r| r.hold.status = "released".into(),
+            |r| r.hold.settlement_digest = id(71),
+            |r| r.fail_note = true,
+        ];
+        for (case, mutation) in mutations.iter().enumerate() {
+            let mut reader = ReadbackClient::new(&canonical, &transition);
+            mutation(&mut reader);
+            assert!(
+                issue(&reader, input).is_err(),
+                "accepted readback mutation {case}"
+            );
+        }
+        for changed in [
+            ReservationPermitIssue {
+                order_commitment: id(72),
+                ..input
+            },
+            ReservationPermitIssue {
+                valid_until: transition.expires_at + 1,
+                ..input
+            },
+            ReservationPermitIssue {
+                valid_until: input.observed_at - 1,
+                ..input
+            },
+            ReservationPermitIssue {
+                observed_at: 0,
+                ..input
+            },
+            ReservationPermitIssue {
+                role: ReservationRole::Maker,
+                ..input
+            },
+        ] {
+            assert!(issue(&ReadbackClient::new(&canonical, &transition), changed).is_err());
+        }
     }
 }

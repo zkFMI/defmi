@@ -108,6 +108,17 @@ authorization boundary. The same signed permit also binds the anonymous legal
 entity, one-time escrow note, and delegation scope needed to consume the
 reservation without publishing an account address.
 
+An authorized issuer calls `ReservationPermit::issue_from_avalanche` with its
+own trusted Avalanche client. The SDK reads both the anonymous-note reservation
+and its credit hold, checks that they share one unchanged canonical root, and
+reconciles the creation receipt, exact order commitment, asset, amount,
+sequence, active status and expiry before signing. A concurrent ledger update
+or a missing read fails the request; the caller may retry the whole read.
+The signature attests to the issuer's readback. It is not a consensus proof,
+and settlement must still consume the live hold atomically. The issuing
+service must authenticate the participant and keep its signing key outside
+the application coordinator.
+
 Measurement binaries carried by `qomm-harness`:
 
 - `build_defmi_doc`
