@@ -64,6 +64,10 @@ pub mod prelude {
         ApplicationIdentityEvidence, ApplicationNoteReservation, ApplicationReservationBinding,
         ApplicationReserveMandate, ApplicationReserveScope, VerifiedApplicationNoteReservation,
     };
+    pub use qomm_defmi::application_settlement::{
+        ApplicationNoteFill, ApplicationNoteRelease, ApplicationOpening, ApplicationReleaseReason,
+        ApplicationSpendHead,
+    };
 }
 
 use thiserror::Error;

@@ -38,6 +38,8 @@ pub const ISSUE_METHODS: &[&str] = &[
     "defmivm.issueNoteProductReservation",
     "defmivm.issueApplicationReserveScope",
     "defmivm.issueApplicationNoteReservation",
+    "defmivm.issueApplicationNoteFill",
+    "defmivm.issueApplicationNoteRelease",
     "defmivm.issueProductRelease",
     "defmivm.issueNoteProductRelease",
     "defmivm.issueNoteProductNoFillRelease",

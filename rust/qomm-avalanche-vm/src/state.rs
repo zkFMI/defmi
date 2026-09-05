@@ -127,6 +127,28 @@ pub(crate) struct ApplicationReservationRecord {
     pub receipt_digest: [u8; 32],
     pub status: String,
     pub settlement_digest: [u8; 32],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_commitment: Option<[u8; 32]>,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_receipt: Option<[u8; 32]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_opening: Option<qomm_defmi::application_settlement::ApplicationOpening>,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+impl ApplicationReservationRecord {
+    pub(crate) fn remaining(&self) -> [u8; 32] {
+        self.remaining_commitment
+            .unwrap_or(self.binding.amount_commitment)
+    }
+    pub(crate) fn head_receipt(&self) -> [u8; 32] {
+        self.last_receipt.unwrap_or(self.receipt_digest)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -679,7 +701,7 @@ impl State {
                 || self.note_reservations.contains_key(key)
                 || hold.facility_id != binding.facility_id
                 || hold.query_commitment != binding.request_commitment
-                || hold.amount_commitment != binding.amount_commitment
+                || hold.amount_commitment != record.remaining()
                 || hold.expires_at != binding.valid_until
                 || hold.status != record.status
                 || hold.settlement_digest != record.settlement_digest
@@ -692,9 +714,47 @@ impl State {
                 || record.receipt_digest == ZERO
                 || !matches!(record.status.as_str(), "active" | "consumed" | "released")
                 || (record.status == "active" && record.settlement_digest != ZERO)
+                || (record.status == "released" && record.settlement_digest != ZERO)
+                || (record.status == "consumed"
+                    && record.settlement_digest != record.head_receipt())
                 || !application_requests.insert((binding.scope.key()?, binding.request_commitment))
             {
                 return Err("state contains a malformed application reservation".into());
+            }
+            qomm_defmi::application_settlement::point(record.remaining())?;
+            let custody =
+                self.note_serials
+                    .get(&id_key(&qomm_defmi::note_chain::escrow_claim_serial(
+                        record.escrow_note_id,
+                        binding.hold_id,
+                    )));
+            if record.sequence == 0 {
+                if record.remaining_commitment.is_some()
+                    || record.last_receipt.is_some()
+                    || record.remaining_opening.is_some()
+                    || record.status != "active"
+                    || custody.is_some()
+                {
+                    return Err("initial application reserve contains a later head".into());
+                }
+            } else {
+                if record.remaining_commitment.is_none()
+                    || record.last_receipt.is_none_or(|value| value == ZERO)
+                    || custody.is_none_or(|serial| {
+                        serial.asset_id != binding.asset_id
+                            || serial.ring_root != record.escrow_note_id
+                    })
+                    || !self
+                        .operations
+                        .values()
+                        .any(|statement| *statement == record.head_receipt())
+                    || (record.status == "active") != record.remaining_opening.is_some()
+                {
+                    return Err("advanced application reserve lost its custody or head".into());
+                }
+                if let Some(opening) = &record.remaining_opening {
+                    opening.domain()?;
+                }
             }
         }
         for (hold_id, record) in &self.note_reservations {

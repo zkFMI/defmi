@@ -77,6 +77,7 @@ use crate::{
 
 mod aethel;
 mod application_reservation;
+mod application_settlement;
 mod deccp;
 mod participant;
 
@@ -1071,6 +1072,12 @@ pub(crate) fn execute(
         }
         "defmivm.issueApplicationNoteReservation" => {
             application_reservation::reserve(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueApplicationNoteFill" => {
+            application_settlement::fill(state, params, timestamp)
+        }
+        "defmivm.issueApplicationNoteRelease" => {
+            application_settlement::release(state, params, timestamp)
         }
         "defmivm.issueProductRelease" => release_product(state, params, authorizer, timestamp),
         "defmivm.issueNoteProductRelease" => {
@@ -6921,6 +6928,7 @@ mod participant_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod application_lifecycle;
     use std::collections::BTreeMap;
 
     use curve25519_dalek::{constants::RISTRETTO_BASEPOINT_POINT as G, scalar::Scalar};

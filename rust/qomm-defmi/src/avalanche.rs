@@ -491,6 +491,10 @@ pub struct CanonicalApplicationReservation {
     pub reserve_receipt_digest: [u8; 32],
     pub status: String,
     pub settlement_digest: [u8; 32],
+    pub sequence: u64,
+    pub remaining_commitment: [u8; 32],
+    pub head_receipt: [u8; 32],
+    pub remaining_opening: Option<crate::application_settlement::ApplicationOpening>,
 }
 
 impl CanonicalApplicationReservation {
@@ -511,6 +515,16 @@ impl CanonicalApplicationReservation {
         Ok(Self {
             state_root: result_hex32(object, "stateRoot")?,
             accepted_height: result_u64(object, "acceptedHeight")?,
+            sequence: result_u64(object, "sequence")?,
+            remaining_commitment: result_hex32(object, "remainingCommitment")?,
+            head_receipt: result_hex32(object, "headReceipt")?,
+            remaining_opening: serde_json::from_value(
+                object
+                    .get("remainingOpening")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            )
+            .map_err(|_| "application remaining opening is malformed")?,
             binding,
             escrow_note_id: result_hex32(object, "escrowNoteID")?,
             proof_digest: result_hex32(object, "proofDigest")?,
@@ -2287,6 +2301,18 @@ pub trait AvalancheClient: Send + Sync {
     ) -> Result<CanonicalApplicationReservation, String> {
         Err("Avalanche client does not support application note reservations".into())
     }
+    fn issue_application_note_fill(
+        &self,
+        _fill: &crate::application_settlement::ApplicationNoteFill,
+    ) -> Result<String, String> {
+        Err("Avalanche client does not support application note fills".into())
+    }
+    fn issue_application_note_release(
+        &self,
+        _release: &crate::application_settlement::ApplicationNoteRelease,
+    ) -> Result<String, String> {
+        Err("Avalanche client does not support application note releases".into())
+    }
     fn issue_application_reserve_scope(
         &self,
         _scope: &ApplicationReserveScope,
@@ -2698,6 +2724,21 @@ impl AvalancheClient for AvalancheRpcClient {
         CanonicalApplicationReservation::parse(&self.call(
             "defmivm.applicationNoteReservation",
             json!({"holdID": hex::encode(hold_id)}),
+        )?)
+    }
+    fn issue_application_note_fill(
+        &self,
+        fill: &crate::application_settlement::ApplicationNoteFill,
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call("defmivm.issueApplicationNoteFill", json!({"fill": fill}))?)
+    }
+    fn issue_application_note_release(
+        &self,
+        release: &crate::application_settlement::ApplicationNoteRelease,
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueApplicationNoteRelease",
+            json!({"release": release}),
         )?)
     }
 
@@ -3360,10 +3401,10 @@ impl AvalancheClient for AvalancheRpcClient {
 /// Avalanche-authoritative bridge for the account-free note rail.
 ///
 /// Unlike the legacy account projection, the canonical note set lives on the
-/// L1 itself.  Every call fetches the current consensus root, verifies the
-/// k-of-n signatures locally, submits exactly that statement, and checks the
-/// accepted transition receipt.  This avoids inventing a second source of
-/// truth for hidden ownership.
+/// L1 itself. Governance-authorized calls check their k-of-n approval locally.
+/// Application fills/releases carry their own canonical-parent-bound authority,
+/// which every VM verifies. Both paths submit the exact authorized bytes and
+/// check the accepted transition receipt, including when retrying after a crash.
 pub struct AvalancheNoteBridge<'a, C: AvalancheClient> {
     pub authorizer: &'a QuorumAuthorizer,
     pub client: &'a C,
@@ -3806,6 +3847,64 @@ impl<'a, C: AvalancheClient> AvalancheNoteBridge<'a, C> {
                 client.issue_application_note_reservation(reservation, approval, before)
             },
         )
+    }
+
+    /// Submit the already committee-certified zkPI and full monetary proofs.
+    /// This does not ask either participant or the governance committee to
+    /// sign after matching. Scope, signatures and proofs are verified by the
+    /// native VM; no caller-supplied "verified" marker crosses the boundary.
+    pub fn settle_application(
+        &self,
+        fill: &crate::application_settlement::ApplicationNoteFill,
+    ) -> Result<AcceptedTransition, String> {
+        self.submit_application(fill.signing_message()?, fill.before_root, |client| {
+            client.issue_application_note_fill(fill)
+        })
+    }
+
+    /// Ordered cancellation carries the pre-authorized committee certificate;
+    /// expiry carries no signature. The VM uses the accepted block timestamp.
+    pub fn release_application(
+        &self,
+        release: &crate::application_settlement::ApplicationNoteRelease,
+    ) -> Result<AcceptedTransition, String> {
+        self.submit_application(release.signing_message()?, release.before_root, |client| {
+            client.issue_application_note_release(release)
+        })
+    }
+
+    fn submit_application<F>(
+        &self,
+        statement: [u8; 32],
+        before_root: [u8; 32],
+        issue: F,
+    ) -> Result<AcceptedTransition, String>
+    where
+        F: FnOnce(&C) -> Result<String, String>,
+    {
+        // Do not substitute a freshly read root or regenerate the certificate:
+        // an exact retry must find its previous accepted transaction even if
+        // the chain has advanced since the client lost the receipt.
+        let transaction = issue(self.client)?;
+        let accepted = self.client.wait_accepted(
+            &transaction,
+            CONSENSUS_ACCEPTANCE_TIMEOUT,
+            CONSENSUS_POLL_INTERVAL,
+        )?;
+        if transaction.is_empty()
+            || accepted.tx_id != transaction
+            || accepted.statement != statement
+            || accepted.before_root != before_root
+            || accepted.after_root == [0; 32]
+            || accepted.after_root == before_root
+            || accepted.height == 0
+            || accepted.block_id.is_empty()
+        {
+            return Err(
+                "Avalanche returned another or incomplete application transition receipt".into(),
+            );
+        }
+        Ok(accepted)
     }
 
     pub fn release_product(

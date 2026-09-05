@@ -1214,6 +1214,10 @@ fn canonical_state_snapshot(
             Ok(json!({
                 "stateRoot": state_root, "acceptedHeight": accepted_height,
                 "binding": record.binding,
+                "sequence": record.sequence,
+                "remainingCommitment": hex::encode(record.remaining()),
+                "headReceipt": hex::encode(record.head_receipt()),
+                "remainingOpening": record.remaining_opening,
                 "escrowNoteID": hex::encode(record.escrow_note_id),
                 "proofDigest": hex::encode(record.proof_digest),
                 "reserveReceiptDigest": hex::encode(record.receipt_digest),

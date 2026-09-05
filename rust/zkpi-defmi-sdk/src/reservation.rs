@@ -164,6 +164,10 @@ impl ReservationPermit {
             ));
         }
         if canonical.binding != mandate.binding().map_err(invalid)?
+            || canonical.sequence != 0
+            || canonical.remaining_commitment != mandate.amount_commitment
+            || canonical.head_receipt != canonical.reserve_receipt_digest
+            || canonical.remaining_opening.is_some()
             || canonical.accepted_height == 0
             || canonical.status != "active"
             || canonical.settlement_digest != ZERO
@@ -937,6 +941,10 @@ mod tests {
             reserve_receipt_digest: legacy.reserve_receipt_digest,
             status: "active".into(),
             settlement_digest: ZERO,
+            sequence: 0,
+            remaining_commitment: mandate.amount_commitment,
+            head_receipt: legacy.reserve_receipt_digest,
+            remaining_opening: None,
         };
         let reader = || {
             let mut reader = ReadbackClient::new(&legacy, &transition);
@@ -1001,6 +1009,9 @@ mod tests {
             |r| r.application.as_mut().unwrap().reserve_receipt_digest = ZERO,
             |r| r.application.as_mut().unwrap().status = "released".into(),
             |r| r.application.as_mut().unwrap().settlement_digest = id(88),
+            |r| r.application.as_mut().unwrap().sequence = 1,
+            |r| r.application.as_mut().unwrap().remaining_commitment = id(96),
+            |r| r.application.as_mut().unwrap().head_receipt = id(97),
             |r| r.hold.status = "consumed".into(),
             |r| r.hold.settlement_digest = id(89),
             |r| r.hold.hold_id = id(90),

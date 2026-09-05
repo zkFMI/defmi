@@ -177,6 +177,10 @@ pub(super) fn reserve(
             receipt_digest: statement,
             status: "active".into(),
             settlement_digest: ZERO,
+            remaining_commitment: None,
+            sequence: 0,
+            last_receipt: None,
+            remaining_opening: None,
         },
     );
     state
