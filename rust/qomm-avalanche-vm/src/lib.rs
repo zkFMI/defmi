@@ -1,5 +1,6 @@
 //! QOMM's non-EVM Avalanche virtual machine.
 
+pub mod application;
 pub mod block;
 mod execution;
 pub mod genesis;
@@ -12,3 +13,10 @@ pub mod vm;
 pub const VERSION: &str = "qomm-avalanche-vm/0.1.0";
 
 pub use vm::QommVm;
+
+/// Serve a configured consensus host over Avalanche RPCChainVM.
+pub async fn serve(vm: QommVm) -> Result<(), String> {
+    avalanche_rpcchainvm_qomm::plugin::serve(vm)
+        .await
+        .map_err(|error| error.to_string())
+}

@@ -6,9 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aethel_core::AethelBook;
 use curve25519_dalek::{ristretto::CompressedRistretto, scalar::Scalar};
-use deccp_core::{ClearingBook, ClearingSnapshot, DeCcpError};
 use ed25519_dalek::VerifyingKey;
 use qomm_defmi::application_reservation::{ApplicationReservationBinding, ApplicationReserveScope};
 use qomm_defmi::central_bank_liquidity::BojLiquidityBook;
@@ -32,7 +30,7 @@ const STATE_DOMAIN: &[u8] = b"QOMM:DEFMI:STATE:v3";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct AssetRecord {
+pub struct AssetRecord {
     pub code: String,
     pub kind: String,
     pub decimals: u8,
@@ -42,7 +40,7 @@ pub(crate) struct AssetRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CsdIssuerRecord {
+pub struct CsdIssuerRecord {
     pub code: String,
     pub jurisdiction: String,
     pub operator_entity_commitment: [u8; 32],
@@ -56,7 +54,7 @@ pub(crate) struct CsdIssuerRecord {
 }
 
 impl CsdIssuerRecord {
-    pub(crate) fn definition(&self, issuer_id: [u8; 32]) -> CsdIssuerDefinition {
+    pub fn definition(&self, issuer_id: [u8; 32]) -> CsdIssuerDefinition {
         CsdIssuerDefinition {
             issuer_id,
             code: self.code.clone(),
@@ -73,7 +71,7 @@ impl CsdIssuerRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct AccountRecord {
+pub struct AccountRecord {
     pub asset_id: [u8; 32],
     pub commitment: [u8; 32],
     pub sequence: u64,
@@ -81,7 +79,7 @@ pub(crate) struct AccountRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct NoteRecord {
+pub struct NoteRecord {
     pub asset_id: [u8; 32],
     pub one_time: [u8; 32],
     pub value_commitment: [u8; 32],
@@ -92,7 +90,7 @@ pub(crate) struct NoteRecord {
 }
 
 impl NoteRecord {
-    pub(crate) fn output(&self, note_id: [u8; 32]) -> NoteOutput {
+    pub fn output(&self, note_id: [u8; 32]) -> NoteOutput {
         NoteOutput {
             note_id,
             asset_id: self.asset_id,
@@ -108,7 +106,7 @@ impl NoteRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct NoteReservationRecord {
+pub struct NoteReservationRecord {
     pub escrow_note_id: [u8; 32],
     pub asset_id: [u8; 32],
     pub amount_commitment: [u8; 32],
@@ -120,7 +118,7 @@ pub(crate) struct NoteReservationRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ApplicationReservationRecord {
+pub struct ApplicationReservationRecord {
     pub binding: ApplicationReservationBinding,
     pub escrow_note_id: [u8; 32],
     pub proof_digest: [u8; 32],
@@ -142,18 +140,18 @@ fn is_zero_u64(value: &u64) -> bool {
 }
 
 impl ApplicationReservationRecord {
-    pub(crate) fn remaining(&self) -> [u8; 32] {
+    pub fn remaining(&self) -> [u8; 32] {
         self.remaining_commitment
             .unwrap_or(self.binding.amount_commitment)
     }
-    pub(crate) fn head_receipt(&self) -> [u8; 32] {
+    pub fn head_receipt(&self) -> [u8; 32] {
         self.last_receipt.unwrap_or(self.receipt_digest)
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct StandingNotePoolRecord {
+pub struct StandingNotePoolRecord {
     pub venue_id: [u8; 32],
     pub defmi_id: [u8; 32],
     pub entity_commitment: [u8; 32],
@@ -173,7 +171,7 @@ pub(crate) struct StandingNotePoolRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct EncryptedOpeningShareRecord {
+pub struct EncryptedOpeningShareRecord {
     pub party: u16,
     pub ephemeral: [u8; 32],
     pub masked_value: [u8; 32],
@@ -182,7 +180,7 @@ pub(crate) struct EncryptedOpeningShareRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct OpeningEnvelopeRecord {
+pub struct OpeningEnvelopeRecord {
     pub context: [u8; 32],
     pub threshold: u16,
     pub recipient_view: [u8; 32],
@@ -190,7 +188,7 @@ pub(crate) struct OpeningEnvelopeRecord {
 }
 
 impl OpeningEnvelopeRecord {
-    pub(crate) fn from_domain(envelope: &OpeningEnvelope) -> Result<Self, String> {
+    pub fn from_domain(envelope: &OpeningEnvelope) -> Result<Self, String> {
         Ok(Self {
             context: envelope.context,
             threshold: envelope
@@ -216,7 +214,7 @@ impl OpeningEnvelopeRecord {
         })
     }
 
-    pub(crate) fn domain(&self) -> Result<OpeningEnvelope, String> {
+    pub fn domain(&self) -> Result<OpeningEnvelope, String> {
         let point = |encoded: [u8; 32], name: &str| {
             CompressedRistretto(encoded)
                 .decompress()
@@ -247,7 +245,7 @@ impl OpeningEnvelopeRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct NoteClaimRecord {
+pub struct NoteClaimRecord {
     pub asset_id: [u8; 32],
     pub value_commitment: [u8; 32],
     pub recipient_commitment: [u8; 32],
@@ -260,7 +258,7 @@ pub(crate) struct NoteClaimRecord {
 }
 
 impl NoteClaimRecord {
-    pub(crate) fn claim(&self, claim_id: [u8; 32]) -> Result<NoteClaim, String> {
+    pub fn claim(&self, claim_id: [u8; 32]) -> Result<NoteClaim, String> {
         Ok(NoteClaim {
             claim_id,
             asset_id: self.asset_id,
@@ -279,7 +277,7 @@ impl NoteClaimRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct NoteSerialRecord {
+pub struct NoteSerialRecord {
     pub deadline: u64,
     pub asset_id: [u8; 32],
     pub ring_root: [u8; 32],
@@ -288,7 +286,7 @@ pub(crate) struct NoteSerialRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct GuarantorRecord {
+pub struct GuarantorRecord {
     pub kind: String,
     pub name: String,
     pub public_key: [u8; 32],
@@ -298,7 +296,7 @@ pub(crate) struct GuarantorRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CreditFacilityRecord {
+pub struct CreditFacilityRecord {
     pub guarantor_id: [u8; 32],
     pub beneficiary_commitment: [u8; 32],
     pub rail_asset_id: [u8; 32],
@@ -317,7 +315,7 @@ pub(crate) struct CreditFacilityRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CreditHoldRecord {
+pub struct CreditHoldRecord {
     pub facility_id: [u8; 32],
     pub query_commitment: [u8; 32],
     pub amount_commitment: [u8; 32],
@@ -330,7 +328,7 @@ pub(crate) struct CreditHoldRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ReservationBindingRecord {
+pub struct ReservationBindingRecord {
     pub role: String,
     pub entity_commitment: [u8; 32],
     pub asset_id: [u8; 32],
@@ -354,7 +352,7 @@ pub(crate) struct ReservationBindingRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ReservationEscrowRecord {
+pub struct ReservationEscrowRecord {
     pub source_handle: [u8; 32],
     pub escrow_handle: [u8; 32],
     pub asset_id: [u8; 32],
@@ -369,14 +367,14 @@ pub(crate) struct ReservationEscrowRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct NullifierRecord {
+pub struct NullifierRecord {
     pub deadline: u64,
     pub statement: [u8; 32],
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct AdmissionCommitteeRecord {
+pub struct AdmissionCommitteeRecord {
     pub venue_id: [u8; 32],
     pub epoch: u64,
     pub node_keys: Vec<[u8; 32]>,
@@ -387,7 +385,7 @@ pub(crate) struct AdmissionCommitteeRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct AdmissionBatchRecord {
+pub struct AdmissionBatchRecord {
     pub venue_id: [u8; 32],
     pub epoch: u64,
     pub slot: u64,
@@ -401,7 +399,7 @@ pub(crate) struct AdmissionBatchRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct AdmissionEntryRecord {
+pub struct AdmissionEntryRecord {
     pub batch_id: [u8; 32],
     pub sequence: u64,
     pub admission_digest: [u8; 32],
@@ -410,7 +408,7 @@ pub(crate) struct AdmissionEntryRecord {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct SettlementVerifierRecord {
+pub struct SettlementVerifierRecord {
     pub venue_id: [u8; 32],
     pub defmi_id: [u8; 32],
     pub epoch: u64,
@@ -426,38 +424,10 @@ pub(crate) struct SettlementVerifierRecord {
     pub statement: [u8; 32],
 }
 
-/// The DeCCP clearing book this VM hosts for Aethel guarantees.
-///
-/// `ClearingBook` deliberately has no `Deserialize`: DeCCP refuses to rebuild
-/// a book from storage it cannot trust. Here the store is the VM's own
-/// consensus state, whose root commits to these bytes and whose decoder
-/// re-checks the canonical encoding, so the book is rebuilt through
-/// `ClearingBook::restore_authenticated`, which still re-runs every DeCCP
-/// structural invariant on load.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(try_from = "ClearingSnapshot", into = "ClearingSnapshot")]
-pub(crate) struct ClearingState {
-    pub book: ClearingBook,
-}
-
-impl TryFrom<ClearingSnapshot> for ClearingState {
-    type Error = DeCcpError;
-
-    fn try_from(snapshot: ClearingSnapshot) -> Result<Self, DeCcpError> {
-        ClearingBook::restore_authenticated(snapshot).map(|book| Self { book })
-    }
-}
-
-impl From<ClearingState> for ClearingSnapshot {
-    fn from(clearing: ClearingState) -> Self {
-        clearing.book.snapshot()
-    }
-}
-
 /// No default during deserialization: legacy snapshots must not silently gain
 /// the new nullifier rules and make previously spent inputs spendable again.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) enum NoteProofVersion {
+pub enum NoteProofVersion {
     #[default]
     #[serde(rename = "triptych_v2")]
     TriptychV2,
@@ -466,70 +436,68 @@ pub(crate) enum NoteProofVersion {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct State {
-    pub(crate) note_proof_version: NoteProofVersion,
+    pub note_proof_version: NoteProofVersion,
     pub transition_count: u64,
     pub applied_transactions: BTreeSet<[u8; 32]>,
-    #[serde(default, skip_serializing_if = "AethelBook::is_empty")]
-    pub(crate) aethel: AethelBook,
-    /// The DeCCP clearing book that holds guarantee capacity for Aethel.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) deccp: Option<ClearingState>,
-    #[serde(default)]
-    pub(crate) assets: BTreeMap<String, AssetRecord>,
-    #[serde(default)]
-    pub(crate) csd_issuers: BTreeMap<String, CsdIssuerRecord>,
-    #[serde(default)]
-    pub(crate) accounts: BTreeMap<String, AccountRecord>,
-    #[serde(default)]
-    pub(crate) notes: BTreeMap<String, NoteRecord>,
-    #[serde(default)]
-    pub(crate) note_reservations: BTreeMap<String, NoteReservationRecord>,
+    /// Opaque state owned and validated by the configured application runtime.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) application_reserve_scopes: BTreeMap<String, ApplicationReserveScope>,
+    pub application_states: BTreeMap<String, Vec<u8>>,
+    #[serde(default)]
+    pub assets: BTreeMap<String, AssetRecord>,
+    #[serde(default)]
+    pub csd_issuers: BTreeMap<String, CsdIssuerRecord>,
+    #[serde(default)]
+    pub accounts: BTreeMap<String, AccountRecord>,
+    #[serde(default)]
+    pub notes: BTreeMap<String, NoteRecord>,
+    #[serde(default)]
+    pub note_reservations: BTreeMap<String, NoteReservationRecord>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) application_reservations: BTreeMap<String, ApplicationReservationRecord>,
+    pub application_reserve_scopes: BTreeMap<String, ApplicationReserveScope>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub application_reservations: BTreeMap<String, ApplicationReservationRecord>,
     #[serde(default)]
-    pub(crate) standing_note_pools: BTreeMap<String, StandingNotePoolRecord>,
+    pub standing_note_pools: BTreeMap<String, StandingNotePoolRecord>,
     #[serde(default)]
-    pub(crate) note_claims: BTreeMap<String, NoteClaimRecord>,
+    pub note_claims: BTreeMap<String, NoteClaimRecord>,
     #[serde(default)]
-    pub(crate) guarantors: BTreeMap<String, GuarantorRecord>,
+    pub guarantors: BTreeMap<String, GuarantorRecord>,
     #[serde(default)]
-    pub(crate) credit_facilities: BTreeMap<String, CreditFacilityRecord>,
+    pub credit_facilities: BTreeMap<String, CreditFacilityRecord>,
     #[serde(default)]
-    pub(crate) credit_holds: BTreeMap<String, CreditHoldRecord>,
+    pub credit_holds: BTreeMap<String, CreditHoldRecord>,
     #[serde(default)]
-    pub(crate) reservation_bindings: BTreeMap<String, ReservationBindingRecord>,
+    pub reservation_bindings: BTreeMap<String, ReservationBindingRecord>,
     #[serde(default)]
-    pub(crate) reservation_escrows: BTreeMap<String, ReservationEscrowRecord>,
+    pub reservation_escrows: BTreeMap<String, ReservationEscrowRecord>,
     #[serde(default)]
-    pub(crate) nullifiers: BTreeMap<String, NullifierRecord>,
+    pub nullifiers: BTreeMap<String, NullifierRecord>,
     #[serde(default)]
-    pub(crate) note_serials: BTreeMap<String, NoteSerialRecord>,
+    pub note_serials: BTreeMap<String, NoteSerialRecord>,
     #[serde(default)]
-    pub(crate) note_issuances: BTreeMap<String, [u8; 32]>,
+    pub note_issuances: BTreeMap<String, [u8; 32]>,
     #[serde(default)]
-    pub(crate) rfq_nullifiers: BTreeMap<String, [u8; 32]>,
+    pub rfq_nullifiers: BTreeMap<String, [u8; 32]>,
     #[serde(default)]
-    pub(crate) admission_committees: BTreeMap<String, AdmissionCommitteeRecord>,
+    pub admission_committees: BTreeMap<String, AdmissionCommitteeRecord>,
     #[serde(default)]
-    pub(crate) admission_batches: BTreeMap<String, AdmissionBatchRecord>,
+    pub admission_batches: BTreeMap<String, AdmissionBatchRecord>,
     #[serde(default)]
-    pub(crate) admission_entries: BTreeMap<String, AdmissionEntryRecord>,
+    pub admission_entries: BTreeMap<String, AdmissionEntryRecord>,
     #[serde(default)]
-    pub(crate) settlement_verifiers: BTreeMap<String, SettlementVerifierRecord>,
+    pub settlement_verifiers: BTreeMap<String, SettlementVerifierRecord>,
     #[serde(default)]
-    pub(crate) operations: BTreeMap<String, [u8; 32]>,
+    pub operations: BTreeMap<String, [u8; 32]>,
     #[serde(default, skip_serializing_if = "CrossDomainBook::is_empty")]
-    pub(crate) cross_domain: CrossDomainBook,
+    pub cross_domain: CrossDomainBook,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) cross_domain_local_domain: Option<CrossDomain>,
+    pub cross_domain_local_domain: Option<CrossDomain>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) cross_domain_committees: BTreeMap<String, CrossDomainCommittee>,
+    pub cross_domain_committees: BTreeMap<String, CrossDomainCommittee>,
     #[serde(default, skip_serializing_if = "BojLiquidityBook::is_empty")]
-    pub(crate) boj_liquidity: BojLiquidityBook,
+    pub boj_liquidity: BojLiquidityBook,
     #[serde(default, skip_serializing_if = "ParticipantRegistry::is_empty")]
-    pub(crate) participant_registry: ParticipantRegistry,
+    pub participant_registry: ParticipantRegistry,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -558,12 +526,14 @@ impl State {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        self.aethel.validate().map_err(|error| error.to_string())?;
-        if let Some(clearing) = &self.deccp {
-            clearing
-                .book
-                .validate()
-                .map_err(|error| format!("invalid DeCCP clearing state: {error}"))?;
+        if self
+            .application_states
+            .iter()
+            .any(|(name, bytes)| name.is_empty() || bytes.is_empty())
+        {
+            return Err(
+                "application state must have a namespace and nonempty canonical bytes".into(),
+            );
         }
         if self.transition_count != self.applied_transactions.len() as u64 {
             return Err("state transition count does not match the transaction index".into());
@@ -1028,6 +998,22 @@ impl State {
         authorizer: &QuorumAuthorizer,
         timestamp: u64,
     ) -> Result<TransitionReceipt, String> {
+        self.apply_with_application(
+            bytes,
+            authorizer,
+            timestamp,
+            &crate::application::NoApplications,
+        )
+    }
+
+    pub fn apply_with_application(
+        &mut self,
+        bytes: &[u8],
+        authorizer: &QuorumAuthorizer,
+        timestamp: u64,
+        application: &dyn crate::application::ApplicationRuntime,
+    ) -> Result<TransitionReceipt, String> {
+        application.validate_state(self)?;
         let transaction = TransactionEnvelope::decode(bytes)?;
         let transaction_id = transaction.id()?;
         if self.applied_transactions.contains(&transaction_id.0) {
@@ -1035,13 +1021,15 @@ impl State {
         }
         let before_root = self.root();
         let mut next = self.clone();
-        let statement = execution::execute(&mut next, &transaction, authorizer, timestamp)?;
+        let statement =
+            execution::execute(&mut next, &transaction, authorizer, timestamp, application)?;
         next.applied_transactions.insert(transaction_id.0);
         next.transition_count = next
             .transition_count
             .checked_add(1)
             .ok_or_else(|| "state transition counter overflow".to_string())?;
         next.validate()?;
+        application.validate_state(&next)?;
         let after_root = next.root();
         *self = next;
         Ok(TransitionReceipt {
@@ -1074,17 +1062,10 @@ impl State {
             hash.update((encoded.len() as u64).to_be_bytes());
             hash.update(encoded);
         }
-        if !self.aethel.is_empty() {
-            hash.update(b"aethel-book:v1");
+        if !self.application_states.is_empty() {
+            hash.update(b"application-state:v1");
             let encoded =
-                serde_json::to_vec(&self.aethel).expect("validated Aethel state is serializable");
-            hash.update((encoded.len() as u64).to_be_bytes());
-            hash.update(encoded);
-        }
-        if let Some(clearing) = &self.deccp {
-            hash.update(b"deccp-book:v1");
-            let encoded = serde_json::to_vec(clearing)
-                .expect("validated DeCCP clearing state is serializable");
+                serde_json::to_vec(&self.application_states).expect("application state serializes");
             hash.update((encoded.len() as u64).to_be_bytes());
             hash.update(encoded);
         }
@@ -1397,19 +1378,19 @@ impl State {
     }
 }
 
-pub(crate) fn id_key(id: &[u8; 32]) -> String {
+pub fn id_key(id: &[u8; 32]) -> String {
     hex::encode(id)
 }
 
-pub(crate) fn admission_committee_key(venue_id: &[u8; 32], epoch: u64) -> String {
+pub fn admission_committee_key(venue_id: &[u8; 32], epoch: u64) -> String {
     format!("{}:{epoch:020}", hex::encode(venue_id))
 }
 
-pub(crate) fn cross_domain_committee_key(domain_id: &[u8; 32], epoch: u64) -> String {
+pub fn cross_domain_committee_key(domain_id: &[u8; 32], epoch: u64) -> String {
     format!("{}:{epoch:020}", hex::encode(domain_id))
 }
 
-pub(crate) fn admission_entry_key(batch_id: &[u8; 32], sequence: u64) -> String {
+pub fn admission_entry_key(batch_id: &[u8; 32], sequence: u64) -> String {
     format!("{}:{sequence:020}", hex::encode(batch_id))
 }
 

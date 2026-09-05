@@ -79,6 +79,7 @@ const STATE_SYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 pub struct QommVm {
+    application: Arc<dyn crate::application::ApplicationRuntime>,
     inner: Arc<RwLock<Option<Runtime>>>,
     events: Arc<Notify>,
     shutting_down: Arc<AtomicBool>,
@@ -87,6 +88,7 @@ pub struct QommVm {
 impl Default for QommVm {
     fn default() -> Self {
         Self {
+            application: Arc::new(crate::application::NoApplications),
             inner: Arc::new(RwLock::new(None)),
             events: Arc::new(Notify::new()),
             shutting_down: Arc::new(AtomicBool::new(false)),
@@ -333,6 +335,14 @@ async fn optional_get(db: &Database, key: &[u8]) -> Result<Option<Vec<u8>>, Stat
 }
 
 impl QommVm {
+    /// Construct a dedicated application host without importing its implementation.
+    pub fn with_application(application: Arc<dyn crate::application::ApplicationRuntime>) -> Self {
+        Self {
+            application,
+            ..Self::default()
+        }
+    }
+
     async fn database(&self) -> Result<Database, Status> {
         self.inner
             .read()
@@ -363,6 +373,7 @@ impl QommVm {
         }
         let state =
             State::decode(&db.get(&state_key(id)).await.map_err(db_error)?).map_err(internal)?;
+        self.application.validate_state(&state).map_err(internal)?;
         Ok(VerifiedBlock { state, ..parsed })
     }
 
@@ -552,6 +563,7 @@ impl QommVm {
             return Err("assembled state snapshot has the wrong length".into());
         }
         let decoded = decode_snapshot(&summary, &snapshot)?;
+        self.application.validate_state(&decoded.state)?;
         let state_bytes = decoded.state.encode()?;
         let mut operations = vec![
             BatchOp::Put {
@@ -674,7 +686,12 @@ impl QommVm {
         for transaction in &candidate.block.transactions {
             receipts.push(
                 state
-                    .apply(transaction, &authorizer, candidate.block.timestamp as u64)
+                    .apply_with_application(
+                        transaction,
+                        &authorizer,
+                        candidate.block.timestamp as u64,
+                        self.application.as_ref(),
+                    )
                     .map_err(invalid)?,
             );
         }
@@ -2182,6 +2199,7 @@ impl Vm for QommVm {
                 }
                 let state = State::decode(&db.get(&state_key(last_id)).await.map_err(db_error)?)
                     .map_err(internal)?;
+                self.application.validate_state(&state).map_err(internal)?;
                 VerifiedBlock { state, ..parsed }
             }
         };
@@ -2420,7 +2438,12 @@ impl Vm for QommVm {
                     .and_then(|transaction| transaction.id())
                     .map_err(internal)?;
                 runtime.pending.remove(&id);
-                match state.apply(&bytes, &runtime.authorizer, block_timestamp as u64) {
+                match state.apply_with_application(
+                    &bytes,
+                    &runtime.authorizer,
+                    block_timestamp as u64,
+                    self.application.as_ref(),
+                ) {
                     Ok(receipt) => {
                         runtime.processing.insert(id, bytes.clone());
                         transactions.push(bytes);

@@ -12,8 +12,6 @@
 
 pub mod cross_domain_dvp;
 pub mod handles;
-pub mod receivable;
-pub mod receivable_wire;
 pub mod typed;
 pub mod typed_wire;
 pub mod wire;

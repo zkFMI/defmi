@@ -75,10 +75,8 @@ use crate::{
     transaction::TransactionEnvelope,
 };
 
-mod aethel;
 mod application_reservation;
 mod application_settlement;
-mod deccp;
 mod participant;
 
 #[derive(Deserialize)]
@@ -981,64 +979,14 @@ pub(crate) fn execute(
     transaction: &TransactionEnvelope,
     authorizer: &QuorumAuthorizer,
     timestamp: u64,
+    application: &dyn crate::application::ApplicationRuntime,
 ) -> Result<[u8; 32], String> {
     let params = transaction
         .params
         .as_object()
         .ok_or_else(|| "transaction parameters must be an object".to_string())?;
     match transaction.method.as_str() {
-        "defmivm.issueAethelProvider" => {
-            aethel::register_provider(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelStream" => {
-            aethel::register_stream(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelStreamTransition" => {
-            aethel::transition_stream(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelSeries" => {
-            aethel::register_series(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelCredentialIssuer" => {
-            aethel::register_credential_issuer(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelCredentialStatus" => {
-            aethel::publish_credential_status(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelCreditDecision" => {
-            aethel::record_credit_decision(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelGuarantee" => {
-            aethel::record_guarantee(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelFundingQuote" => {
-            aethel::record_funding_quote(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelReceivable" => {
-            aethel::issue_receivable(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelDefault" => {
-            aethel::record_default(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelGuaranteeClaim" => {
-            aethel::claim_guarantee(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelGuaranteeRelease" => {
-            aethel::release_guarantee(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelProviderKeyRotation" => {
-            aethel::rotate_provider_key(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueAethelProviderStatus" => {
-            aethel::set_provider_status(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueDeccpClearingBook" => {
-            deccp::open_clearing_book(state, params, authorizer, timestamp)
-        }
-        "defmivm.issueDeccpMember" => deccp::admit_member(state, params, authorizer, timestamp),
-        "defmivm.issueDeccpGuaranteeFacility" => {
-            deccp::register_guarantee_facility(state, params, authorizer, timestamp)
-        }
+        "defmivm.issueApplication" => application.execute(state, params, authorizer, timestamp),
         "defmivm.issueAsset" => register_asset(state, params, authorizer),
         "defmivm.issueCSDIssuer" => register_csd_issuer(state, params, authorizer, timestamp),
         "defmivm.issueCSDIssuerControl" => control_csd_issuer(state, params, authorizer),
@@ -6900,7 +6848,7 @@ fn settle(
     Ok(statement)
 }
 
-fn authorize(
+pub fn authorize(
     state: &State,
     params: &Map<String, Value>,
     statement: [u8; 32],
@@ -6958,7 +6906,7 @@ fn field<T: DeserializeOwned>(params: &Map<String, Value>, name: &str) -> Result
     .map_err(|error| format!("invalid transaction field {name}: {error}"))
 }
 
-fn require_keys(params: &Map<String, Value>, expected: &[&str]) -> Result<(), String> {
+pub fn require_keys(params: &Map<String, Value>, expected: &[&str]) -> Result<(), String> {
     if params.len() != expected.len() || expected.iter().any(|key| !params.contains_key(*key)) {
         return Err(format!(
             "transaction parameters must contain exactly {}",
@@ -6977,12 +6925,6 @@ fn hex_array<const N: usize>(value: &str, name: &str) -> Result<[u8; N], String>
 
 #[cfg(test)]
 mod cross_domain_tests;
-
-#[cfg(test)]
-mod aethel_tests;
-
-#[cfg(test)]
-mod deccp_tests;
 
 #[cfg(test)]
 mod participant_tests;

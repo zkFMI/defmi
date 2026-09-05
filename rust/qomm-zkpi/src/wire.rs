@@ -213,7 +213,8 @@ pub fn threshold_range_encoded_len(proof: &ThresholdRangeProof) -> usize {
     2 + proof.bit_commitments.len() * (32 + 5 * 32) + 3 * 32
 }
 
-pub(crate) fn encode_threshold_range(proof: &ThresholdRangeProof) -> Vec<u8> {
+/// Canonical generic threshold-range proof encoding for application bindings.
+pub fn encode_threshold_range(proof: &ThresholdRangeProof) -> Vec<u8> {
     let mut out = Vec::with_capacity(threshold_range_encoded_len(proof));
     let bits = u16::try_from(proof.bits).expect("threshold range width fits u16");
     out.extend_from_slice(&bits.to_be_bytes());
@@ -231,7 +232,8 @@ pub(crate) fn encode_threshold_range(proof: &ThresholdRangeProof) -> Vec<u8> {
     out
 }
 
-pub(crate) fn decode_threshold_range(raw: &[u8]) -> Result<ThresholdRangeProof, WireError> {
+/// Decode a canonical generic threshold-range proof.
+pub fn decode_threshold_range(raw: &[u8]) -> Result<ThresholdRangeProof, WireError> {
     let mut r = Reader { bytes: raw, at: 0 };
     let bits = r.u16("threshold range width")? as usize;
     let mut bit_commitments = Vec::with_capacity(bits);

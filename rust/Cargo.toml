@@ -45,4 +45,3 @@ qomm-mpc = { path = "qomm-mpc" }
 qomm-transport = { path = "qomm-transport" }
 zkpi-defmi-sdk = { path = "zkpi-defmi-sdk" }
 qomm-audit = { path = "qomm-audit" }
-aethel-core = { git = "https://github.com/shukob/aethel" }

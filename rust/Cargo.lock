@@ -3,21 +3,6 @@
 version = 4
 
 [[package]]
-name = "aethel-core"
-version = "0.1.0"
-source = "git+https://github.com/shukob/aethel#0bd07a2cb596db36133e9ece6d783a3a6e982aa8"
-dependencies = [
- "dekyx-aethel",
- "dekyx-core 0.1.0 (git+https://github.com/shukob/dekyx)",
- "ed25519-dalek",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -384,52 +369,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "deccp-aethel"
-version = "0.1.0"
-source = "git+https://github.com/shukob/deccp#bd362a73000b7663665ef62c155e26c959385a78"
-dependencies = [
- "deccp-core",
- "sha2",
-]
-
-[[package]]
-name = "deccp-core"
-version = "0.1.0"
-source = "git+https://github.com/shukob/deccp#bd362a73000b7663665ef62c155e26c959385a78"
-dependencies = [
- "ed25519-dalek",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "dekyx-aethel"
-version = "0.1.0"
-source = "git+https://github.com/shukob/dekyx#96fcaf13e24fc5ae85d0e2a4b1b5753685535b8f"
-dependencies = [
- "dekyx-core 0.1.0 (git+https://github.com/shukob/dekyx)",
- "serde",
-]
-
-[[package]]
 name = "dekyx-core"
 version = "0.1.0"
 source = "git+https://github.com/shukob/dekyx.git?rev=67eb59a1548740d15585a42d9cff8bc06ae95c5e#67eb59a1548740d15585a42d9cff8bc06ae95c5e"
-dependencies = [
- "curve25519-dalek",
- "ed25519-dalek",
- "rand_core",
- "serde",
- "sha2",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "dekyx-core"
-version = "0.1.0"
-source = "git+https://github.com/shukob/dekyx#96fcaf13e24fc5ae85d0e2a4b1b5753685535b8f"
 dependencies = [
  "curve25519-dalek",
  "ed25519-dalek",
@@ -1305,13 +1247,10 @@ dependencies = [
 name = "qomm-avalanche-vm"
 version = "0.1.0"
 dependencies = [
- "aethel-core",
  "avalanche-rpcchainvm-qomm",
  "base64",
  "bs58",
  "curve25519-dalek",
- "deccp-aethel",
- "deccp-core",
  "ed25519-dalek",
  "hex",
  "merlin",
@@ -1340,7 +1279,7 @@ dependencies = [
  "bulletproofs",
  "clear_on_drop",
  "curve25519-dalek",
- "dekyx-core 0.1.0 (git+https://github.com/shukob/dekyx.git?rev=67eb59a1548740d15585a42d9cff8bc06ae95c5e)",
+ "dekyx-core",
  "ed25519-dalek",
  "hex",
  "libc",

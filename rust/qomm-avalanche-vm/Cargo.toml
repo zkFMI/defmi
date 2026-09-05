@@ -7,12 +7,6 @@ publish = false
 description = "Non-EVM Avalanche custom VM for QOMM and DeFMI"
 
 [dependencies]
-aethel-core = { git = "https://github.com/shukob/aethel" }
-# DeCCP is the independent clearing layer; the VM hosts its ClearingBook for
-# Aethel guarantees. Sibling workspace under mvp/, transferred and mounted at
-# /deccp by the Makefile remote-test target like mvp/dekyx.
-deccp-core = { git = "https://github.com/shukob/deccp" }
-deccp-aethel = { git = "https://github.com/shukob/deccp" }
 avalanche-rpcchainvm-qomm = { path = "../vendor/avalanche-rs-qomm/crates/avalanche-rpcchainvm" }
 qomm-defmi.workspace = true
 qomm-transport.workspace = true
