@@ -7,8 +7,9 @@ use qomm_defmi::application_reservation::{
     ApplicationNoteReservation, ApplicationReserveMandate, ApplicationReserveScope,
 };
 use qomm_defmi::application_settlement::{
-    point, ApplicationNoteFill, ApplicationNoteRelease, ApplicationOpening,
-    ApplicationReleaseReason, ApplicationSpendHead,
+    application_fill_group, point, ApplicationFillBatchBinding, ApplicationNoteFill,
+    ApplicationNoteFillBatch, ApplicationNoteRelease, ApplicationOpening, ApplicationReleaseReason,
+    ApplicationSpendHead,
 };
 use qomm_defmi::facility::CreditFacilityRelationProof;
 use qomm_defmi::notes::{encode_spend_proof, NoteLedger, Wallet};
@@ -355,6 +356,7 @@ impl Fixture {
         };
         let mut fill = ApplicationNoteFill {
             version: 1,
+            batch: None,
             scope: self.scope.clone(),
             before_root: self.state.root(),
             operation_id: [tag + 40; 32],
@@ -472,6 +474,143 @@ fn fill_tx(fill: &ApplicationNoteFill) -> Vec<u8> {
         .unwrap()
         .encode()
         .unwrap()
+}
+
+fn batch_tx(batch: &ApplicationNoteFillBatch) -> Vec<u8> {
+    TransactionEnvelope::new(
+        "defmivm.issueApplicationNoteFillBatch",
+        json!({"batch": batch}),
+    )
+    .unwrap()
+    .encode()
+    .unwrap()
+}
+
+fn two_fill_batch(fixture: &mut Fixture) -> ApplicationNoteFillBatch {
+    let initial = fixture.state.clone();
+    let (mut first, remaining) = fixture.fill(fixture.initial, 40, 3, [false; 2]);
+    fixture
+        .state
+        .apply(&fill_tx(&first), &fixture.authorizer, 200)
+        .unwrap();
+    let (mut second, _) = fixture.fill(remaining, 20, 4, [true; 2]);
+    fixture.state = initial;
+    second.before_root = first.before_root;
+    let group = application_fill_group(
+        &first.scope,
+        first.before_root,
+        &[first.operation_id, second.operation_id],
+    )
+    .unwrap();
+    first.batch = Some(ApplicationFillBatchBinding {
+        group,
+        index: 0,
+        count: 2,
+    });
+    fixture.sign_fill(&mut first);
+    second.securities.previous_receipt = first.signing_message().unwrap();
+    second.cash.previous_receipt = first.signing_message().unwrap();
+    second.batch = Some(ApplicationFillBatchBinding {
+        group,
+        index: 1,
+        count: 2,
+    });
+    fixture.sign_fill(&mut second);
+    ApplicationNoteFillBatch {
+        version: 1,
+        fills: vec![first, second],
+    }
+}
+
+#[test]
+fn atomic_native_batch_updates_cumulative_holds_once_and_survives_state_reopen() {
+    let mut fixture = Fixture::new();
+    let batch = two_fill_batch(&mut fixture);
+    assert!(batch_tx(&batch).len() <= crate::block::MAX_TRANSACTION_BYTES);
+    let count = fixture.state.transition_count;
+    let receipt = fixture
+        .state
+        .apply(&batch_tx(&batch), &fixture.authorizer, 200)
+        .unwrap();
+    assert_eq!(receipt.statement, batch.statement().unwrap());
+    assert_eq!(fixture.state.transition_count, count + 1);
+    assert_eq!(fixture.state.note_claims.len(), 6);
+    for (index, hold) in HOLDS.iter().enumerate() {
+        let record = &fixture.state.application_reservations[&id_key(hold)];
+        assert_eq!(record.sequence, 2);
+        assert_eq!(record.status, "consumed");
+        let facility = &fixture.state.credit_facilities[&id_key(&FACILITIES[index])];
+        assert_eq!(
+            point(facility.cap_commitment).unwrap(),
+            point(facility.available_commitment).unwrap()
+                + point(facility.held_commitment).unwrap()
+                + point(facility.outstanding_commitment).unwrap()
+        );
+    }
+    fixture.state = restored(&fixture.state);
+    let finalized = fixture.state.root();
+    assert!(fixture
+        .state
+        .apply(&batch_tx(&batch), &fixture.authorizer, 201)
+        .is_err());
+    assert_eq!(fixture.state.root(), finalized);
+}
+
+#[test]
+fn native_batch_rejects_extraction_omission_reorder_and_rolls_back_a_bad_second_fill() {
+    let mut fixture = Fixture::new();
+    let batch = two_fill_batch(&mut fixture);
+    let before = serde_json::to_vec(&fixture.state).unwrap();
+    for member in &batch.fills {
+        assert!(fixture
+            .state
+            .apply(&fill_tx(member), &fixture.authorizer, 200)
+            .is_err());
+        let mut stripped = member.clone();
+        stripped.batch = None;
+        assert!(fixture
+            .state
+            .apply(&fill_tx(&stripped), &fixture.authorizer, 200)
+            .is_err());
+        assert_eq!(serde_json::to_vec(&fixture.state).unwrap(), before);
+    }
+    for mutation in 0..7 {
+        let mut changed = batch.clone();
+        match mutation {
+            0 => {
+                changed.fills.pop();
+            }
+            1 => changed.fills.reverse(),
+            2 => changed.fills[1].batch.as_mut().unwrap().group[0] ^= 1,
+            3 => {
+                changed.fills[1].dvp_proofs[0] ^= 1;
+                fixture.sign_fill(&mut changed.fills[1]);
+            }
+            4 => {
+                changed.fills[1].cash.remaining_commitment =
+                    changed.fills[0].cash.remaining_commitment;
+                fixture.sign_fill(&mut changed.fills[1]);
+            }
+            5 => {
+                changed.fills[1].cash.previous_receipt = [17; 32];
+                fixture.sign_fill(&mut changed.fills[1]);
+            }
+            6 => changed.fills[1].signature[0] ^= 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            fixture
+                .state
+                .apply(&batch_tx(&changed), &fixture.authorizer, 200)
+                .is_err(),
+            "accepted batch mutation {mutation}"
+        );
+        assert_eq!(
+            serde_json::to_vec(&fixture.state).unwrap(),
+            before,
+            "partial state survived mutation {mutation}"
+        );
+    }
 }
 
 fn release_tx(release: &ApplicationNoteRelease) -> Vec<u8> {
@@ -889,6 +1028,12 @@ impl qomm_defmi::avalanche::AvalancheClient for NativeClient {
 
     fn issue_application_note_fill(&self, fill: &ApplicationNoteFill) -> Result<String, String> {
         self.issue(&fill_tx(fill))
+    }
+    fn issue_application_note_fill_batch(
+        &self,
+        batch: &ApplicationNoteFillBatch,
+    ) -> Result<String, String> {
+        self.issue(&batch_tx(batch))
     }
 
     fn issue_application_note_release(

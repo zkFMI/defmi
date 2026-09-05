@@ -1077,6 +1077,9 @@ pub(crate) fn execute(
         "defmivm.issueApplicationNoteFill" => {
             application_settlement::fill(state, params, timestamp)
         }
+        "defmivm.issueApplicationNoteFillBatch" => {
+            application_settlement::fill_batch(state, params, timestamp)
+        }
         "defmivm.issueApplicationNoteRelease" => {
             application_settlement::release(state, params, timestamp)
         }

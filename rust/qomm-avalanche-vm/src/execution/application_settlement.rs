@@ -2,7 +2,7 @@
 
 use super::*;
 use qomm_defmi::application_settlement::{
-    application_claim, point, ApplicationNoteFill, ApplicationNoteRelease,
+    application_claim, point, ApplicationNoteFill, ApplicationNoteFillBatch, ApplicationNoteRelease,
 };
 use qomm_defmi::note_chain::NoteClaimKind;
 
@@ -66,7 +66,40 @@ pub(super) fn fill(
 ) -> Result<[u8; 32], String> {
     require_keys(params, &["fill"])?;
     let order: ApplicationNoteFill = field(params, "fill")?;
-    if order.before_root != state.root()
+    if order.batch.is_some() {
+        return Err("a signed batch member cannot settle individually".into());
+    }
+    apply_fill(state, &order, state.root(), now)
+}
+
+pub(super) fn fill_batch(
+    state: &mut State,
+    params: &Map<String, Value>,
+    now: u64,
+) -> Result<[u8; 32], String> {
+    require_keys(params, &["batch"])?;
+    let batch: ApplicationNoteFillBatch = field(params, "batch")?;
+    let statement = batch.statement()?;
+    let parent = state.root();
+    if batch.before_root()? != parent {
+        return Err("application batch has a stale parent".into());
+    }
+    let mut candidate = state.clone();
+    for fill in &batch.fills {
+        apply_fill(&mut candidate, fill, parent, now)?;
+    }
+    // No member, claim, nullifier, hold or facility mutation survives a failure.
+    *state = candidate;
+    Ok(statement)
+}
+
+fn apply_fill(
+    state: &mut State,
+    order: &ApplicationNoteFill,
+    expected_parent: [u8; 32],
+    now: u64,
+) -> Result<[u8; 32], String> {
+    if order.before_root != expected_parent
         || state.operations.contains_key(&id_key(&order.operation_id))
     {
         return Err("application fill has a stale parent or reused operation".into());

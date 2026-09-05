@@ -25,6 +25,12 @@ const FILL_DOMAIN: &[u8] = b"DEFMI:APPLICATION:NOTE-FILL:v1";
 const RELEASE_DOMAIN: &[u8] = b"DEFMI:APPLICATION:NOTE-RELEASE:v1";
 const MAX_PROOF_BYTES: usize = 1024 * 1024;
 
+mod batch;
+pub use batch::{
+    application_fill_group, ApplicationFillBatchBinding, ApplicationNoteFillBatch,
+    MAX_APPLICATION_BATCH_BYTES, MAX_APPLICATION_BATCH_FILLS,
+};
+
 pub fn point(bytes: [u8; 32]) -> Result<RistrettoPoint, String> {
     CompressedRistretto(bytes)
         .decompress()
@@ -165,6 +171,10 @@ pub struct ApplicationNoteFill {
     pub openings: [ApplicationOpening; 4],
     pub committee_public: Vec<u8>,
     pub signature: Vec<u8>,
+    /// Omitted for the existing standalone wire, so its signing bytes remain
+    /// unchanged. A signed group member cannot execute through that endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<ApplicationFillBatchBinding>,
 }
 
 impl ApplicationNoteFill {
@@ -172,6 +182,9 @@ impl ApplicationNoteFill {
         self.scope.validate()?;
         self.securities.validate()?;
         self.cash.validate()?;
+        if let Some(batch) = &self.batch {
+            batch.validate()?;
+        }
         if self.version != 1
             || [
                 self.before_root,

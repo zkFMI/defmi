@@ -30,6 +30,11 @@ corporate pretrade, seven-node MPC and five-validator settlement; it is not
 independent-operator or production-security acceptance. The guide distinguishes
 this path from the existing QOMM settlement rail.
 
+The native application rail also accepts [atomic groups of fills](docs/APPLICATION_FILL_BATCH_JA.md).
+Each signed instruction binds its position and the complete ordered group; it
+cannot be extracted for standalone settlement. VM tests cover cumulative holds
+and rollback. Live OCLOB multi-fill integration is a separate acceptance gate.
+
 ```mermaid
 flowchart TB
     subgraph hidden["what settlement never reads"]

@@ -2313,6 +2313,12 @@ pub trait AvalancheClient: Send + Sync {
     ) -> Result<String, String> {
         Err("Avalanche client does not support application note releases".into())
     }
+    fn issue_application_note_fill_batch(
+        &self,
+        _batch: &crate::application_settlement::ApplicationNoteFillBatch,
+    ) -> Result<String, String> {
+        Err("Avalanche client does not support atomic application note fills".into())
+    }
     fn issue_application_reserve_scope(
         &self,
         _scope: &ApplicationReserveScope,
@@ -2737,6 +2743,15 @@ impl AvalancheClient for AvalancheRpcClient {
         fill: &crate::application_settlement::ApplicationNoteFill,
     ) -> Result<String, String> {
         Self::transaction_id(&self.call("defmivm.issueApplicationNoteFill", json!({"fill": fill}))?)
+    }
+    fn issue_application_note_fill_batch(
+        &self,
+        batch: &crate::application_settlement::ApplicationNoteFillBatch,
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call(
+            "defmivm.issueApplicationNoteFillBatch",
+            json!({"batch": batch}),
+        )?)
     }
     fn issue_application_note_release(
         &self,
@@ -3875,6 +3890,15 @@ impl<'a, C: AvalancheClient> AvalancheNoteBridge<'a, C> {
     ) -> Result<AcceptedTransition, String> {
         self.submit_application(fill.signing_message()?, fill.before_root, |client| {
             client.issue_application_note_fill(fill)
+        })
+    }
+
+    pub fn settle_application_batch(
+        &self,
+        batch: &crate::application_settlement::ApplicationNoteFillBatch,
+    ) -> Result<AcceptedTransition, String> {
+        self.submit_application(batch.statement()?, batch.before_root()?, |client| {
+            client.issue_application_note_fill_batch(batch)
         })
     }
 
