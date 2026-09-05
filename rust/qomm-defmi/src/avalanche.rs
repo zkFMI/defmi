@@ -1778,9 +1778,9 @@ fn http_post(endpoint: &Endpoint, body: &[u8], timeout: Duration) -> Result<Vec<
     let mut stream: Box<dyn ReadWrite> = if endpoint.tls {
         let mut builder =
             SslConnector::builder(SslMethod::tls_client()).map_err(|error| error.to_string())?;
-        zkfmi_crypto::tls::require_hybrid_key_exchange(&mut builder)
+        zkfmi_crypto::tls::require_pqc_transport(&mut builder, SslVerifyMode::PEER)
             .map_err(|error| format!("Avalanche RPC hybrid TLS configuration failed: {error}"))?;
-        builder.set_verify(SslVerifyMode::PEER);
+
         builder
             .set_default_verify_paths()
             .map_err(|error| error.to_string())?;
