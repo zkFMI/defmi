@@ -461,6 +461,7 @@ fn verified_wallet_dvp_and_typed_zkpi_project_only_to_a_non_product_note_order()
     };
     let typed_digest = typed_digest_for(&package.instruction, &context, DEFAULT_DOMAIN).unwrap();
     let typed = TypedInstruction {
+        pq_authorization: None,
         payment: package.instruction.clone(),
         context,
         authorization: sign(&w, &typed_digest, rng),
@@ -662,6 +663,7 @@ fn threshold_dvp_projects_to_predelegated_claims_without_a_post_quote_wallet_spe
     };
     let typed_digest = typed_digest_for(&instruction, &context, DEFAULT_DOMAIN).unwrap();
     let typed = TypedInstruction {
+        pq_authorization: None,
         payment: instruction,
         context,
         authorization: sign(&w, &typed_digest, rng),

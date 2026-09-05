@@ -419,6 +419,7 @@ pub struct SettlementVerifierRecord {
     pub price_bits: u16,
     pub max_horizon: u64,
     pub frost_public_package: Vec<u8>,
+    pub pq_committee: qomm_zkpi::QuorumPolicy,
     pub valid_from: u64,
     pub valid_until: u64,
     pub statement: [u8; 32],
@@ -982,6 +983,7 @@ impl State {
                 price_bits: record.price_bits,
                 max_horizon: record.max_horizon,
                 frost_public_package: record.frost_public_package.clone(),
+                pq_committee: record.pq_committee.clone(),
                 valid_from: record.valid_from,
                 valid_until: record.valid_until,
             };
@@ -1329,6 +1331,12 @@ impl State {
             hash.update(record.max_horizon.to_be_bytes());
             hash.update((record.frost_public_package.len() as u64).to_be_bytes());
             hash.update(&record.frost_public_package);
+            hash.update(
+                record
+                    .pq_committee
+                    .digest()
+                    .expect("validated PQ committee"),
+            );
             hash.update(record.valid_from.to_be_bytes());
             hash.update(record.valid_until.to_be_bytes());
             hash.update(record.statement);

@@ -29,6 +29,7 @@ bs58 = "0.5"
 base64.workspace = true
 
 [dev-dependencies]
+zkfmi-crypto = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 merlin.workspace = true
 

@@ -626,6 +626,7 @@ fn prepare_reservation(
         before_state_root,
     };
     let typed = TypedInstruction {
+        pq_authorization: None,
         authorization: signer.sign_reserve_context(&payment, &context, mandate)?,
         payment,
         context,
@@ -1136,6 +1137,7 @@ fn process_authority_notes(
             .frost_public
             .serialize()
             .map_err(|_| "settlement verifier FROST package serialization failed")?,
+        pq_committee: authority.settlement_verifier.pq_committee.clone(),
         valid_from: authority.settlement_verifier.valid_from,
         valid_until: authority.settlement_verifier.valid_until,
     };

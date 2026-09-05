@@ -1449,6 +1449,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tonic",
+ "zkfmi-crypto",
 ]
 
 [[package]]
@@ -1478,6 +1479,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "triptych",
+ "zkfmi-crypto",
 ]
 
 [[package]]
@@ -1523,6 +1525,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1555,6 +1558,7 @@ dependencies = [
  "curve25519-dalek",
  "ed25519-dalek",
  "hex",
+ "hkdf",
  "libc",
  "merlin",
  "openssl",
@@ -1570,6 +1574,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
+ "zeroize",
  "zkfmi-crypto",
 ]
 
@@ -1599,6 +1604,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "sha2",
+ "zkfmi-crypto",
 ]
 
 [[package]]

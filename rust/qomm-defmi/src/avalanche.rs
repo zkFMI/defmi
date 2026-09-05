@@ -223,6 +223,13 @@ impl CanonicalSettlementVerifier {
             frost_public_package: BASE64
                 .decode(result_string(object, "frostPublicPackage")?)
                 .map_err(|_| "L1 FROST public package is not base64".to_string())?,
+            pq_committee: serde_json::from_value(
+                object
+                    .get("pqCommittee")
+                    .ok_or("L1 PQ committee is absent")?
+                    .clone(),
+            )
+            .map_err(|error| format!("L1 PQ committee is invalid: {error}"))?,
             valid_from: result_u64(object, "validFrom")?,
             valid_until: result_u64(object, "validUntil")?,
         };
@@ -1300,6 +1307,7 @@ fn settlement_verifier_json(config: &SettlementVerifierConfig) -> Value {
         "priceBits": config.price_bits,
         "maxHorizon": config.max_horizon,
         "frostPublicPackage": BASE64.encode(&config.frost_public_package),
+        "pqCommittee": config.pq_committee,
         "validFrom": config.valid_from,
         "validUntil": config.valid_until,
     })

@@ -1168,6 +1168,10 @@ fn run() -> Result<(), String> {
         return Err("finalized handoff has no settlements".into());
     }
     let frost_public = handoff.records[0].frost_public.clone();
+    if frost_public.serialize().ok() != authority.settlement_verifier.frost_public.serialize().ok()
+    {
+        return Err("settlement handoff differs from the pre-enrolled FROST committee".into());
+    }
     if handoff
         .records
         .iter()
@@ -1184,7 +1188,9 @@ fn run() -> Result<(), String> {
         },
         frost_public,
     )
-    .require_threshold_ranges();
+    .require_threshold_ranges()
+    .require_pq_committee(authority.settlement_verifier.pq_committee.clone())
+    .map_err(str::to_string)?;
     let governance = governance_keys();
     let authorizer_domain = avalanche_domain.as_deref().unwrap_or("defmi:qomm-live-v1");
     let authorizer = authorizer(&governance, authorizer_domain)?;

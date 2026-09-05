@@ -57,7 +57,7 @@ use qomm_transport::proof_codec::{
     decode_dvp_proofs, decode_quote_verification, decode_threshold_range, QuoteVerificationBundle,
 };
 use qomm_zk::pedersen::Pedersen;
-use qomm_zkpi::{frost, typed, typed_wire, Bounds, Venue, DEFAULT_DOMAIN};
+use qomm_zkpi::{frost, typed, typed_wire, Bounds, Venue};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -812,6 +812,7 @@ struct SettlementVerifierDto {
     price_bits: u16,
     max_horizon: u64,
     frost_public_package: String,
+    pq_committee: qomm_zkpi::QuorumPolicy,
     valid_from: u64,
     valid_until: u64,
 }
@@ -2877,6 +2878,7 @@ fn register_settlement_verifier(
         frost_public_package: BASE64
             .decode(dto.frost_public_package)
             .map_err(|_| "config.frostPublicPackage is not valid base64".to_string())?,
+        pq_committee: dto.pq_committee,
         valid_from: dto.valid_from,
         valid_until: dto.valid_until,
     };
@@ -2902,6 +2904,7 @@ fn register_settlement_verifier(
             price_bits: config.price_bits,
             max_horizon: config.max_horizon,
             frost_public_package: config.frost_public_package,
+            pq_committee: config.pq_committee,
             valid_from: config.valid_from,
             valid_until: config.valid_until,
             statement,
@@ -5475,17 +5478,12 @@ fn verify_typed_evidence(
         price_bits: usize::from(verifier.price_bits),
         max_horizon: verifier.max_horizon,
     };
-    Venue::new(Pedersen::new(b"qomm:defmi:v1"), &bounds, public.clone())
+    Venue::new(Pedersen::new(b"qomm:defmi:v1"), &bounds, public)
         .require_threshold_ranges()
-        .verify(&instruction.payment, timestamp)
-        .map_err(|error| format!("MPC zkPI payment verification failed: {error}"))?;
-    let typed_digest =
-        typed::digest_for(&instruction.payment, &instruction.context, DEFAULT_DOMAIN)
-            .map_err(str::to_string)?;
-    public
-        .verifying_key()
-        .verify(&typed_digest, &instruction.authorization)
-        .map_err(|_| "MPC typed zkPI authorization is invalid".to_string())?;
+        .require_pq_committee(verifier.pq_committee.clone())
+        .map_err(str::to_string)?
+        .verify_typed(&instruction, timestamp)
+        .map_err(|error| format!("MPC hybrid typed zkPI verification failed: {error}"))?;
     let context = &instruction.context;
     let maker = order
         .reservations
@@ -6970,7 +6968,8 @@ mod tests {
         AuthorizationScope, ExecutionContext, OperationKind, TradeDirection, TypedInstruction,
     };
     use qomm_zkpi::{
-        asset_scalar, frost, PartialInstruction, AMOUNT_RANGE_CONTEXT, PRICE_RANGE_CONTEXT,
+        asset_scalar, frost, PartialInstruction, AMOUNT_RANGE_CONTEXT, DEFAULT_DOMAIN,
+        PRICE_RANGE_CONTEXT,
     };
     use rand_core::OsRng;
     use serde_json::json;
@@ -7519,6 +7518,7 @@ mod tests {
             "priceBits": config.price_bits,
             "maxHorizon": config.max_horizon,
             "frostPublicPackage": BASE64.encode(&config.frost_public_package),
+            "pqCommittee": config.pq_committee,
             "validFrom": config.valid_from,
             "validUntil": config.valid_until,
         })
@@ -8275,7 +8275,13 @@ mod tests {
         )
         .expect("construct threshold zkPI");
         let payment_digest = partial.digest_for(DEFAULT_DOMAIN);
-        let payment = partial.sealed(frost_sign(&frost_keys, &frost_public, &payment_digest));
+        let pq_committee = zkfmi_crypto::test_support::committee(
+            Sha256::digest(frost_public.serialize().unwrap()).into(),
+        );
+        let payment = partial.sealed_hybrid(
+            frost_sign(&frost_keys, &frost_public, &payment_digest),
+            zkfmi_crypto::test_support::approve(&pq_committee, &payment_digest, 100),
+        );
         let quantity = payment.amount_commitment.compress().to_bytes();
         let securities_remainder_value = 20_u64
             .checked_sub(quantity_value)
@@ -8352,6 +8358,9 @@ mod tests {
             price_bits: 32,
             max_horizon: 3_600,
             frost_public_package: frost_public.serialize().unwrap(),
+            pq_committee: zkfmi_crypto::test_support::committee(
+                Sha256::digest(frost_public.serialize().unwrap()).into(),
+            ),
             valid_from: 1,
             valid_until: 1_000,
         };
@@ -8983,6 +8992,11 @@ mod tests {
         let authorization_digest =
             typed::digest_for(&payment, &execution_context, DEFAULT_DOMAIN).unwrap();
         let typed_instruction = TypedInstruction {
+            pq_authorization: Some(zkfmi_crypto::test_support::approve(
+                &pq_committee,
+                &authorization_digest,
+                100,
+            )),
             payment,
             context: execution_context,
             authorization: frost_sign(&frost_keys, &frost_public, &authorization_digest),
@@ -9184,6 +9198,48 @@ mod tests {
         };
         order.body().expect("anonymous product settlement order");
         assert!(!object_has_signature_key(&product_note_order_json(&order)));
+
+        let before_pq_rejections = state.root();
+        for mutation in 0..5 {
+            let mut changed = typed_instruction.clone();
+            match mutation {
+                0 => {
+                    changed.payment.pq_approval = None;
+                    changed.pq_authorization = None;
+                }
+                1 => changed.payment.pq_approval.as_mut().unwrap().signatures[0].signature[0] ^= 1,
+                2 => changed.pq_authorization.as_mut().unwrap().signatures[0].signature[0] ^= 1,
+                3 => {
+                    changed.payment.signature =
+                        frost_sign(&frost_keys, &frost_public, b"other payment")
+                }
+                _ => {
+                    changed.authorization =
+                        frost_sign(&frost_keys, &frost_public, b"other typed context")
+                }
+            }
+            let raw = typed_wire::encode(&changed);
+            let digest: [u8; 32] = Sha256::digest(&raw).into();
+            let mut changed_order = order.clone();
+            changed_order.typed_instruction_digest = digest;
+            changed_order.settlement.payment_instruction_digest = digest;
+            let error = verify_typed_evidence(&state, &raw, &changed_order, 120)
+                .err()
+                .expect("either missing or corrupt signature component must fail");
+            assert!(error.contains("hybrid typed zkPI"), "{error}");
+            assert_eq!(state.root(), before_pq_rejections);
+        }
+        let mut changed_registry = state.clone();
+        changed_registry
+            .settlement_verifiers
+            .get_mut(&id_key(&verifier.key()))
+            .unwrap()
+            .pq_committee
+            .epoch += 1;
+        assert_ne!(changed_registry.root(), state.root());
+        assert!(
+            verify_typed_evidence(&changed_registry, &typed_instruction_wire, &order, 120).is_err()
+        );
 
         let mut bad_limit = evidence.clone();
         let mut bad_limit_proof = decode_threshold_range(&bad_limit.price_limit_proof).unwrap();
@@ -9437,12 +9493,22 @@ mod tests {
         replay_payment.nonce = [161; 32];
         let replay_payment_digest = replay_payment.digest_for(DEFAULT_DOMAIN);
         replay_payment.signature = frost_sign(&frost_keys, &frost_public, &replay_payment_digest);
+        replay_payment.pq_approval = Some(zkfmi_crypto::test_support::approve(
+            &pq_committee,
+            &replay_payment_digest,
+            120,
+        ));
         let mut replay_context = typed_instruction.context.clone();
         replay_context.before_state_root = state.root();
         let replay_authorization_digest =
             typed::digest_for(&replay_payment, &replay_context, DEFAULT_DOMAIN)
                 .expect("RFQ replay typed digest");
         let replay_typed_instruction = TypedInstruction {
+            pq_authorization: Some(zkfmi_crypto::test_support::approve(
+                &pq_committee,
+                &replay_authorization_digest,
+                120,
+            )),
             payment: replay_payment,
             context: replay_context,
             authorization: frost_sign(&frost_keys, &frost_public, &replay_authorization_digest),
@@ -11393,6 +11459,9 @@ mod tests {
             price_bits: 32,
             max_horizon: 3_600,
             frost_public_package: frost_public.serialize().unwrap(),
+            pq_committee: zkfmi_crypto::test_support::committee(
+                Sha256::digest(frost_public.serialize().unwrap()).into(),
+            ),
             valid_from: 1,
             valid_until: 1_000,
         };

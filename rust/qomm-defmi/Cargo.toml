@@ -52,6 +52,7 @@ libc.workspace = true
 openssl = { workspace = true, optional = true }
 
 [dev-dependencies]
+zkfmi-crypto = { workspace = true, features = ["test-support"] }
 qomm-zkpi.workspace = true
 rand = "0.8"
 qomm-measure.workspace = true

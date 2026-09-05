@@ -1118,6 +1118,7 @@ fn canonical_state_snapshot(
                 "priceBits": record.price_bits,
                 "maxHorizon": record.max_horizon,
                 "frostPublicPackage": BASE64.encode(&record.frost_public_package),
+                "pqCommittee": record.pq_committee,
                 "validFrom": record.valid_from,
                 "validUntil": record.valid_until,
                 "statement": hex::encode(record.statement),
@@ -3130,6 +3131,7 @@ mod tests {
         use qomm_defmi::settlement_verifier::SettlementVerifierConfig;
         use qomm_zkpi::deal_quorum;
         use rand_core::OsRng;
+        use sha2::Digest;
 
         let (_, public) = deal_quorum(7, 3, &mut OsRng).expect("FROST group");
         let config = SettlementVerifierConfig {
@@ -3143,6 +3145,9 @@ mod tests {
             price_bits: 32,
             max_horizon: 3_600,
             frost_public_package: public.serialize().expect("public package"),
+            pq_committee: zkfmi_crypto::test_support::committee(
+                sha2::Sha256::digest(public.serialize().unwrap()).into(),
+            ),
             valid_from: 1,
             valid_until: 4_102_444_800,
         };
@@ -3161,6 +3166,7 @@ mod tests {
                 price_bits: config.price_bits,
                 max_horizon: config.max_horizon,
                 frost_public_package: config.frost_public_package.clone(),
+                pq_committee: config.pq_committee.clone(),
                 valid_from: config.valid_from,
                 valid_until: config.valid_until,
                 statement,

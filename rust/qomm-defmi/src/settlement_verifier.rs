@@ -8,7 +8,7 @@
 use qomm_zkpi::frost;
 use sha2::{Digest, Sha256};
 
-const DOMAIN: &[u8] = b"QOMM:DEFMI:SETTLEMENT-VERIFIER:v1";
+const DOMAIN: &[u8] = b"QOMM:DEFMI:SETTLEMENT-VERIFIER:v2";
 const MAX_FROST_PACKAGE_BYTES: usize = 64 * 1024;
 const ZERO: [u8; 32] = [0; 32];
 
@@ -32,6 +32,7 @@ pub struct SettlementVerifierConfig {
     pub price_bits: u16,
     pub max_horizon: u64,
     pub frost_public_package: Vec<u8>,
+    pub pq_committee: qomm_zkpi::QuorumPolicy,
     pub valid_from: u64,
     pub valid_until: u64,
 }
@@ -68,6 +69,13 @@ impl SettlementVerifierConfig {
         {
             return Err("settlement verifier FROST package is not canonical".into());
         }
+        qomm_zkpi::validate_settlement_committee(&self.pq_committee, &package)
+            .map_err(str::to_string)?;
+        if self.pq_committee.members.len() != 7 || self.pq_committee.threshold != 3 {
+            return Err(
+                "settlement verifier requires the enrolled three-of-seven PQ committee".into(),
+            );
+        }
         Ok(())
     }
 
@@ -90,6 +98,11 @@ impl SettlementVerifierConfig {
         hash.update(self.max_horizon.to_be_bytes());
         hash.update((self.frost_public_package.len() as u64).to_be_bytes());
         hash.update(&self.frost_public_package);
+        hash.update(
+            self.pq_committee
+                .digest()
+                .map_err(|error| error.to_string())?,
+        );
         hash.update(self.valid_from.to_be_bytes());
         hash.update(self.valid_until.to_be_bytes());
         Ok(hash.finalize().into())
@@ -116,6 +129,9 @@ mod tests {
             price_bits: 32,
             max_horizon: 3_600,
             frost_public_package: public.serialize().unwrap(),
+            pq_committee: zkfmi_crypto::test_support::committee(
+                Sha256::digest(public.serialize().unwrap()).into(),
+            ),
             valid_from: 10,
             valid_until: 20,
         };

@@ -2445,6 +2445,7 @@ fn expired_product_reservation_restores_asset_and_credit_atomically_without_owne
         &typed_digest_for(&reserve_payment, &reserve_context, DEFAULT_DOMAIN).unwrap(),
     );
     let reserve_typed = TypedInstruction {
+        pq_authorization: None,
         payment: reserve_payment,
         context: reserve_context,
         authorization: reserve_authorization,
@@ -2602,6 +2603,7 @@ fn expired_product_reservation_restores_asset_and_credit_atomically_without_owne
         before_state_root: fixture.facility.state_root().unwrap(),
     };
     let release_typed = TypedInstruction {
+        pq_authorization: None,
         authorization: frost_sign(
             &shares,
             &public,
@@ -3179,6 +3181,7 @@ fn product_settlement_for(kind: GuarantorKind) {
         .unwrap(),
     );
     let maker_reserve_typed = TypedInstruction {
+        pq_authorization: None,
         payment: maker_reserve_payment,
         context: maker_reserve_context,
         authorization: maker_reserve_authorization,
@@ -3335,6 +3338,7 @@ fn product_settlement_for(kind: GuarantorKind) {
         .unwrap(),
     );
     let taker_reserve_typed = TypedInstruction {
+        pq_authorization: None,
         payment: taker_reserve_payment,
         context: taker_reserve_context,
         authorization: taker_reserve_authorization,
@@ -3661,6 +3665,7 @@ fn product_settlement_for(kind: GuarantorKind) {
         &typed_digest_for(&payment, &context, DEFAULT_DOMAIN).unwrap(),
     );
     let typed = TypedInstruction {
+        pq_authorization: None,
         payment,
         context,
         authorization,

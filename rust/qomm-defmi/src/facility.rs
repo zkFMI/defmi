@@ -2544,8 +2544,22 @@ impl DefmiFacility {
             .unwrap_or("0")
             .parse::<u64>()
             .map_err(|error| error.to_string())?;
-        if version > 15 {
+        if version > 16 {
             return Err(format!("unsupported DeFMI schema version {version}"));
+        }
+        // Reject before schema mutation. Enrollment cannot invent missing PQ
+        // keys or rewrite a previously authorized verifier statement.
+        let verifier_columns = database.query("PRAGMA table_info(settlement_verifiers)")?;
+        let legacy_verifiers = !verifier_columns.is_empty()
+            && !verifier_columns
+                .iter()
+                .any(|row| row.get(1).and_then(Option::as_deref) == Some("pq_committee"));
+        if legacy_verifiers
+            && !database
+                .query("SELECT 1 FROM settlement_verifiers LIMIT 1")?
+                .is_empty()
+        {
+            return Err("legacy settlement verifier records require explicit PQ committee enrollment; database preserved".into());
         }
         database.execute(
             "CREATE TABLE IF NOT EXISTS assets(\
@@ -2685,12 +2699,17 @@ impl DefmiFacility {
                 quote_registry_digest BLOB NOT NULL CHECK(length(quote_registry_digest)=32),\
                 quote_eligibility_bits INTEGER NOT NULL,quote_span_bits INTEGER NOT NULL,\
                 amount_bits INTEGER NOT NULL,price_bits INTEGER NOT NULL,\
-                max_horizon INTEGER NOT NULL,frost_public_package BLOB NOT NULL,\
+                max_horizon INTEGER NOT NULL,frost_public_package BLOB NOT NULL,pq_committee BLOB NOT NULL,\
                 valid_from INTEGER NOT NULL,valid_until INTEGER NOT NULL,\
                 statement BLOB NOT NULL UNIQUE CHECK(length(statement)=32),\
                 UNIQUE(venue_id,epoch));\
              CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value BLOB NOT NULL);",
         )?;
+        if legacy_verifiers {
+            // An empty table can acquire the column without changing a
+            // verifier or any ledger entry. Reads still require valid bytes.
+            database.execute("ALTER TABLE settlement_verifiers ADD COLUMN pq_committee BLOB")?;
+        }
         // Schema v4 adds a separate committed over-limit balance.  Existing
         // v3 databases already have `credit_facilities`, while fresh databases
         // create the column above.  Inspecting the actual table makes this
@@ -2981,7 +3000,7 @@ impl DefmiFacility {
                      THEN RAISE(ABORT,'operation identifier was reused') END;\
                  END;",
         )?;
-        database.execute("PRAGMA user_version=15;")?;
+        database.execute("PRAGMA user_version=16;")?;
         database.execute(&format!(
             "INSERT OR IGNORE INTO metadata(key,value) VALUES('state_root',{});\
              INSERT OR IGNORE INTO metadata(key,value) VALUES('last_receipt',{});",
@@ -3382,7 +3401,7 @@ impl DefmiFacility {
         for row in database.query(
             "SELECT hex(venue_id),hex(defmi_id),epoch,hex(quote_registry_digest),\
                     quote_eligibility_bits,quote_span_bits,amount_bits,price_bits,max_horizon,\
-                    hex(frost_public_package),valid_from,valid_until,hex(statement) \
+                    hex(frost_public_package),valid_from,valid_until,hex(statement),hex(pq_committee) \
              FROM settlement_verifiers ORDER BY verifier_id",
         )? {
             for column in [0usize, 1] {
@@ -3421,6 +3440,10 @@ impl DefmiFacility {
                 .map_err(|error| error.to_string())?;
             hash.update((frost_package.len() as u64).to_be_bytes());
             hash.update(frost_package);
+            let pq_committee: qomm_zkpi::QuorumPolicy = serde_json::from_slice(
+                &hex::decode(row[13].as_deref().unwrap_or_default()).map_err(|error| error.to_string())?
+            ).map_err(|error| format!("stored PQ committee is invalid: {error}"))?;
+            hash.update(pq_committee.digest().map_err(|error| error.to_string())?);
             for column in [10usize, 11] {
                 hash.update(
                     row[column]
@@ -3604,7 +3627,7 @@ impl DefmiFacility {
         let rows = database.query(&format!(
             "SELECT hex(defmi_id),hex(quote_registry_digest),quote_eligibility_bits,\
                     quote_span_bits,amount_bits,price_bits,max_horizon,\
-                    hex(frost_public_package),valid_from,valid_until \
+                    hex(frost_public_package),valid_from,valid_until,hex(pq_committee) \
              FROM settlement_verifiers WHERE venue_id={} AND epoch={epoch}",
             blob(venue_id),
         ))?;
@@ -3642,6 +3665,11 @@ impl DefmiFacility {
                     max_horizon: parse_u64(6, "horizon")?,
                     frost_public_package: hex::decode(row[7].as_deref().unwrap_or_default())
                         .map_err(|error| error.to_string())?,
+                    pq_committee: serde_json::from_slice(
+                        &hex::decode(row[10].as_deref().unwrap_or_default())
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| format!("stored PQ committee is invalid: {error}"))?,
                     valid_from: parse_u64(8, "valid-from time")?,
                     valid_until: parse_u64(9, "valid-until time")?,
                 };
@@ -3684,8 +3712,8 @@ impl DefmiFacility {
                 "INSERT INTO settlement_verifiers(\
                     verifier_id,venue_id,defmi_id,epoch,quote_registry_digest,\
                     quote_eligibility_bits,quote_span_bits,amount_bits,price_bits,max_horizon,\
-                    frost_public_package,valid_from,valid_until,statement) \
-                 VALUES({},{},{},{},{},{},{},{},{},{},{},{},{},{})",
+                    frost_public_package,valid_from,valid_until,statement,pq_committee) \
+                 VALUES({},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
                 blob(&config.key()),
                 blob(&config.venue_id),
                 blob(&config.defmi_id),
@@ -3700,6 +3728,7 @@ impl DefmiFacility {
                 config.valid_from,
                 config.valid_until,
                 blob(&statement),
+                blob(&serde_json::to_vec(&config.pq_committee).map_err(|error| error.to_string())?),
             ))
         })();
         match result {
@@ -6970,6 +6999,54 @@ mod schema_tests {
     use rand_core::OsRng;
 
     #[test]
+    fn populated_legacy_verifier_is_preserved_without_implicit_pq_enrollment() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy-verifier.sqlite3");
+        let database = Database::open(&path).unwrap();
+        database.execute(
+            "CREATE TABLE settlement_verifiers(verifier_id BLOB PRIMARY KEY, frost_public_package BLOB NOT NULL);\
+             INSERT INTO settlement_verifiers VALUES(X'01',X'0203'); PRAGMA user_version=15;"
+        ).unwrap();
+        drop(database);
+        let node = SigningKey::from_bytes(&[1; 32]);
+        let authorizer = QuorumAuthorizer::new(
+            BTreeMap::from([("node-1".into(), node.verifying_key())]),
+            1,
+            1,
+            "test:legacy-verifier",
+        )
+        .unwrap();
+        let error = DefmiFacility::open(&path, authorizer, SigningKey::from_bytes(&[2; 32]))
+            .err()
+            .expect("missing PQ enrollment must fail closed");
+        assert!(error.contains("explicit PQ committee enrollment"));
+        let database = Database::open(&path).unwrap();
+        assert_eq!(
+            database.query("PRAGMA user_version").unwrap()[0][0].as_deref(),
+            Some("15")
+        );
+        assert_eq!(
+            database
+                .query(
+                    "SELECT hex(verifier_id),hex(frost_public_package) FROM settlement_verifiers"
+                )
+                .unwrap(),
+            vec![vec![Some("01".into()), Some("0203".into())]]
+        );
+        assert_eq!(
+            database
+                .query("PRAGMA table_info(settlement_verifiers)")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(database
+            .query("SELECT name FROM sqlite_master WHERE name='assets'")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn v14_guarantor_table_migrates_to_all_supported_kinds() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("legacy-v14.sqlite3");
@@ -7013,7 +7090,7 @@ mod schema_tests {
 
         assert_eq!(
             database.query("PRAGMA user_version").unwrap()[0][0].as_deref(),
-            Some("15")
+            Some("16")
         );
         assert_eq!(
             database
