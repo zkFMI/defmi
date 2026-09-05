@@ -1575,6 +1575,7 @@ fn standing_note_pool_allocation_json(allocation: &StandingNotePoolAllocation) -
         "dvpProofDigest": hex::encode(allocation.dvp_proof_digest),
         "remainderRangeProofDigest": hex::encode(allocation.remainder_range_proof_digest),
         "committeeSignature": hex::encode(&allocation.committee_signature),
+        "pqAuthorization": allocation.pq_authorization,
     })
 }
 

@@ -542,6 +542,7 @@ struct StandingNotePoolAllocationDto {
     dvp_proof_digest: String,
     remainder_range_proof_digest: String,
     committee_signature: String,
+    pq_authorization: Option<qomm_zkpi::QuorumApproval>,
 }
 
 #[derive(Deserialize)]
@@ -2244,6 +2245,7 @@ fn standing_note_pool_allocation_from_params(
             "allocation.remainderRangeProofDigest",
         )?,
         committee_signature,
+        pq_authorization: dto.pq_authorization,
     };
     Ok((transition, authorization, allocation))
 }
@@ -2334,7 +2336,13 @@ fn allocate_standing_note_pool(
     }
     let public = frost::keys::PublicKeyPackage::deserialize(&verifier.frost_public_package)
         .map_err(|_| "standing allocation FROST package is invalid".to_string())?;
-    allocation.verify_committee_signature(&transition, &authorization, &public)?;
+    allocation.verify_committee_signature(
+        &transition,
+        &authorization,
+        &public,
+        &verifier.pq_committee,
+        timestamp,
+    )?;
 
     let facility_key = id_key(&transition.facility_id);
     let mut facility = state
@@ -7951,6 +7959,7 @@ mod tests {
             "dvpProofDigest": hex::encode(allocation.dvp_proof_digest),
             "remainderRangeProofDigest": hex::encode(allocation.remainder_range_proof_digest),
             "committeeSignature": hex::encode(&allocation.committee_signature),
+            "pqAuthorization": allocation.pq_authorization,
         })
     }
 
@@ -8595,6 +8604,7 @@ mod tests {
             dvp_proof_digest,
             remainder_range_proof_digest: maker_pool_remainder_proof_digest,
             committee_signature: Vec::new(),
+            pq_authorization: None,
         };
         let maker_metadata = standing_pool_reservation_metadata(
             maker_allocation.pool_id,
@@ -8655,6 +8665,11 @@ mod tests {
         bad_allocation.committee_signature = frost_sign(&frost_keys, &frost_public, &bad_message)
             .serialize()
             .expect("serialize bad allocation signature");
+        bad_allocation.pq_authorization = Some(zkfmi_crypto::test_support::approve(
+            &pq_committee,
+            &bad_message,
+            100,
+        ));
         bad_authorization.escrow_digest = bad_allocation
             .statement(&bad_transition, &bad_authorization)
             .expect("bad allocation statement");
@@ -8680,6 +8695,11 @@ mod tests {
             frost_sign(&frost_keys, &frost_public, &allocation_message)
                 .serialize()
                 .expect("serialize Maker allocation signature");
+        maker_allocation.pq_authorization = Some(zkfmi_crypto::test_support::approve(
+            &pq_committee,
+            &allocation_message,
+            100,
+        ));
         maker_authorization.escrow_digest = maker_allocation
             .statement(&maker_transition, &maker_authorization)
             .expect("Maker allocation statement");
@@ -8692,6 +8712,50 @@ mod tests {
             &maker_allocation,
         )
         .expect("Maker standing allocation transaction");
+        let before_hybrid_rejections = state.root();
+        let mut classical_only = TransactionEnvelope::decode(&maker_reservation).unwrap();
+        classical_only.params["allocation"]
+            .as_object_mut()
+            .unwrap()
+            .remove("pqAuthorization");
+        assert!(state
+            .apply(&classical_only.encode().unwrap(), &authorizer, 100)
+            .unwrap_err()
+            .contains("PQ authorization"));
+        assert_eq!(state.root(), before_hybrid_rejections);
+        for mutation in 0..3 {
+            let mut changed = maker_allocation.clone();
+            let pq = changed.pq_authorization.as_mut().unwrap();
+            match mutation {
+                0 => pq.signatures[0].signature[0] ^= 1,
+                1 => pq.epoch += 1,
+                2 => {
+                    pq.signatures.pop().unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let mut changed_authorization = maker_authorization.clone();
+            changed_authorization.escrow_digest = changed
+                .statement(&maker_transition, &changed_authorization)
+                .unwrap();
+            let transaction = authorized_standing_pool_allocation_transaction(
+                &state,
+                &authorizer,
+                &signers,
+                &maker_transition,
+                &changed_authorization,
+                &changed,
+            )
+            .unwrap();
+            assert!(
+                state
+                    .apply(&transaction, &authorizer, 100)
+                    .unwrap_err()
+                    .contains("PQ authorization"),
+                "standing pool accepted mutation {mutation}"
+            );
+            assert_eq!(state.root(), before_hybrid_rejections);
+        }
         state
             .apply(&maker_reservation, &authorizer, 100)
             .expect("Maker standing allocation");
@@ -8771,6 +8835,7 @@ mod tests {
             dvp_proof_digest: [231; 32],
             remainder_range_proof_digest: [232; 32],
             committee_signature: Vec::new(),
+            pq_authorization: None,
         };
         let stale_metadata = standing_pool_reservation_metadata(
             stale_allocation.pool_id,
@@ -8801,6 +8866,11 @@ mod tests {
             frost_sign(&frost_keys, &frost_public, &stale_message)
                 .serialize()
                 .expect("serialize stale allocation signature");
+        stale_allocation.pq_authorization = Some(zkfmi_crypto::test_support::approve(
+            &pq_committee,
+            &stale_message,
+            100,
+        ));
         stale_authorization.escrow_digest = stale_allocation
             .statement(&stale_transition, &stale_authorization)
             .expect("stale Maker allocation statement");

@@ -46,7 +46,7 @@ const NOTE_CLAIM_MATERIALIZE_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-CLAIM-MATERIALIZE
 const NOTE_CLAIM_RECIPIENT_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-CLAIM-RECIPIENT:v1";
 const NOTE_RESERVATION_ESCROW_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-RESERVATION-ESCROW:v1";
 const STANDING_NOTE_POOL_DOMAIN: &[u8] = b"QOMM:DEFMI:STANDING-NOTE-POOL:v1";
-const STANDING_NOTE_POOL_ALLOCATION_DOMAIN: &[u8] = b"QOMM:DEFMI:STANDING-NOTE-POOL-ALLOCATION:v1";
+const STANDING_NOTE_POOL_ALLOCATION_DOMAIN: &[u8] = b"QOMM:DEFMI:STANDING-NOTE-POOL-ALLOCATION:v2";
 const PRODUCT_NOTE_RELEASE_DOMAIN: &[u8] = b"QOMM:DEFMI:PRODUCT-NOTE-RELEASE:v1";
 const PRODUCT_NOTE_NO_FILL_RELEASE_DOMAIN: &[u8] = b"QOMM:DEFMI:PRODUCT-NOTE-NO-FILL-RELEASE:v1";
 const PRODUCT_NOTE_SETTLEMENT_DOMAIN: &[u8] = b"QOMM:DEFMI:PRODUCT-NOTE-SETTLEMENT:v1";
@@ -1258,6 +1258,7 @@ pub struct StandingNotePoolAllocation {
     pub dvp_proof_digest: [u8; 32],
     pub remainder_range_proof_digest: [u8; 32],
     pub committee_signature: Vec<u8>,
+    pub pq_authorization: Option<qomm_zkpi::QuorumApproval>,
 }
 
 impl StandingNotePoolAllocation {
@@ -1416,7 +1417,10 @@ impl StandingNotePoolAllocation {
         transition: &CreditFacilityTransition,
         authorization: &ReservationAuthorization,
         public: &frost::keys::PublicKeyPackage,
+        pq_committee: &qomm_zkpi::QuorumPolicy,
+        now: u64,
     ) -> Result<(), String> {
+        qomm_zkpi::validate_settlement_committee(pq_committee, public).map_err(str::to_string)?;
         let signature = frost::Signature::deserialize(&self.committee_signature)
             .map_err(|_| "standing pool committee signature is malformed".to_string())?;
         public
@@ -1425,7 +1429,16 @@ impl StandingNotePoolAllocation {
                 &self.signing_message(transition, authorization)?,
                 &signature,
             )
-            .map_err(|_| "standing pool committee signature is invalid".to_string())
+            .map_err(|_| "standing pool committee signature is invalid".to_string())?;
+        pq_committee
+            .verify(
+                self.pq_authorization
+                    .as_ref()
+                    .ok_or("standing pool lacks PQ authorization")?,
+                &self.signing_message(transition, authorization)?,
+                now,
+            )
+            .map_err(|error| format!("standing pool PQ authorization is invalid: {error}"))
     }
 
     pub fn body(
@@ -1443,6 +1456,14 @@ impl StandingNotePoolAllocation {
         body.insert(
             "committee_signature".into(),
             Value::String(hex::encode(&self.committee_signature)),
+        );
+        let pq = self
+            .pq_authorization
+            .as_ref()
+            .ok_or("standing pool lacks PQ authorization")?;
+        body.insert(
+            "pq_authorization".into(),
+            Value::String(hex::encode(pq.encode().map_err(|error| error.to_string())?)),
         );
         Ok(Value::Object(body))
     }
