@@ -11,6 +11,7 @@
 pub mod application;
 pub mod execution;
 pub mod finality;
+pub mod reservation;
 
 /// Durable legal-entity request queue. Applications use this facade instead
 /// of depending on QOMM's transport layout directly.
@@ -52,6 +53,7 @@ pub mod prelude {
         accept_canonical_transition, accept_signed_facility_receipt, ApplicationSettlementReceipt,
         CanonicalReadback, CanonicalTransition, ReadbackKind,
     };
+    pub use crate::reservation::{ReservationPermit, ReservationRole};
     pub use crate::{SdkError, SdkResult};
 }
 

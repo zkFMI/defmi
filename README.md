@@ -99,6 +99,13 @@ Rust crates:
 - `rust/zkpi-defmi-sdk`
 - `rust/qomm-harness`
 
+`zkpi-defmi-sdk` includes an application-neutral, DeFMI-signed reservation
+permit. A confidential application can prove to each MPC node that inventory
+or cash was already reserved against a canonical state root while exposing
+only commitments to the amount and private side. The public coordinator sees
+only the permit digest; post-match participant consent is not part of this
+authorization boundary.
+
 Measurement binaries carried by `qomm-harness`:
 
 - `build_defmi_doc`
