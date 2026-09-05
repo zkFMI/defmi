@@ -3,6 +3,8 @@
 // cross-runtime statement inside the same representable Unix-second domain.
 pub(crate) const MAX_UNIX_TIME: u64 = i64::MAX as u64;
 
+#[cfg(feature = "avalanche")]
+pub mod application_reservation;
 pub mod asset_link;
 pub mod assets;
 #[cfg(feature = "avalanche")]
@@ -12,6 +14,7 @@ pub mod central_bank_liquidity;
 pub mod chain;
 pub mod credit;
 pub mod cross_domain;
+#[cfg(feature = "avalanche")]
 pub mod cross_domain_finality;
 #[cfg(feature = "avalanche")]
 pub mod facility;

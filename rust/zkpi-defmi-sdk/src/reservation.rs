@@ -10,6 +10,7 @@ use crate::application::ApplicationManifest;
 use crate::{SdkError, SdkResult};
 use curve25519_dalek::ristretto::CompressedRistretto;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use qomm_defmi::application_reservation::{ApplicationReserveMandate, ApplicationReserveScope};
 use qomm_defmi::avalanche::{AvalancheClient, CanonicalCreditHold, CanonicalNoteReservation};
 use qomm_defmi::facility::{
     CreditFacilityTransition, CreditTransitionKind, ReservationAuthorization,
@@ -32,6 +33,9 @@ pub enum ReservationRole {
     Maker,
     /// Inventory or cash committed when an arriving order is submitted.
     Taker,
+    /// A role-neutral application hold. A CLOB order may take liquidity on
+    /// arrival and supply its remainder later, without becoming an RFQ.
+    Application,
 }
 
 impl ReservationRole {
@@ -39,6 +43,7 @@ impl ReservationRole {
         match self {
             Self::Maker => 1,
             Self::Taker => 2,
+            Self::Application => 3,
         }
     }
 }
@@ -104,7 +109,109 @@ pub struct ReservationPermitIssue<'a> {
     pub observed_at: u64,
 }
 
+#[derive(Clone, Copy)]
+pub struct ApplicationReservationPermitIssue<'a> {
+    pub application: &'a ApplicationManifest,
+    pub scope: &'a ApplicationReserveScope,
+    pub mandate: &'a ApplicationReserveMandate,
+    pub order_commitment: [u8; 32],
+    pub order_authorization_salt: [u8; 32],
+    pub observed_at: u64,
+}
+
 impl ReservationPermit {
+    /// Issue only after the role-neutral note reserve is finalized on the
+    /// configured DeFMI deployment. The private mandate is checked against its
+    /// exact canonical digest, never inserted into an RPC transaction itself.
+    pub fn issue_from_application_reservation<C: AvalancheClient + ?Sized>(
+        client: &C,
+        input: ApplicationReservationPermitIssue<'_>,
+        signer: &SigningKey,
+    ) -> SdkResult<Self> {
+        let ApplicationReservationPermitIssue {
+            application,
+            scope,
+            mandate,
+            order_commitment,
+            order_authorization_salt,
+            observed_at,
+        } = input;
+        mandate.verify(scope, observed_at).map_err(invalid)?;
+        let application_binding = application.digest()?;
+        if scope.application_binding != application_binding
+            || mandate.request_commitment
+                != order_authorization_commitment(order_commitment, order_authorization_salt)?
+        {
+            return Err(invalid(
+                "application reserve belongs to another request or application",
+            ));
+        }
+        let before = client.state_root().map_err(SdkError::InvalidFinality)?;
+        let canonical = client
+            .application_reservation_snapshot(mandate.hold_id)
+            .map_err(SdkError::InvalidFinality)?;
+        let hold = client
+            .credit_hold_snapshot(mandate.hold_id)
+            .map_err(SdkError::InvalidFinality)?;
+        let after = client.state_root().map_err(SdkError::InvalidFinality)?;
+        if before == ZERO
+            || before != after
+            || canonical.state_root != before
+            || hold.state_root != before
+        {
+            return Err(invalid(
+                "application reservation readbacks do not share a stable root",
+            ));
+        }
+        if canonical.binding != mandate.binding().map_err(invalid)?
+            || canonical.accepted_height == 0
+            || canonical.status != "active"
+            || canonical.settlement_digest != ZERO
+            || canonical.escrow_note_id == ZERO
+            || canonical.proof_digest == ZERO
+            || canonical.reserve_receipt_digest == ZERO
+            || hold.hold_id != mandate.hold_id
+            || hold.facility_id != mandate.facility_id
+            || hold.query_commitment != mandate.request_commitment
+            || hold.amount_commitment != mandate.amount_commitment
+            || hold.expires_at != mandate.valid_until
+            || hold.status != "active"
+            || hold.settlement_digest != ZERO
+            || hold.created_sequence == 0
+            || hold.created_sequence != hold.updated_sequence
+        {
+            return Err(invalid(
+                "application reservation is not the untouched canonical hold for this mandate",
+            ));
+        }
+        Self {
+            version: PERMIT_VERSION,
+            role: ReservationRole::Application,
+            application_binding,
+            venue_id: scope.venue_id,
+            defmi_id: scope.defmi_id,
+            canonical_state_root: before,
+            accepted_height: canonical.accepted_height,
+            order_commitment,
+            participant_handle: mandate.participant_handle,
+            entity_commitment: mandate.entity_commitment,
+            reservation_id: mandate.hold_id,
+            facility_id: mandate.facility_id,
+            asset_id: mandate.asset_id,
+            amount_commitment: mandate.amount_commitment,
+            escrow_note_id: canonical.escrow_note_id,
+            delegation_digest: canonical.binding.delegation_digest,
+            side_commitment: mandate.settlement_terms_commitment,
+            authority_digest: canonical.binding.mandate_digest,
+            reserve_receipt_digest: canonical.reserve_receipt_digest,
+            reservation_sequence: hold.created_sequence,
+            valid_until: mandate.valid_until,
+            signer_public: signer.verifying_key().to_bytes(),
+            signature: Vec::new(),
+        }
+        .sign(signer)
+    }
+
     /// Read an active anonymous-note reservation and credit hold at one stable
     /// canonical root before signing an application permit. Any read error or
     /// concurrent state change fails closed; callers can retry the whole read.
@@ -162,6 +269,11 @@ impl ReservationPermit {
         let expected_role = match role {
             ReservationRole::Maker => DefmiReservationRole::Maker,
             ReservationRole::Taker => DefmiReservationRole::Taker,
+            ReservationRole::Application => {
+                return Err(invalid(
+                    "application reservations must use their dedicated canonical issuer",
+                ))
+            }
         };
         if authorization.role != expected_role {
             return Err(invalid(
@@ -675,6 +787,7 @@ mod tests {
     // Unit-level readback fixture. Live validator acceptance is a separate gate.
     struct ReadbackClient {
         note: CanonicalNoteReservation,
+        application: Option<qomm_defmi::avalanche::CanonicalApplicationReservation>,
         hold: CanonicalCreditHold,
         after_root: [u8; 32],
         reads: AtomicUsize,
@@ -685,6 +798,7 @@ mod tests {
         fn new(note: &CanonicalNoteReservation, transition: &CreditFacilityTransition) -> Self {
             Self {
                 note: note.clone(),
+                application: None,
                 hold: CanonicalCreditHold {
                     state_root: note.state_root,
                     hold_id: transition.hold_id,
@@ -705,6 +819,16 @@ mod tests {
     }
 
     impl AvalancheClient for ReadbackClient {
+        fn application_reservation_snapshot(
+            &self,
+            hold_id: [u8; 32],
+        ) -> Result<qomm_defmi::avalanche::CanonicalApplicationReservation, String> {
+            self.application
+                .as_ref()
+                .filter(|reservation| !self.fail_note && reservation.binding.hold_id == hold_id)
+                .cloned()
+                .ok_or_else(|| "canonical application reservation is unavailable".into())
+        }
         fn state_root(&self) -> Result<[u8; 32], String> {
             Ok(if self.reads.fetch_add(1, Ordering::SeqCst) == 0 {
                 id(48)
@@ -765,6 +889,166 @@ mod tests {
         ) -> Result<qomm_defmi::avalanche::AcceptedTransition, String> {
             panic!("permit issuance reads already accepted state")
         }
+    }
+
+    #[test]
+    fn issues_application_permits_only_for_the_signed_finalized_note_hold() {
+        use qomm_defmi::avalanche::CanonicalApplicationReservation;
+        let (legacy, transition, _) = canonical_issue_inputs();
+        let application = oclob_manifest_v1();
+        let scope = ApplicationReserveScope {
+            application_binding: application.digest().unwrap(),
+            venue_id: id(55),
+            defmi_id: id(56),
+            committee_key_digest: id(57),
+            committee_epoch: 1,
+            amount_bits: 32,
+        };
+        let participant = SigningKey::from_bytes(&id(58));
+        let mandate = ApplicationReserveMandate {
+            version: 1,
+            scope: scope.clone(),
+            request_commitment: transition.query_commitment,
+            facility_id: transition.facility_id,
+            hold_id: transition.hold_id,
+            asset_id: legacy.asset_id,
+            amount_commitment: legacy.amount_commitment,
+            participant_handle: (RISTRETTO_BASEPOINT_POINT * Scalar::from(59_u64))
+                .compress()
+                .to_bytes(),
+            entity_commitment: id(60),
+            credential_digest: id(61),
+            settlement_terms_commitment: (RISTRETTO_BASEPOINT_POINT * Scalar::from(62_u64))
+                .compress()
+                .to_bytes(),
+            valid_from: 100,
+            valid_until: transition.expires_at,
+            participant_public: participant.verifying_key().to_bytes(),
+            signature: vec![],
+        }
+        .sign(&participant)
+        .unwrap();
+        let canonical = CanonicalApplicationReservation {
+            state_root: legacy.state_root,
+            accepted_height: legacy.accepted_height,
+            binding: mandate.binding().unwrap(),
+            escrow_note_id: legacy.escrow_note_id,
+            proof_digest: legacy.proof_digest,
+            reserve_receipt_digest: legacy.reserve_receipt_digest,
+            status: "active".into(),
+            settlement_digest: ZERO,
+        };
+        let reader = || {
+            let mut reader = ReadbackClient::new(&legacy, &transition);
+            reader.application = Some(canonical.clone());
+            reader
+        };
+        let signer = SigningKey::from_bytes(&id(63));
+        let input = ApplicationReservationPermitIssue {
+            application: &application,
+            scope: &scope,
+            mandate: &mandate,
+            order_commitment: id(34),
+            order_authorization_salt: id(79),
+            observed_at: 200,
+        };
+        let issue = |reader: &ReadbackClient, input| {
+            ReservationPermit::issue_from_application_reservation(reader, input, &signer)
+        };
+        let client = reader();
+        let permit = issue(&client, input).unwrap();
+        assert_eq!(client.reads.load(Ordering::SeqCst), 2);
+        assert_eq!(permit.role, ReservationRole::Application);
+        assert_eq!(permit.participant_handle, mandate.participant_handle);
+        assert_eq!(permit.side_commitment, mandate.settlement_terms_commitment);
+        assert_eq!(permit.authority_digest, mandate.digest().unwrap());
+        assert_eq!(permit.escrow_note_id, canonical.escrow_note_id);
+        assert_eq!(permit.reservation_sequence, transition.before_sequence + 1);
+        permit
+            .verify(
+                application.digest().unwrap(),
+                scope.defmi_id,
+                &signer.verifying_key(),
+                200,
+            )
+            .unwrap();
+        assert_eq!(
+            ReservationPermit::decode(&permit.encode().unwrap()).unwrap(),
+            permit
+        );
+        let mutations: &[fn(&mut ReadbackClient)] = &[
+            |r| r.application = None,
+            |r| r.fail_note = true,
+            |r| r.after_root = id(80),
+            |r| r.hold.state_root = id(81),
+            |r| r.application.as_mut().unwrap().state_root = id(82),
+            |r| r.application.as_mut().unwrap().accepted_height = 0,
+            |r| r.application.as_mut().unwrap().binding.entity_commitment = id(83),
+            |r| r.application.as_mut().unwrap().binding.mandate_digest = id(84),
+            |r| {
+                r.application
+                    .as_mut()
+                    .unwrap()
+                    .binding
+                    .scope
+                    .committee_epoch += 1
+            },
+            |r| r.application.as_mut().unwrap().binding.asset_id = id(85),
+            |r| r.application.as_mut().unwrap().binding.delegation_digest = id(86),
+            |r| r.application.as_mut().unwrap().binding.amount_commitment = id(87),
+            |r| r.application.as_mut().unwrap().escrow_note_id = ZERO,
+            |r| r.application.as_mut().unwrap().proof_digest = ZERO,
+            |r| r.application.as_mut().unwrap().reserve_receipt_digest = ZERO,
+            |r| r.application.as_mut().unwrap().status = "released".into(),
+            |r| r.application.as_mut().unwrap().settlement_digest = id(88),
+            |r| r.hold.status = "consumed".into(),
+            |r| r.hold.settlement_digest = id(89),
+            |r| r.hold.hold_id = id(90),
+            |r| r.hold.facility_id = id(91),
+            |r| r.hold.query_commitment = id(92),
+            |r| r.hold.amount_commitment = id(93),
+            |r| r.hold.expires_at += 1,
+            |r| r.hold.created_sequence = 0,
+            |r| r.hold.updated_sequence += 1,
+        ];
+        for (case, mutation) in mutations.iter().enumerate() {
+            let mut client = reader();
+            mutation(&mut client);
+            assert!(
+                issue(&client, input).is_err(),
+                "accepted application readback mutation {case}"
+            );
+        }
+        for input in [
+            ApplicationReservationPermitIssue {
+                order_commitment: id(94),
+                ..input
+            },
+            ApplicationReservationPermitIssue {
+                order_authorization_salt: id(95),
+                ..input
+            },
+            ApplicationReservationPermitIssue {
+                observed_at: 99,
+                ..input
+            },
+            ApplicationReservationPermitIssue {
+                observed_at: mandate.valid_until + 1,
+                ..input
+            },
+        ] {
+            assert!(issue(&reader(), input).is_err());
+        }
+        let mut forged = mandate.clone();
+        forged.signature[0] ^= 1;
+        assert!(issue(
+            &reader(),
+            ApplicationReservationPermitIssue {
+                mandate: &forged,
+                ..input
+            }
+        )
+        .is_err());
     }
 
     #[test]

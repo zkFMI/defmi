@@ -8,7 +8,7 @@ version = "0.1.0"
 source = "git+https://github.com/shukob/aethel#0bd07a2cb596db36133e9ece6d783a3a6e982aa8"
 dependencies = [
  "dekyx-aethel",
- "dekyx-core",
+ "dekyx-core 0.1.0 (git+https://github.com/shukob/dekyx)",
  "ed25519-dalek",
  "hex",
  "serde",
@@ -350,8 +350,21 @@ name = "dekyx-aethel"
 version = "0.1.0"
 source = "git+https://github.com/shukob/dekyx#96fcaf13e24fc5ae85d0e2a4b1b5753685535b8f"
 dependencies = [
- "dekyx-core",
+ "dekyx-core 0.1.0 (git+https://github.com/shukob/dekyx)",
  "serde",
+]
+
+[[package]]
+name = "dekyx-core"
+version = "0.1.0"
+source = "git+https://github.com/shukob/dekyx.git?rev=67eb59a1548740d15585a42d9cff8bc06ae95c5e#67eb59a1548740d15585a42d9cff8bc06ae95c5e"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519-dalek",
+ "rand_core",
+ "serde",
+ "sha2",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -1240,6 +1253,7 @@ dependencies = [
  "qomm-transport",
  "qomm-zk",
  "qomm-zkpi",
+ "rand_chacha",
  "rand_core",
  "serde",
  "serde_json",
@@ -1258,6 +1272,7 @@ dependencies = [
  "bulletproofs",
  "clear_on_drop",
  "curve25519-dalek",
+ "dekyx-core 0.1.0 (git+https://github.com/shukob/dekyx.git?rev=67eb59a1548740d15585a42d9cff8bc06ae95c5e)",
  "ed25519-dalek",
  "hex",
  "libc",

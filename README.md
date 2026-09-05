@@ -11,6 +11,14 @@ The deployment target is a dedicated **non-EVM Avalanche L1**. `rust/qomm-avalan
 
 ## What it does
 
+Application-neutral pretrade note reservations are described in the
+[Japanese integration guide](docs/APPLICATION_NOTE_RESERVATIONS_JA.md).
+They bind a DeKYX-verified participant mandate to an anonymous-note lock and a
+credit-facility update, with full monetary proofs verified by each Rust VM.
+This new path does not require an RFQ ticket or a Maker/Taker role. Its OCLOB
+settlement consumption, partial fills and release operations remain pending;
+the guide separates this boundary from the existing QOMM settlement path.
+
 ```mermaid
 flowchart TB
     subgraph hidden["what settlement never reads"]
@@ -118,8 +126,9 @@ identify repeated use of one hold without publishing its identifier. Keep the
 issuer key stable while reservations remain active, or migrate the complete
 spent-tag history under a governed key-rotation procedure.
 
-An authorized issuer calls `ReservationPermit::issue_from_avalanche` with its
-own trusted Avalanche client. The SDK reads both the anonymous-note reservation
+An authorized issuer calls `ReservationPermit::issue_from_application_reservation`
+for the role-neutral path, or `issue_from_avalanche` for the existing QOMM path,
+with its own trusted Avalanche client. The SDK reads both the anonymous-note reservation
 and its credit hold, checks that they share one unchanged canonical root, and
 reconciles the creation receipt, privately bound order commitment, asset, amount,
 sequence, active status and expiry before signing. A concurrent ledger update

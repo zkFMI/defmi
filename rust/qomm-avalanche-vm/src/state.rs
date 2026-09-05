@@ -10,6 +10,7 @@ use aethel_core::AethelBook;
 use curve25519_dalek::{ristretto::CompressedRistretto, scalar::Scalar};
 use deccp_core::{ClearingBook, ClearingSnapshot, DeCcpError};
 use ed25519_dalek::VerifyingKey;
+use qomm_defmi::application_reservation::{ApplicationReservationBinding, ApplicationReserveScope};
 use qomm_defmi::central_bank_liquidity::BojLiquidityBook;
 use qomm_defmi::cross_domain::{
     Committee as CrossDomainCommittee, CrossDomainBook, Domain as CrossDomain,
@@ -113,6 +114,17 @@ pub(crate) struct NoteReservationRecord {
     pub amount_commitment: [u8; 32],
     pub proof_digest: [u8; 32],
     pub delegation_digest: [u8; 32],
+    pub status: String,
+    pub settlement_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ApplicationReservationRecord {
+    pub binding: ApplicationReservationBinding,
+    pub escrow_note_id: [u8; 32],
+    pub proof_digest: [u8; 32],
+    pub receipt_digest: [u8; 32],
     pub status: String,
     pub settlement_digest: [u8; 32],
 }
@@ -440,6 +452,10 @@ pub struct State {
     pub(crate) notes: BTreeMap<String, NoteRecord>,
     #[serde(default)]
     pub(crate) note_reservations: BTreeMap<String, NoteReservationRecord>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) application_reserve_scopes: BTreeMap<String, ApplicationReserveScope>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) application_reservations: BTreeMap<String, ApplicationReservationRecord>,
     #[serde(default)]
     pub(crate) standing_note_pools: BTreeMap<String, StandingNotePoolRecord>,
     #[serde(default)]
@@ -558,6 +574,14 @@ impl State {
             ("account", self.accounts.keys().collect::<Vec<_>>()),
             ("note", self.notes.keys().collect::<Vec<_>>()),
             (
+                "application reserve scope",
+                self.application_reserve_scopes.keys().collect::<Vec<_>>(),
+            ),
+            (
+                "application reservation",
+                self.application_reservations.keys().collect::<Vec<_>>(),
+            ),
+            (
                 "note reservation",
                 self.note_reservations.keys().collect::<Vec<_>>(),
             ),
@@ -623,6 +647,54 @@ impl State {
                 .is_some_and(|asset| asset.active)
             {
                 return Err("state note belongs to an inactive or unknown asset".into());
+            }
+        }
+        for (key, scope) in &self.application_reserve_scopes {
+            if key != &id_key(&scope.key()?) {
+                return Err("application scope is stored under another key".into());
+            }
+        }
+        let mut application_requests = BTreeSet::new();
+        for (key, record) in &self.application_reservations {
+            record.binding.validate()?;
+            let binding = &record.binding;
+            let hold = self
+                .credit_holds
+                .get(key)
+                .ok_or_else(|| "application reserve has no credit hold".to_string())?;
+            let note = self
+                .notes
+                .get(&id_key(&record.escrow_note_id))
+                .ok_or_else(|| "application reserve has no covenant note".to_string())?;
+            let facility = self
+                .credit_facilities
+                .get(&id_key(&binding.facility_id))
+                .ok_or_else(|| "application reserve has no facility".to_string())?;
+            if key != &id_key(&binding.hold_id)
+                || self
+                    .application_reserve_scopes
+                    .get(&id_key(&binding.scope.key()?))
+                    != Some(&binding.scope)
+                || self.reservation_bindings.contains_key(key)
+                || self.note_reservations.contains_key(key)
+                || hold.facility_id != binding.facility_id
+                || hold.query_commitment != binding.request_commitment
+                || hold.amount_commitment != binding.amount_commitment
+                || hold.expires_at != binding.valid_until
+                || hold.status != record.status
+                || hold.settlement_digest != record.settlement_digest
+                || note.asset_id != binding.asset_id
+                || note.value_commitment != binding.amount_commitment
+                || note.lock_id != binding.hold_id
+                || facility.beneficiary_commitment != binding.entity_commitment
+                || facility.rail_asset_id != binding.asset_id
+                || record.proof_digest == ZERO
+                || record.receipt_digest == ZERO
+                || !matches!(record.status.as_str(), "active" | "consumed" | "released")
+                || (record.status == "active" && record.settlement_digest != ZERO)
+                || !application_requests.insert((binding.scope.key()?, binding.request_commitment))
+            {
+                return Err("state contains a malformed application reservation".into());
             }
         }
         for (hold_id, record) in &self.note_reservations {
@@ -913,6 +985,20 @@ impl State {
     pub fn root(&self) -> [u8; 32] {
         let mut hash = Sha256::new();
         hash.update(STATE_DOMAIN);
+        if !self.application_reserve_scopes.is_empty() {
+            hash.update(b"application-reserve-scopes:v1");
+            let encoded = serde_json::to_vec(&self.application_reserve_scopes)
+                .expect("validated scopes serialize");
+            hash.update((encoded.len() as u64).to_be_bytes());
+            hash.update(encoded);
+        }
+        if !self.application_reservations.is_empty() {
+            hash.update(b"application-reservations:v1");
+            let encoded = serde_json::to_vec(&self.application_reservations)
+                .expect("validated reservations serialize");
+            hash.update((encoded.len() as u64).to_be_bytes());
+            hash.update(encoded);
+        }
         if !self.aethel.is_empty() {
             hash.update(b"aethel-book:v1");
             let encoded =

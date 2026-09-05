@@ -887,6 +887,8 @@ impl QommVm {
                         | "defmivm.noteSerial"
                         | "defmivm.listNotes"
                         | "defmivm.noteReservation"
+                        | "defmivm.applicationNoteReservation"
+                        | "defmivm.applicationReserveScope"
                         | "defmivm.standingNotePool"
                         | "defmivm.noteClaim"
                         | "defmivm.listNoteClaims"
@@ -1197,6 +1199,27 @@ fn canonical_state_snapshot(
             }))
         }
         "defmivm.listNotes" => note_page_snapshot(state, params, &state_root),
+        "defmivm.applicationReserveScope" => {
+            let (_, key) = snapshot_id(params, "scopeID")?;
+            let scope = state.application_reserve_scopes.get(&key).ok_or_else(|| {
+                RpcFailure::Application("application reserve scope was not found".into())
+            })?;
+            Ok(json!({"stateRoot": state_root, "acceptedHeight": accepted_height, "scope": scope}))
+        }
+        "defmivm.applicationNoteReservation" => {
+            let (_, key) = snapshot_id(params, "holdID")?;
+            let record = state.application_reservations.get(&key).ok_or_else(|| {
+                RpcFailure::Application("application note reservation was not found".into())
+            })?;
+            Ok(json!({
+                "stateRoot": state_root, "acceptedHeight": accepted_height,
+                "binding": record.binding,
+                "escrowNoteID": hex::encode(record.escrow_note_id),
+                "proofDigest": hex::encode(record.proof_digest),
+                "reserveReceiptDigest": hex::encode(record.receipt_digest),
+                "status": record.status, "settlementDigest": hex::encode(record.settlement_digest),
+            }))
+        }
         "defmivm.noteReservation" => {
             let (hold_id, key) = snapshot_id(params, "holdID")?;
             let record = state

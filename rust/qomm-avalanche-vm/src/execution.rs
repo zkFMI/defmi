@@ -76,6 +76,7 @@ use crate::{
 };
 
 mod aethel;
+mod application_reservation;
 mod deccp;
 mod participant;
 
@@ -1064,6 +1065,12 @@ pub(crate) fn execute(
         "defmivm.issueProductReservation" => reserve_product(state, params, authorizer, timestamp),
         "defmivm.issueNoteProductReservation" => {
             reserve_note_product(state, params, authorizer, timestamp)
+        }
+        "defmivm.issueApplicationReserveScope" => {
+            application_reservation::register_scope(state, params, authorizer)
+        }
+        "defmivm.issueApplicationNoteReservation" => {
+            application_reservation::reserve(state, params, authorizer, timestamp)
         }
         "defmivm.issueProductRelease" => release_product(state, params, authorizer, timestamp),
         "defmivm.issueNoteProductRelease" => {
@@ -6955,6 +6962,306 @@ mod tests {
     };
     use rand_core::OsRng;
     use serde_json::json;
+
+    #[test]
+    fn application_note_reservation_verifies_full_proofs_and_survives_restart() {
+        use qomm_defmi::application_reservation::{
+            ApplicationNoteReservation, ApplicationReserveMandate, ApplicationReserveScope,
+        };
+        use qomm_defmi::facility::CreditFacilityRelationProof;
+        use qomm_defmi::notes::{encode_spend_proof, NoteLedger, Wallet};
+        let (authorizer, signers) = committee();
+        let key = Pedersen::new(b"qomm:defmi:v1");
+        let asset = [161; 32];
+        let entity = [162; 32];
+        let facility_id = [163; 32];
+        let hold_id = [164; 32];
+        let scope = ApplicationReserveScope {
+            application_binding: [165; 32],
+            venue_id: [166; 32],
+            defmi_id: [167; 32],
+            committee_key_digest: [168; 32],
+            committee_epoch: 1,
+            amount_bits: 32,
+        };
+        let mut state = State::default();
+        state.assets.insert(
+            id_key(&asset),
+            AssetRecord {
+                code: "JPY".into(),
+                kind: "cash".into(),
+                decimals: 0,
+                terms_digest: [169; 32],
+                active: true,
+            },
+        );
+        let cap_blinding = Scalar::from(31_u64);
+        let reserve_blinding = Scalar::from(41_u64);
+        let commit =
+            |amount, blinding: Scalar| key.commit_u64(amount, &blinding).compress().to_bytes();
+        state.credit_facilities.insert(
+            id_key(&facility_id),
+            CreditFacilityRecord {
+                guarantor_id: [170; 32],
+                beneficiary_commitment: entity,
+                rail_asset_id: asset,
+                cap_commitment: commit(1_000, cap_blinding),
+                available_commitment: commit(1_000, cap_blinding),
+                held_commitment: ZERO,
+                outstanding_commitment: ZERO,
+                overlimit_commitment: ZERO,
+                collateral_commitment: commit(1_000, Scalar::from(32_u64)),
+                risk_policy_digest: [171; 32],
+                valid_from: 1,
+                valid_until: 1_000,
+                status: "active".into(),
+                sequence: 0,
+            },
+        );
+        let wallet = Wallet::new(&mut OsRng);
+        let decoy = Wallet::new(&mut OsRng);
+        let covenant = Wallet::new(&mut OsRng);
+        let mut ledger = NoteLedger::new(key.clone(), 32);
+        let source_blinding = Scalar::from(33_u64);
+        let source = ledger.build_note(
+            &wallet.address,
+            100,
+            key.commit_u64(100, &source_blinding),
+            &source_blinding,
+            &mut OsRng,
+        );
+        let decoy_note = ledger.build_note(
+            &decoy.address,
+            25,
+            key.commit_u64(25, &Scalar::from(34_u64)),
+            &Scalar::from(34_u64),
+            &mut OsRng,
+        );
+        ledger.add(source);
+        ledger.add(decoy_note);
+        for note in &ledger.notes {
+            insert_note(
+                &mut state,
+                &NoteOutput::from_note(note, asset, ZERO).unwrap(),
+            )
+            .unwrap();
+        }
+        state.validate().unwrap();
+        apply(
+            &mut state,
+            &authorizer,
+            &signers,
+            "defmivm.issueApplicationReserveScope",
+            "scope",
+            serde_json::to_value(&scope).unwrap(),
+            scope.statement().unwrap(),
+            100,
+        )
+        .unwrap();
+        let scope_root = state.root();
+        let mut swapped_scope = scope.clone();
+        swapped_scope.committee_key_digest = [172; 32];
+        assert!(apply(
+            &mut state,
+            &authorizer,
+            &signers,
+            "defmivm.issueApplicationReserveScope",
+            "scope",
+            serde_json::to_value(&swapped_scope).unwrap(),
+            swapped_scope.statement().unwrap(),
+            100
+        )
+        .is_err());
+        assert_eq!(state.root(), scope_root);
+        let participant = SigningKey::from_bytes(&[173; 32]);
+        let mandate = ApplicationReserveMandate {
+            version: 1,
+            scope: scope.clone(),
+            request_commitment: [174; 32],
+            facility_id,
+            hold_id,
+            asset_id: asset,
+            amount_commitment: commit(40, reserve_blinding),
+            participant_handle: (key.g * Scalar::from(51_u64)).compress().to_bytes(),
+            entity_commitment: entity,
+            credential_digest: [175; 32],
+            settlement_terms_commitment: commit(1, Scalar::from(52_u64)),
+            valid_from: 100,
+            valid_until: 900,
+            participant_public: participant.verifying_key().to_bytes(),
+            signature: Vec::new(),
+        }
+        .sign(&participant)
+        .unwrap();
+        mandate.verify(&scope, 100).unwrap();
+        assert!(mandate.verify(&swapped_scope, 100).is_err());
+        let mut forged_mandate = mandate.clone();
+        forged_mandate.amount_commitment = commit(41, reserve_blinding);
+        assert!(forged_mandate.verify(&scope, 100).is_err());
+        let mut transition = CreditFacilityTransition {
+            operation_id: [176; 32],
+            facility_id,
+            hold_id,
+            kind: CreditTransitionKind::Hold,
+            query_commitment: mandate.request_commitment,
+            amount_commitment: mandate.amount_commitment,
+            consumed_commitment: ZERO,
+            refund_commitment: ZERO,
+            before_available_commitment: commit(1_000, cap_blinding),
+            after_available_commitment: commit(960, cap_blinding - reserve_blinding),
+            before_held_commitment: ZERO,
+            after_held_commitment: mandate.amount_commitment,
+            before_outstanding_commitment: ZERO,
+            after_outstanding_commitment: ZERO,
+            before_sequence: 0,
+            expires_at: mandate.valid_until,
+            settlement_digest: ZERO,
+            relation_proof_digest: ZERO,
+        };
+        let relation = CreditFacilityRelationProof::prove(
+            &mut transition,
+            [960, 40, 0, 40],
+            [
+                cap_blinding - reserve_blinding,
+                reserve_blinding,
+                Scalar::ZERO,
+                reserve_blinding,
+            ],
+            [0, 0],
+            [Scalar::ZERO; 2],
+            &mut OsRng,
+        )
+        .unwrap();
+        let source_opening = ledger
+            .scan(&wallet, &key)
+            .into_iter()
+            .find_map(|(index, opening)| (index == 0).then_some(opening))
+            .unwrap();
+        let spend = ledger
+            .build_spend_constrained_with_blindings(
+                &[0, 1],
+                0,
+                &source_opening,
+                &key.g,
+                &Scalar::ZERO,
+                &[(covenant.address, 40), (wallet.address, 60)],
+                &[reserve_blinding, Scalar::from(53_u64)],
+                &[true, true],
+                &mandate.spend_context().unwrap(),
+                &mut OsRng,
+            )
+            .unwrap();
+        let escrow = NoteReservationEscrow::from_verified(
+            &ledger,
+            &[0, 1],
+            &spend.proof,
+            &spend.notes,
+            asset,
+            &[ZERO; 2],
+            &[hold_id, ZERO],
+            &transition,
+            mandate.delegation_digest().unwrap(),
+            &mandate.spend_context().unwrap(),
+            &mut OsRng,
+        )
+        .unwrap();
+        let reservation = ApplicationNoteReservation {
+            binding: mandate.binding().unwrap(),
+            transition,
+            escrow,
+            relation_proof: relation.to_bytes().unwrap(),
+            spend_proof: encode_spend_proof(&spend.proof).unwrap(),
+        };
+        reservation
+            .verify_public_proofs(&ledger, &[0, 1], &[ZERO; 2], &mut OsRng)
+            .unwrap();
+        let public = serde_json::to_string(&reservation.body().unwrap()).unwrap();
+        for hidden in [
+            "participant_handle",
+            "participant_public",
+            "credential_digest",
+            "settlement_terms_commitment",
+            "signature",
+        ] {
+            assert!(!public.contains(hidden));
+        }
+        let transaction = |state: &State, request: &ApplicationNoteReservation| {
+            let approval = authorizer
+                .approve(request.statement().unwrap(), state.root(), &signers)
+                .unwrap();
+            TransactionEnvelope::new("defmivm.issueApplicationNoteReservation", json!({
+                "binding": request.binding, "transition": transition_json(&request.transition),
+                "escrow": note_reservation_escrow_json(&request.escrow),
+                "relationProof": BASE64.encode(&request.relation_proof), "spendProof": BASE64.encode(&request.spend_proof),
+                "approval": approval_json(&approval), "expectedBeforeRoot": hex::encode(state.root()),
+            })).unwrap().encode().unwrap()
+        };
+        let before = state.root();
+        for mutation in 0..4 {
+            // Each mutation gets a fresh valid governance approval: rejection
+            // must be caused by native proof/state checks, not its signature.
+            let mut bad = reservation.clone();
+            match mutation {
+                0 => bad.spend_proof[80] ^= 1,
+                1 => bad.relation_proof[80] ^= 1,
+                2 => {
+                    bad.escrow.spend.serial_point =
+                        (key.g * Scalar::from(55_u64)).compress().to_bytes()
+                }
+                3 => bad.binding.scope.amount_bits = 16,
+                _ => unreachable!(),
+            }
+            assert!(state
+                .apply(&transaction(&state, &bad), &authorizer, 100)
+                .is_err());
+            assert_eq!(state.root(), before);
+        }
+        let mut bad_capacity = reservation.clone();
+        bad_capacity.transition.after_available_commitment =
+            commit(961, cap_blinding - reserve_blinding);
+        assert!(state
+            .apply(&transaction(&state, &bad_capacity), &authorizer, 100)
+            .is_err());
+        let mut wrong_entity = reservation.clone();
+        wrong_entity.binding.entity_commitment = [177; 32];
+        assert!(state
+            .apply(&transaction(&state, &wrong_entity), &authorizer, 100)
+            .is_err());
+        assert!(state
+            .apply(&transaction(&state, &reservation), &authorizer, 901)
+            .is_err());
+        assert_eq!(state.root(), before);
+        let accepted_tx = transaction(&state, &reservation);
+        let receipt = state.apply(&accepted_tx, &authorizer, 100).unwrap();
+        assert_eq!(receipt.statement, reservation.statement().unwrap());
+        assert!(state.accounts.is_empty());
+        assert!(state.reservation_bindings.is_empty());
+        assert!(state.admission_entries.is_empty());
+        assert_eq!(state.credit_facilities[&id_key(&facility_id)].sequence, 1);
+        assert_eq!(
+            state.credit_facilities[&id_key(&facility_id)].available_commitment,
+            commit(960, cap_blinding - reserve_blinding)
+        );
+        assert_eq!(
+            state.application_reservations[&id_key(&hold_id)].status,
+            "active"
+        );
+        assert_eq!(
+            state.notes[&id_key(&reservation.escrow.escrow_note_id)].lock_id,
+            hold_id
+        );
+        assert!(state
+            .note_serials
+            .contains_key(&id_key(&reservation.escrow.spend.serial_point)));
+        let restored: State = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        restored.validate().unwrap();
+        assert_eq!(restored.root(), state.root());
+        assert!(state.apply(&accepted_tx, &authorizer, 100).is_err());
+        assert!(state
+            .apply(&transaction(&state, &reservation), &authorizer, 100)
+            .is_err());
+        assert_eq!(restored.root(), state.root());
+    }
 
     fn committee() -> (QuorumAuthorizer, BTreeMap<String, SigningKey>) {
         let signers = (0u8..3)

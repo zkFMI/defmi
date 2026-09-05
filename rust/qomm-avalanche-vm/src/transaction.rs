@@ -36,6 +36,8 @@ pub const ISSUE_METHODS: &[&str] = &[
     "defmivm.issueStandingNotePoolAllocation",
     "defmivm.issueStandingPoolProductSettlement",
     "defmivm.issueNoteProductReservation",
+    "defmivm.issueApplicationReserveScope",
+    "defmivm.issueApplicationNoteReservation",
     "defmivm.issueProductRelease",
     "defmivm.issueNoteProductRelease",
     "defmivm.issueNoteProductNoFillRelease",

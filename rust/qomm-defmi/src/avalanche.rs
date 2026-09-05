@@ -1,5 +1,9 @@
 //! Fail-closed Avalanche custom-VM JSON-RPC client and projection bridge.
 
+use crate::application_reservation::{
+    ApplicationNoteReservation, ApplicationReservationBinding, ApplicationReserveScope,
+    VerifiedApplicationNoteReservation,
+};
 use crate::facility::{
     AccountOpening, AdmissionBatchPlan, AdmissionBatchSnapshot, AdmissionCommitteePlan,
     AdmissionSlotAdvance, AssetDefinition, AssetKind, CreditFacilityAmendment,
@@ -475,6 +479,46 @@ pub struct CanonicalNoteReservation {
     pub reserve_receipt_digest: [u8; 32],
     pub status: String,
     pub settlement_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CanonicalApplicationReservation {
+    pub state_root: [u8; 32],
+    pub accepted_height: u64,
+    pub binding: ApplicationReservationBinding,
+    pub escrow_note_id: [u8; 32],
+    pub proof_digest: [u8; 32],
+    pub reserve_receipt_digest: [u8; 32],
+    pub status: String,
+    pub settlement_digest: [u8; 32],
+}
+
+impl CanonicalApplicationReservation {
+    fn parse(value: &Value) -> Result<Self, String> {
+        let object = result_object(value)?;
+        let binding: ApplicationReservationBinding = serde_json::from_value(
+            object
+                .get("binding")
+                .cloned()
+                .ok_or_else(|| "application reserve readback lacks its binding".to_string())?,
+        )
+        .map_err(|_| "application reserve readback binding is malformed")?;
+        binding.validate()?;
+        let status = result_string(object, "status")?.to_string();
+        if !matches!(status.as_str(), "active" | "released" | "consumed") {
+            return Err("application reserve readback status is invalid".into());
+        }
+        Ok(Self {
+            state_root: result_hex32(object, "stateRoot")?,
+            accepted_height: result_u64(object, "acceptedHeight")?,
+            binding,
+            escrow_note_id: result_hex32(object, "escrowNoteID")?,
+            proof_digest: result_hex32(object, "proofDigest")?,
+            reserve_receipt_digest: result_hex32(object, "reserveReceiptDigest")?,
+            status,
+            settlement_digest: result_hex32(object, "settlementDigest")?,
+        })
+    }
 }
 
 impl CanonicalNoteReservation {
@@ -2237,6 +2281,28 @@ pub trait AvalancheClient: Send + Sync {
     ) -> Result<CanonicalNoteReservation, String> {
         Err("Avalanche client does not support canonical note reservations".into())
     }
+    fn application_reservation_snapshot(
+        &self,
+        _hold_id: [u8; 32],
+    ) -> Result<CanonicalApplicationReservation, String> {
+        Err("Avalanche client does not support application note reservations".into())
+    }
+    fn issue_application_reserve_scope(
+        &self,
+        _scope: &ApplicationReserveScope,
+        _approval: &QuorumApproval,
+        _expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Err("Avalanche client does not support application reserve scopes".into())
+    }
+    fn issue_application_note_reservation(
+        &self,
+        _reservation: &ApplicationNoteReservation,
+        _approval: &QuorumApproval,
+        _expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Err("Avalanche client does not support application note reservations".into())
+    }
     fn standing_note_pool_snapshot(
         &self,
         _pool_id: [u8; 32],
@@ -2623,6 +2689,41 @@ impl AvalancheClient for AvalancheRpcClient {
             "defmivm.noteReservation",
             json!({"holdID": hex::encode(hold_id)}),
         )?)
+    }
+
+    fn application_reservation_snapshot(
+        &self,
+        hold_id: [u8; 32],
+    ) -> Result<CanonicalApplicationReservation, String> {
+        CanonicalApplicationReservation::parse(&self.call(
+            "defmivm.applicationNoteReservation",
+            json!({"holdID": hex::encode(hold_id)}),
+        )?)
+    }
+
+    fn issue_application_reserve_scope(
+        &self,
+        scope: &ApplicationReserveScope,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call("defmivm.issueApplicationReserveScope", json!({"scope": scope, "approval": approval_json(approval), "expectedBeforeRoot": hex::encode(expected_before_root)}))?)
+    }
+
+    fn issue_application_note_reservation(
+        &self,
+        reservation: &ApplicationNoteReservation,
+        approval: &QuorumApproval,
+        expected_before_root: [u8; 32],
+    ) -> Result<String, String> {
+        Self::transaction_id(&self.call("defmivm.issueApplicationNoteReservation", json!({
+            "binding": reservation.binding,
+            "transition": credit_transition_json(&reservation.transition),
+            "escrow": note_reservation_escrow_json(&reservation.escrow),
+            "relationProof": BASE64.encode(&reservation.relation_proof),
+            "spendProof": BASE64.encode(&reservation.spend_proof),
+            "approval": approval_json(approval), "expectedBeforeRoot": hex::encode(expected_before_root),
+        }))?)
     }
 
     fn standing_note_pool_snapshot(
@@ -3680,6 +3781,31 @@ impl<'a, C: AvalancheClient> AvalancheNoteBridge<'a, C> {
                 before,
             )
         })
+    }
+
+    pub fn register_application_scope(
+        &self,
+        scope: &ApplicationReserveScope,
+        approval: &QuorumApproval,
+    ) -> Result<AcceptedTransition, String> {
+        self.submit(scope.statement()?, approval, |client, approval, before| {
+            client.issue_application_reserve_scope(scope, approval, before)
+        })
+    }
+
+    pub fn reserve_application(
+        &self,
+        verified: &VerifiedApplicationNoteReservation,
+        approval: &QuorumApproval,
+    ) -> Result<AcceptedTransition, String> {
+        let reservation = verified.reservation();
+        self.submit(
+            reservation.statement()?,
+            approval,
+            |client, approval, before| {
+                client.issue_application_note_reservation(reservation, approval, before)
+            },
+        )
     }
 
     pub fn release_product(

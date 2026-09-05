@@ -56,9 +56,14 @@ pub mod prelude {
         CanonicalReadback, CanonicalTransition, ReadbackKind,
     };
     pub use crate::reservation::{
-        order_authorization_commitment, ReservationPermit, ReservationPermitIssue, ReservationRole,
+        order_authorization_commitment, ApplicationReservationPermitIssue, ReservationPermit,
+        ReservationPermitIssue, ReservationRole,
     };
     pub use crate::{SdkError, SdkResult};
+    pub use qomm_defmi::application_reservation::{
+        ApplicationIdentityEvidence, ApplicationNoteReservation, ApplicationReservationBinding,
+        ApplicationReserveMandate, ApplicationReserveScope, VerifiedApplicationNoteReservation,
+    };
 }
 
 use thiserror::Error;
