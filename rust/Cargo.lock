@@ -371,7 +371,7 @@ dependencies = [
 [[package]]
 name = "dekyx-core"
 version = "0.1.0"
-source = "git+https://github.com/shukob/dekyx.git?rev=67eb59a1548740d15585a42d9cff8bc06ae95c5e#67eb59a1548740d15585a42d9cff8bc06ae95c5e"
+source = "git+https://github.com/zkFMI/dekyx.git?rev=67eb59a1548740d15585a42d9cff8bc06ae95c5e#67eb59a1548740d15585a42d9cff8bc06ae95c5e"
 dependencies = [
  "curve25519-dalek",
  "ed25519-dalek",

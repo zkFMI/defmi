@@ -1,2 +1,3 @@
 rust/target/
 .DS_Store
+.codex/
