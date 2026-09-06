@@ -185,7 +185,7 @@ to real machines is not published.
 ## Dependencies and application hosts
 
 The standard DeFMI VM is application-independent. It imports the generic
-financial and proof crates and [DeKYX](https://github.com/shukob/dekyx) through
+financial and proof crates and [DeKYX](https://github.com/zkFMI/dekyx) through
 its locked dependency graph. It has no Aethel or application-specific DeCCP
 adapter dependency.
 
