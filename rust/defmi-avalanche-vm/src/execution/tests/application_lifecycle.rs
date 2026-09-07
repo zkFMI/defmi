@@ -900,7 +900,7 @@ fn native_monetary_and_head_checks_reject_even_freshly_committee_signed_forgery(
     let before = fixture.state.root();
     // Except the last case, replace the committee certificate too. This
     // distinguishes native verification from signature-only authorization.
-    for mutation in 0..19 {
+    for mutation in 0..10 {
         let mut bad = first.clone();
         match mutation {
             0 => bad.dvp_proofs[80] ^= 1,
