@@ -4,7 +4,7 @@ use qomm_defmi::reconcile::{
     check, check_positions, locate_break, prove, Attestation, Reconciliation,
 };
 use qomm_harness::{parse_value, timing_summary, write_pretty_json, HarnessResult};
-use qomm_proofs::threshold_sigma::{deal, joint_prove_opening};
+use qomm_proofs::threshold_sigma::{deal, joint_prove_zero_opening};
 use qomm_sim::deterministic_random::DeterministicRng;
 use qomm_zk::pedersen::{asset_tag, Pedersen};
 use rand::rngs::OsRng;
@@ -183,7 +183,7 @@ fn prove_by_quorum(
 ) -> HarnessResult<Reconciliation> {
     let mut transcript = Transcript::new(b"qomm:defmi:reconcile");
     transcript.append_message(b"attestation", &attestation.body());
-    let (proof, _) = joint_prove_opening(key, shares, quorum, &mut transcript, None, rng)?;
+    let (proof, _) = joint_prove_zero_opening(key, shares, quorum, &mut transcript, None, rng)?;
     Ok(Reconciliation {
         attestation: attestation.clone(),
         positions: commitments.len(),

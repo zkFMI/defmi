@@ -143,3 +143,87 @@ fn a_comparison_that_does_not_hold_cannot_be_proved() {
         .unwrap_err();
     assert!(err.0.contains("non-negative"), "{}", err.0);
 }
+
+const EQUALITY: &str = "\
+param cap[1,1000] base[1,200]
+input qty[1,1000]
+same = qty == cap
+price = base + qty
+";
+
+const INEQUALITY: &str = "\
+param cap[1,1000] base[1,200]
+input qty[1,1000]
+differs = qty != cap
+price = base + qty
+";
+
+/// Regression for the 2026-09-07 finding: an equality step is a zero-relation
+/// opening of the difference, and an inequality step is a product pinned to a
+/// commitment to one. A comparison the rule requires and that does not hold
+/// cannot be proved, as for the orderings.
+#[test]
+fn equality_and_inequality_are_bound_by_their_steps() {
+    let (prover, verifier) = (RuleProver::new(), RuleVerifier::new());
+    let equal = compile_rule(EQUALITY, "eq").unwrap();
+    let audit = prover
+        .prove(
+            &equal,
+            &bindings(&[("cap", 100), ("base", 5), ("qty", 100)]),
+            b"ctx",
+            &mut OsRng,
+        )
+        .unwrap();
+    assert_eq!(verifier.verify(&equal, &audit, b"ctx"), Ok(()));
+    assert!(audit
+        .steps
+        .iter()
+        .any(|s| matches!(s, Step::Equality { .. })));
+    assert!(prover
+        .prove(
+            &equal,
+            &bindings(&[("cap", 100), ("base", 5), ("qty", 101)]),
+            b"ctx",
+            &mut OsRng
+        )
+        .is_err());
+
+    let differs = compile_rule(INEQUALITY, "ne").unwrap();
+    let audit = prover
+        .prove(
+            &differs,
+            &bindings(&[("cap", 100), ("base", 5), ("qty", 101)]),
+            b"ctx",
+            &mut OsRng,
+        )
+        .unwrap();
+    assert_eq!(verifier.verify(&differs, &audit, b"ctx"), Ok(()));
+    assert!(audit
+        .steps
+        .iter()
+        .any(|s| matches!(s, Step::Inequality { .. })));
+    assert!(prover
+        .prove(
+            &differs,
+            &bindings(&[("cap", 100), ("base", 5), ("qty", 100)]),
+            b"ctx",
+            &mut OsRng
+        )
+        .is_err());
+
+    // Moving the difference commitment breaks the inequality step.
+    let mut moved = prover
+        .prove(
+            &differs,
+            &bindings(&[("cap", 100), ("base", 5), ("qty", 101)]),
+            b"ctx",
+            &mut OsRng,
+        )
+        .unwrap();
+    for step in &mut moved.steps {
+        if let Step::Inequality { commitment, .. } = step {
+            *commitment += prover.key.g;
+        }
+    }
+    assert!(verifier.verify(&differs, &moved, b"ctx").is_err());
+}

@@ -14,11 +14,46 @@ use curve25519_dalek::traits::Identity;
 use merlin::Transcript;
 use qomm_zk::pedersen::Pedersen;
 use qomm_zk::shamir;
-use qomm_zk::sigma::{opening_challenge, verify_opening, OpeningProof};
+use qomm_zk::sigma::{opening_challenge, verify_opening, verify_zero_opening, OpeningProof};
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
 
 use crate::threshold_gadgets::{joint_scalar_nodes, DealerCoefficientCommitments};
+
+/// Which opening relation a joint proof establishes.
+///
+/// `General` proves knowledge of some `(v, r)` with `C = g^v h^r`. `Zero`
+/// proves `C = h^r`, the relation every linkage, reconciliation and
+/// "opens to the published value" statement needs; a general proof of those
+/// residuals is satisfiable for any claimed value by whoever holds the
+/// openings. In the zero relation every node's nonce has no value component,
+/// so the assembled response's value part is `c * sum lambda_i v_i`, which is
+/// zero exactly when the statement holds, and the verifier is
+/// `qomm_zk::sigma::verify_zero_opening`, which rejects any other response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Relation {
+    General,
+    Zero,
+}
+
+fn frame(transcript: &mut Transcript, relation: Relation) {
+    if relation == Relation::Zero {
+        transcript.append_message(b"relation", b"zero-opening:v2");
+    }
+}
+
+fn verify_relation(
+    key: &Pedersen,
+    transcript: &mut Transcript,
+    commitment: &RistrettoPoint,
+    proof: &OpeningProof,
+    relation: Relation,
+) -> bool {
+    match relation {
+        Relation::General => verify_opening(key, transcript, commitment, proof),
+        Relation::Zero => verify_zero_opening(key, transcript, commitment, proof),
+    }
+}
 
 pub type PartyId = usize;
 pub type ScalarShares = BTreeMap<PartyId, Scalar>;
@@ -167,24 +202,41 @@ struct JointNonce {
 }
 
 impl JointNonce {
-    pub fn new<R: RngCore + CryptoRng>(
+    /// In the zero relation only the blinding slot is shared; every node's
+    /// value nonce is zero, so the combined first move is a pure power of `h`.
+    fn new_with<R: RngCore + CryptoRng>(
         key: &Pedersen,
         parties: &[PartyId],
         threshold: usize,
+        relation: Relation,
         rng: &mut R,
     ) -> Result<Self, String> {
-        let (contributions, sealed) = joint_scalar_nodes(key, parties, threshold, 2, rng)?;
+        let slots = if relation == Relation::Zero { 1 } else { 2 };
+        let (contributions, sealed) = joint_scalar_nodes(key, parties, threshold, slots, rng)?;
         let nodes = contributions
             .into_iter()
             .map(|contribution| {
+                let (k_share, rho_share) = if relation == Relation::Zero {
+                    (
+                        Scalar::ZERO,
+                        contribution
+                            .share(0)
+                            .ok_or("joint nonce omitted its blinding slot")?,
+                    )
+                } else {
+                    (
+                        contribution
+                            .share(0)
+                            .ok_or("joint nonce omitted its value slot")?,
+                        contribution
+                            .share(1)
+                            .ok_or("joint nonce omitted its blinding slot")?,
+                    )
+                };
                 Ok(NodeNonce {
                     party: contribution.party(),
-                    k_share: contribution
-                        .share(0)
-                        .ok_or("joint nonce omitted its value slot")?,
-                    rho_share: contribution
-                        .share(1)
-                        .ok_or("joint nonce omitted its blinding slot")?,
+                    k_share,
+                    rho_share,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -368,7 +420,32 @@ pub fn prepare_opening_round1<R: RngCore + CryptoRng>(
     context: &[u8],
     rng: &mut R,
 ) -> (OpeningRound1Seal, OpeningRound1Secret, OpeningRound1) {
-    let value_nonce = Scalar::random(&mut *rng);
+    prepare_opening_round1_with(key, contribution, context, Relation::General, rng)
+}
+
+/// First round of a zero-relation opening: the node's nonce has no value
+/// component, so its first move is `h^rho_i`.
+pub fn prepare_zero_opening_round1<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    contribution: &OpeningNodeContribution,
+    context: &[u8],
+    rng: &mut R,
+) -> (OpeningRound1Seal, OpeningRound1Secret, OpeningRound1) {
+    prepare_opening_round1_with(key, contribution, context, Relation::Zero, rng)
+}
+
+fn prepare_opening_round1_with<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    contribution: &OpeningNodeContribution,
+    context: &[u8],
+    relation: Relation,
+    rng: &mut R,
+) -> (OpeningRound1Seal, OpeningRound1Secret, OpeningRound1) {
+    let value_nonce = if relation == Relation::Zero {
+        Scalar::ZERO
+    } else {
+        Scalar::random(&mut *rng)
+    };
     let blinding_nonce = Scalar::random(&mut *rng);
     let context_digest: [u8; 32] = Sha256::digest(context).into();
     let message = OpeningRound1 {
@@ -438,6 +515,47 @@ pub fn make_opening_challenge_with_transcript(
     context: &[u8],
     transcript: &mut Transcript,
 ) -> Result<OpeningChallenge, String> {
+    make_opening_challenge_with(
+        commitment,
+        messages,
+        seals,
+        quorum,
+        context,
+        transcript,
+        Relation::General,
+    )
+}
+
+/// The zero-relation challenge: the transcript is framed exactly as
+/// `qomm_zk::sigma::verify_zero_opening` frames it.
+pub fn make_zero_opening_challenge_with_transcript(
+    commitment: &RistrettoPoint,
+    messages: &[OpeningRound1],
+    seals: &[OpeningRound1Seal],
+    quorum: &[PartyId],
+    context: &[u8],
+    transcript: &mut Transcript,
+) -> Result<OpeningChallenge, String> {
+    make_opening_challenge_with(
+        commitment,
+        messages,
+        seals,
+        quorum,
+        context,
+        transcript,
+        Relation::Zero,
+    )
+}
+
+fn make_opening_challenge_with(
+    commitment: &RistrettoPoint,
+    messages: &[OpeningRound1],
+    seals: &[OpeningRound1Seal],
+    quorum: &[PartyId],
+    context: &[u8],
+    transcript: &mut Transcript,
+    relation: Relation,
+) -> Result<OpeningChallenge, String> {
     let by_party = checked_opening_round1(messages, seals, quorum, context)?;
     let nonce_commitment = combine_commitments(
         &quorum
@@ -445,6 +563,7 @@ pub fn make_opening_challenge_with_transcript(
             .map(|party| (*party, by_party[party].nonce_commitment))
             .collect(),
     )?;
+    frame(transcript, relation);
     let challenge = opening_challenge(transcript, commitment, &nonce_commitment);
     Ok(OpeningChallenge {
         quorum: quorum.to_vec(),
@@ -485,9 +604,65 @@ pub fn assemble_opening_from_rounds_with_transcript(
     context: &[u8],
     transcript: &mut Transcript,
 ) -> Result<OpeningProof, String> {
+    assemble_opening_from_rounds_with(
+        key,
+        commitment,
+        coefficient_commitments,
+        messages,
+        seals,
+        responses,
+        quorum,
+        context,
+        transcript,
+        Relation::General,
+    )
+}
+
+/// Assemble a zero-relation opening from rounds. The assembled response must
+/// have a zero value part, which an honest quorum produces exactly when the
+/// commitment is a pure power of `h`; anything else fails verification.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_zero_opening_from_rounds_with_transcript(
+    key: &Pedersen,
+    commitment: &RistrettoPoint,
+    coefficient_commitments: &[RistrettoPoint],
+    messages: &[OpeningRound1],
+    seals: &[OpeningRound1Seal],
+    responses: &[OpeningRound2],
+    quorum: &[PartyId],
+    context: &[u8],
+    transcript: &mut Transcript,
+) -> Result<OpeningProof, String> {
+    assemble_opening_from_rounds_with(
+        key,
+        commitment,
+        coefficient_commitments,
+        messages,
+        seals,
+        responses,
+        quorum,
+        context,
+        transcript,
+        Relation::Zero,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assemble_opening_from_rounds_with(
+    key: &Pedersen,
+    commitment: &RistrettoPoint,
+    coefficient_commitments: &[RistrettoPoint],
+    messages: &[OpeningRound1],
+    seals: &[OpeningRound1Seal],
+    responses: &[OpeningRound2],
+    quorum: &[PartyId],
+    context: &[u8],
+    transcript: &mut Transcript,
+    relation: Relation,
+) -> Result<OpeningProof, String> {
     let mut verify_transcript = transcript.clone();
-    let challenge = make_opening_challenge_with_transcript(
-        commitment, messages, seals, quorum, context, transcript,
+    let challenge = make_opening_challenge_with(
+        commitment, messages, seals, quorum, context, transcript, relation,
     )?;
     let first = messages
         .iter()
@@ -525,12 +700,14 @@ pub fn assemble_opening_from_rounds_with_transcript(
         proof.z_value += coefficients[party] * answers[party].value_answer;
         proof.z_blinding += coefficients[party] * answers[party].blinding_answer;
     }
-    if !verify_opening(key, &mut verify_transcript, commitment, &proof) {
+    if !verify_relation(key, &mut verify_transcript, commitment, &proof, relation) {
         return Err("assembled threshold opening proof does not verify".into());
     }
     Ok(proof)
 }
 
+/// Assemble an ordinary opening proof and retain enough public data to name a
+/// malformed partial.
 /// Assemble an ordinary opening proof and retain enough public data to name a
 /// malformed partial.
 pub fn joint_prove_opening<R: RngCore + CryptoRng>(
@@ -541,12 +718,47 @@ pub fn joint_prove_opening<R: RngCore + CryptoRng>(
     faulty: Option<&BTreeMap<PartyId, (Scalar, Scalar)>>,
     rng: &mut R,
 ) -> Result<(OpeningProof, OpeningAssemblyTranscript), String> {
-    let nonce = JointNonce::new(key, quorum, shares.threshold, rng)?;
+    joint_prove_opening_with(
+        key,
+        shares,
+        quorum,
+        transcript,
+        faulty,
+        Relation::General,
+        rng,
+    )
+}
+
+/// Assemble a proof that the shared commitment is a pure power of `h`, verified
+/// by `qomm_zk::sigma::verify_zero_opening`. The reconciliation against a
+/// register is proved this way.
+pub fn joint_prove_zero_opening<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    shares: &ShareSet,
+    quorum: &[PartyId],
+    transcript: &mut Transcript,
+    faulty: Option<&BTreeMap<PartyId, (Scalar, Scalar)>>,
+    rng: &mut R,
+) -> Result<(OpeningProof, OpeningAssemblyTranscript), String> {
+    joint_prove_opening_with(key, shares, quorum, transcript, faulty, Relation::Zero, rng)
+}
+
+fn joint_prove_opening_with<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    shares: &ShareSet,
+    quorum: &[PartyId],
+    transcript: &mut Transcript,
+    faulty: Option<&BTreeMap<PartyId, (Scalar, Scalar)>>,
+    relation: Relation,
+    rng: &mut R,
+) -> Result<(OpeningProof, OpeningAssemblyTranscript), String> {
+    let nonce = JointNonce::new_with(key, quorum, shares.threshold, relation, rng)?;
     let partial_commitments = quorum
         .iter()
         .map(|party| Ok((*party, node_commitment(key, &nonce, *party)?)))
         .collect::<Result<BTreeMap<_, _>, String>>()?;
     let t = combine_commitments(&partial_commitments)?;
+    frame(transcript, relation);
     let challenge = opening_challenge(transcript, &shares.commitment, &t);
     let mut partial_responses = quorum
         .iter()
@@ -584,8 +796,7 @@ pub fn joint_prove_opening<R: RngCore + CryptoRng>(
 }
 
 /// Assemble an opening when the enclosing circuit already carries shares and
-/// no separate VSS ladder is available. This is the range-linkage and winner
-/// opening primitive; it still emits an ordinary [`OpeningProof`].
+/// no separate VSS ladder is available. It emits an ordinary [`OpeningProof`].
 #[allow(clippy::too_many_arguments)]
 pub fn joint_opening_from_shares<R: RngCore + CryptoRng>(
     key: &Pedersen,
@@ -597,6 +808,58 @@ pub fn joint_opening_from_shares<R: RngCore + CryptoRng>(
     transcript: &mut Transcript,
     rng: &mut R,
 ) -> Result<(OpeningProof, OpeningAssemblyTranscript), String> {
+    joint_opening_from_shares_with(
+        key,
+        commitment,
+        value_shares,
+        blinding_shares,
+        threshold,
+        quorum,
+        transcript,
+        Relation::General,
+        rng,
+    )
+}
+
+/// The zero-relation form of [`joint_opening_from_shares`]: the shared
+/// commitment is a pure power of `h`. This is the range-linkage and winner
+/// opening primitive.
+#[allow(clippy::too_many_arguments)]
+pub fn joint_zero_opening_from_shares<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    commitment: &RistrettoPoint,
+    value_shares: &ScalarShares,
+    blinding_shares: &ScalarShares,
+    threshold: usize,
+    quorum: &[PartyId],
+    transcript: &mut Transcript,
+    rng: &mut R,
+) -> Result<(OpeningProof, OpeningAssemblyTranscript), String> {
+    joint_opening_from_shares_with(
+        key,
+        commitment,
+        value_shares,
+        blinding_shares,
+        threshold,
+        quorum,
+        transcript,
+        Relation::Zero,
+        rng,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn joint_opening_from_shares_with<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    commitment: &RistrettoPoint,
+    value_shares: &ScalarShares,
+    blinding_shares: &ScalarShares,
+    threshold: usize,
+    quorum: &[PartyId],
+    transcript: &mut Transcript,
+    relation: Relation,
+    rng: &mut R,
+) -> Result<(OpeningProof, OpeningAssemblyTranscript), String> {
     let shares = ShareSet {
         commitment: *commitment,
         value_shares: value_shares.clone(),
@@ -604,12 +867,13 @@ pub fn joint_opening_from_shares<R: RngCore + CryptoRng>(
         threshold,
         coefficient_commitments: Vec::new(),
     };
-    let nonce = JointNonce::new(key, quorum, threshold, rng)?;
+    let nonce = JointNonce::new_with(key, quorum, threshold, relation, rng)?;
     let partial_commitments = quorum
         .iter()
         .map(|party| Ok((*party, node_commitment(key, &nonce, *party)?)))
         .collect::<Result<BTreeMap<_, _>, String>>()?;
     let t = combine_commitments(&partial_commitments)?;
+    frame(transcript, relation);
     let challenge = opening_challenge(transcript, commitment, &t);
     let partial_responses = quorum
         .iter()
@@ -646,6 +910,54 @@ pub fn joint_opening_from_contributions<R: RngCore + CryptoRng>(
     transcript: &mut Transcript,
     rng: &mut R,
 ) -> Result<(OpeningProof, OpeningAssemblyTranscript), String> {
+    joint_opening_from_contributions_with(
+        key,
+        commitment,
+        contributions,
+        threshold,
+        quorum,
+        transcript,
+        Relation::General,
+        rng,
+    )
+}
+
+/// The zero-relation form of [`joint_opening_from_contributions`]: the
+/// commitment is a pure power of `h`. Used for range linkages and for the quote
+/// proof's "the winner opens to the published value" step.
+#[allow(clippy::too_many_arguments)]
+pub fn joint_zero_opening_from_contributions<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    commitment: &RistrettoPoint,
+    contributions: &[OpeningNodeContribution],
+    threshold: usize,
+    quorum: &[PartyId],
+    transcript: &mut Transcript,
+    rng: &mut R,
+) -> Result<(OpeningProof, OpeningAssemblyTranscript), String> {
+    joint_opening_from_contributions_with(
+        key,
+        commitment,
+        contributions,
+        threshold,
+        quorum,
+        transcript,
+        Relation::Zero,
+        rng,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn joint_opening_from_contributions_with<R: RngCore + CryptoRng>(
+    key: &Pedersen,
+    commitment: &RistrettoPoint,
+    contributions: &[OpeningNodeContribution],
+    threshold: usize,
+    quorum: &[PartyId],
+    transcript: &mut Transcript,
+    relation: Relation,
+    rng: &mut R,
+) -> Result<(OpeningProof, OpeningAssemblyTranscript), String> {
     if contributions.len() != quorum.len() {
         return Err(format!(
             "received {} opening contributions for a quorum of {}",
@@ -662,31 +974,41 @@ pub fn joint_opening_from_contributions<R: RngCore + CryptoRng>(
     {
         return Err("opening contributions do not exactly match the quorum".into());
     }
-    let (nonce_nodes, nonce_seals) = joint_scalar_nodes(key, quorum, threshold, 2, rng)?;
+    let slots = if relation == Relation::Zero { 1 } else { 2 };
+    let (nonce_nodes, nonce_seals) = joint_scalar_nodes(key, quorum, threshold, slots, rng)?;
+    let value_slot =
+        |nonce: &crate::threshold_gadgets::NodeContributions| -> Result<Scalar, String> {
+            if relation == Relation::Zero {
+                Ok(Scalar::ZERO)
+            } else {
+                nonce
+                    .share(0)
+                    .ok_or_else(|| "opening nonce omitted its value slot".to_string())
+            }
+        };
+    let blinding_slot =
+        |nonce: &crate::threshold_gadgets::NodeContributions| -> Result<Scalar, String> {
+            nonce
+                .share(if relation == Relation::Zero { 0 } else { 1 })
+                .ok_or_else(|| "opening nonce omitted its blinding slot".to_string())
+        };
     let partial_commitments = nonce_nodes
         .iter()
         .map(|nonce| {
-            let k = nonce
-                .share(0)
-                .ok_or("opening nonce omitted its value slot")?;
-            let rho = nonce
-                .share(1)
-                .ok_or("opening nonce omitted its blinding slot")?;
+            let k = value_slot(nonce)?;
+            let rho = blinding_slot(nonce)?;
             Ok((nonce.party(), key.commit(&k, &rho)))
         })
         .collect::<Result<BTreeMap<_, _>, String>>()?;
     let t = combine_commitments(&partial_commitments)?;
+    frame(transcript, relation);
     let challenge = opening_challenge(transcript, commitment, &t);
     let partial_responses = nonce_nodes
         .iter()
         .map(|nonce| {
             let node = by_party[&nonce.party()];
-            let k = nonce
-                .share(0)
-                .ok_or("opening nonce omitted its value slot")?;
-            let rho = nonce
-                .share(1)
-                .ok_or("opening nonce omitted its blinding slot")?;
+            let k = value_slot(nonce)?;
+            let rho = blinding_slot(nonce)?;
             Ok((
                 nonce.party(),
                 (

@@ -14,7 +14,7 @@ use curve25519_dalek::traits::Identity;
 use qomm_zk::bitrange::{bit_context, component_transcript, suffixed_context};
 use qomm_zk::pedersen::Pedersen;
 use qomm_zk::sigma::{
-    opening_challenge, product_challenge, verify_opening, OpeningProof, ProductProof,
+    opening_challenge, product_challenge, verify_zero_opening, OpeningProof, ProductProof,
 };
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
@@ -24,7 +24,7 @@ use crate::threshold_gadgets::{
     verify_square_bit, NodeShared, ProductAssemblyTranscript, ProductNodeContribution, Shared,
 };
 use crate::threshold_sigma::{
-    combine_commitments, deal, joint_opening_from_contributions, lagrange_at_zero,
+    combine_commitments, deal, joint_zero_opening_from_contributions, lagrange_at_zero,
     share_commitment, share_scalar, OpeningAssemblyTranscript, OpeningNodeContribution, PartyId,
     ScalarShares,
 };
@@ -505,7 +505,10 @@ pub fn prepare_range_round1<R: RngCore + CryptoRng>(
         .zip(&shares.bits)
         .map(|((value, _, relation), bit)| bit.shared.commitment() * value + key.h * relation)
         .collect();
-    let linkage_nonce = (Scalar::random(&mut *rng), Scalar::random(&mut *rng));
+    // The linkage is a zero-relation opening: no value nonce, so the combined
+    // first move is a pure power of h and the assembled value response is
+    // c * (residual value), which is zero exactly when the bits sum to the value.
+    let linkage_nonce = (Scalar::ZERO, Scalar::random(&mut *rng));
     let context_digest: [u8; 32] = Sha256::digest(context).into();
     let message = RangeRound1 {
         party: shares.party,
@@ -648,6 +651,7 @@ pub fn make_range_challenge(
     let residual = statement.commitment - aggregate;
     let link_context = suffixed_context(context, b":link");
     let mut transcript = component_transcript(&link_context);
+    transcript.append_message(b"relation", b"zero-opening:v2");
     let linkage_challenge = opening_challenge(&mut transcript, &residual, &linkage);
     Ok(RangeChallenge {
         quorum: quorum.to_vec(),
@@ -1033,7 +1037,7 @@ pub fn joint_prove_range_from_contributions<R: RngCore + CryptoRng>(
         .collect::<Vec<_>>();
     let link_context = suffixed_context(context, b":link");
     let mut transcript = component_transcript(&link_context);
-    let (linkage, linkage_partials) = joint_opening_from_contributions(
+    let (linkage, linkage_partials) = joint_zero_opening_from_contributions(
         key,
         &residual,
         &opening_contributions,
@@ -1095,5 +1099,5 @@ pub fn verify_threshold_range(
     let residual = commitment - aggregate;
     let link_context = suffixed_context(context, b":link");
     let mut transcript = component_transcript(&link_context);
-    verify_opening(key, &mut transcript, &residual, &proof.linkage)
+    verify_zero_opening(key, &mut transcript, &residual, &proof.linkage)
 }

@@ -19,8 +19,8 @@ use qomm_dsl::rule::Rule;
 use qomm_zk::pedersen::Pedersen;
 use qomm_zk::range::RangeCtx;
 use qomm_zk::sigma::{
-    prove_bit, prove_opening, prove_product, verify_bit, verify_opening, verify_product, BitProof,
-    OpeningProof, ProductProof,
+    prove_bit, prove_product, prove_zero_opening, verify_bit, verify_product, verify_zero_opening,
+    BitProof, OpeningProof, ProductProof,
 };
 use rand_core::{CryptoRng, RngCore};
 
@@ -68,11 +68,20 @@ pub enum Step {
         proof: Box<BitProof>,
         tag: Vec<u8>,
     },
-    /// A committed difference opens to a value the verifier can reconstruct.
+    /// A committed difference is zero: a pure power of `h`.
     Equality {
         label: String,
         commitment: RistrettoPoint,
         proof: Box<OpeningProof>,
+        tag: Vec<u8>,
+    },
+    /// A committed difference is not zero: it has an inverse, and the product
+    /// of the two commitments is pinned to `g`, a commitment to one.
+    Inequality {
+        label: String,
+        commitment: RistrettoPoint,
+        inverse: RistrettoPoint,
+        proof: Box<ProductProof>,
         tag: Vec<u8>,
     },
 }
@@ -84,6 +93,7 @@ impl Step {
             Step::Range { .. } => "range",
             Step::Bit { .. } => "bit",
             Step::Equality { .. } => "equality",
+            Step::Inequality { .. } => "inequality",
         }
     }
 }
@@ -300,11 +310,10 @@ impl RuleProver {
             tag: pin_tag,
         });
         let zero_tag = [tag, b":zero"].concat();
-        let opening = prove_opening(
+        let opening = prove_zero_opening(
             &self.key,
             &mut transcript(&zero_tag),
             &zero_commitment,
-            &Scalar::ZERO,
             &zero_blinding,
             rng,
         );
@@ -521,28 +530,56 @@ impl RuleProver {
         rng: &mut R,
     ) -> Result<Wire, RuleError> {
         let result = match op {
-            // Equality is decided by opening a difference, so no range is involved.
+            // Equality is a zero-opening of the difference; inequality is an
+            // inverse, proved as a product pinned to a commitment to one. Like
+            // the orderings below, a comparison the rule requires must hold:
+            // a general opening of the difference would verify for any value
+            // and bind nothing.
             Cmp::Eq | Cmp::Ne => {
                 let diff = self.difference(left, right);
-                let opening = prove_opening(
-                    &self.key,
-                    &mut transcript(&tag),
-                    &diff.commitment,
-                    &scalar(diff.value),
-                    &diff.blinding,
-                    rng,
-                );
-                steps.push(Step::Equality {
-                    label: label.into(),
-                    commitment: diff.commitment,
-                    proof: Box::new(opening),
-                    tag: tag.clone(),
-                });
-                i128::from(if matches!(op, Cmp::Eq) {
-                    diff.value == 0
+                let equal = diff.value == 0;
+                if equal != matches!(op, Cmp::Eq) {
+                    return Err(RuleError(
+                        "a comparison the rule requires to hold does not".into(),
+                    ));
+                }
+                if equal {
+                    let opening = prove_zero_opening(
+                        &self.key,
+                        &mut transcript(&tag),
+                        &diff.commitment,
+                        &diff.blinding,
+                        rng,
+                    );
+                    steps.push(Step::Equality {
+                        label: label.into(),
+                        commitment: diff.commitment,
+                        proof: Box::new(opening),
+                        tag: tag.clone(),
+                    });
                 } else {
-                    diff.value != 0
-                })
+                    let inverse = scalar(diff.value).invert();
+                    let inverse_blinding = Scalar::random(rng);
+                    let proof = prove_product(
+                        &self.key,
+                        &mut transcript(&tag),
+                        &diff.commitment,
+                        &scalar(diff.value),
+                        &diff.blinding,
+                        &inverse,
+                        &inverse_blinding,
+                        &Scalar::ZERO,
+                        rng,
+                    );
+                    steps.push(Step::Inequality {
+                        label: label.into(),
+                        commitment: diff.commitment,
+                        inverse: self.key.commit(&inverse, &inverse_blinding),
+                        proof: Box::new(proof),
+                        tag: tag.clone(),
+                    });
+                }
+                1
             }
             // An ordering is "the difference is not negative", one range proof.
             _ => {
@@ -788,7 +825,21 @@ impl RuleVerifier {
                     proof,
                     tag,
                     ..
-                } => verify_opening(&self.key, &mut transcript(tag), commitment, proof),
+                } => verify_zero_opening(&self.key, &mut transcript(tag), commitment, proof),
+                Step::Inequality {
+                    commitment,
+                    inverse,
+                    proof,
+                    tag,
+                    ..
+                } => verify_product(
+                    &self.key,
+                    &mut transcript(tag),
+                    commitment,
+                    inverse,
+                    &self.key.g,
+                    proof,
+                ),
             };
             if !ok {
                 return Err(format!("a {} step of the audit failed", step.kind()));

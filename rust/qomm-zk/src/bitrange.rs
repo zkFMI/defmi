@@ -12,7 +12,9 @@ use merlin::Transcript;
 use rand_core::{CryptoRng, RngCore};
 
 use crate::pedersen::Pedersen;
-use crate::sigma::{prove_bit, prove_opening, verify_bit, verify_opening, BitProof, OpeningProof};
+use crate::sigma::{
+    prove_bit, prove_zero_opening, verify_bit, verify_zero_opening, BitProof, OpeningProof,
+};
 
 const TRANSCRIPT_DOMAIN: &[u8] = b"qomm:bitrange:v1";
 
@@ -126,14 +128,9 @@ pub fn prove_range<R: RngCore + CryptoRng>(
     let residual_blinding = blinding - combined_blinding;
     let link_context = suffixed_context(context, b":link");
     let mut transcript = component_transcript(&link_context);
-    let linkage = prove_opening(
-        key,
-        &mut transcript,
-        &residual,
-        &Scalar::ZERO,
-        &residual_blinding,
-        rng,
-    );
+    // A zero-relation opening: a general opening of the residual would verify
+    // for bits of any value, so it would link nothing.
+    let linkage = prove_zero_opening(key, &mut transcript, &residual, &residual_blinding, rng);
 
     Ok(RangeProof {
         bit_commitments,
@@ -178,7 +175,7 @@ pub fn verify_range(
     let residual = commitment - aggregate;
     let link_context = suffixed_context(context, b":link");
     let mut transcript = component_transcript(&link_context);
-    verify_opening(key, &mut transcript, &residual, &proof.linkage)
+    verify_zero_opening(key, &mut transcript, &residual, &proof.linkage)
 }
 
 fn scalar_from_i64(value: i64) -> Scalar {

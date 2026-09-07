@@ -383,3 +383,49 @@ fn distributed_rounds_never_send_raw_shares_to_the_assembler() {
         b"distributed"
     ));
 }
+
+/// Regression for the 2026-09-07 finding. The linkage is a zero-relation
+/// opening: an honest quorum's assembled value response is exactly zero, and a
+/// proof whose linkage carries any other value response is refused, so a
+/// general opening of the residual (which anyone holding the openings can make
+/// for a commitment to a value outside the range) no longer links.
+#[test]
+fn the_linkage_is_a_zero_relation_opening() {
+    let key = Pedersen::new(b"qomm:quote:v1");
+    let shares = deal_bits(
+        &key,
+        44,
+        &Scalar::random(&mut OsRng),
+        8,
+        &PARTIES,
+        T,
+        &mut OsRng,
+    )
+    .unwrap();
+    let (proof, _) = prove_range_from_nodes(&key, &shares, &[1, 2, 3], b"ctx", &mut OsRng).unwrap();
+    assert_eq!(
+        proof.linkage.z_value,
+        Scalar::ZERO,
+        "an honest linkage has no value response"
+    );
+    assert!(verify_threshold_range(
+        &key,
+        &shares.commitment,
+        &proof,
+        b"ctx"
+    ));
+
+    // The same bits do not link to a commitment of another value, whatever the
+    // value response claims.
+    let other = shares.commitment + key.g * Scalar::from(256u64);
+    assert!(!verify_threshold_range(&key, &other, &proof, b"ctx"));
+    let mut forged = proof.clone();
+    forged.linkage.z_value = Scalar::from(256u64);
+    assert!(!verify_threshold_range(&key, &other, &forged, b"ctx"));
+    assert!(!verify_threshold_range(
+        &key,
+        &shares.commitment,
+        &forged,
+        b"ctx"
+    ));
+}

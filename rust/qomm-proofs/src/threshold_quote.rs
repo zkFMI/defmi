@@ -37,9 +37,9 @@ use crate::threshold_range::{
     RangeRound1Secret, RangeRound2, RangeStatement, ThresholdRangeProof, ValueShares,
 };
 use crate::threshold_sigma::{
-    answer_opening_challenge, assemble_opening_from_rounds_with_transcript, deal,
-    joint_opening_from_contributions, make_opening_challenge_with_transcript,
-    prepare_opening_round1, share_scalar, OpeningAssemblyTranscript, OpeningChallenge,
+    answer_opening_challenge, assemble_zero_opening_from_rounds_with_transcript, deal,
+    joint_zero_opening_from_contributions, make_zero_opening_challenge_with_transcript,
+    prepare_zero_opening_round1, share_scalar, OpeningAssemblyTranscript, OpeningChallenge,
     OpeningNodeContribution, OpeningRound1, OpeningRound1Seal, OpeningRound1Secret, OpeningRound2,
     PartyId, ScalarShares,
 };
@@ -1464,7 +1464,7 @@ impl QuoteNodeContribution {
         let winner = self.winner_contribution(circuit)?;
         let winner_context = winner_round_context(&proof_context);
         let (winner_seal, winner_secret, winner_round) =
-            prepare_opening_round1(&circuit.key, &winner, &winner_context, &mut *rng);
+            prepare_zero_opening_round1(&circuit.key, &winner, &winner_context, &mut *rng);
         Ok((
             QuoteRound1Seals {
                 party: self.party,
@@ -1643,7 +1643,7 @@ pub fn make_quote_challenges(
     let winner = winner_statement(circuit, statement)?;
     let winner_context = winner_round_context(&proof_context);
     let mut winner_transcript = QuoteCircuit::whole(&proof_context, "winner");
-    let winner_challenge = make_opening_challenge_with_transcript(
+    let winner_challenge = make_zero_opening_challenge_with_transcript(
         &winner.commitment,
         &rounds
             .iter()
@@ -1757,7 +1757,7 @@ pub fn assemble_quote_from_rounds(
     let winner = winner_statement(circuit, statement)?;
     let winner_context = winner_round_context(&proof_context);
     let mut winner_transcript = QuoteCircuit::whole(&proof_context, "winner");
-    let winner_opening = assemble_opening_from_rounds_with_transcript(
+    let winner_opening = assemble_zero_opening_from_rounds_with_transcript(
         &circuit.key,
         &winner.commitment,
         &winner.coefficient_commitments,
@@ -2712,7 +2712,7 @@ pub fn joint_prove_quote<R: RngCore + CryptoRng>(
     let winner_commitment = first.key_wires[first.winner_index]
         .shifted(&circuit.key, &-Scalar::from(first.winner_value))
         .commitment();
-    let (winner_opening, winner_partials) = joint_opening_from_contributions(
+    let (winner_opening, winner_partials) = joint_zero_opening_from_contributions(
         &circuit.key,
         &winner_commitment,
         &winner_contributions,

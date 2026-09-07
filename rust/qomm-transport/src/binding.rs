@@ -23,8 +23,8 @@ pub use qomm_proofs::threshold_range::{
     RangeAssemblyTranscript, ThresholdRangeProof, ValueShares,
 };
 pub use qomm_proofs::threshold_sigma::{
-    audit_partials, joint_opening_from_shares, joint_prove_opening, OpeningAssemblyTranscript,
-    ScalarShares,
+    audit_partials, joint_opening_from_shares, joint_prove_opening, joint_prove_zero_opening,
+    joint_zero_opening_from_shares, OpeningAssemblyTranscript, ScalarShares,
 };
 
 #[derive(Clone, Debug)]

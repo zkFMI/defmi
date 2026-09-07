@@ -42,8 +42,8 @@ use merlin::Transcript;
 use qomm_zk::pedersen::Pedersen;
 use qomm_zk::range::RangeCtx;
 use qomm_zk::sigma::{
-    prove_bit, prove_opening, prove_product, verify_bit, verify_opening, verify_product, BitProof,
-    OpeningProof, ProductProof,
+    prove_bit, prove_product, prove_zero_opening, verify_bit, verify_product, verify_zero_opening,
+    BitProof, OpeningProof, ProductProof,
 };
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
@@ -1082,11 +1082,10 @@ is a policy invented now");
         // verify. Proving that C_winner - g^value is a pure power of h says the
         // commitment opens to this value and no other, at the same cost.
         let residual = key.shift(&key_commitments[winner], value);
-        let winner_opening = prove_opening(
+        let winner_opening = prove_zero_opening(
             key,
             &mut Self::whole(&proof_context, "winner"),
             &residual,
-            &Scalar::ZERO,
             &key_blindings[winner],
             rng,
         );
@@ -1354,7 +1353,7 @@ is a policy invented now");
             &proof.key_commitments[proof.winner_index],
             proof.winner_value,
         );
-        if !verify_opening(
+        if !verify_zero_opening(
             key,
             &mut Self::whole(&proof_context, "winner"),
             &residual,

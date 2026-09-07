@@ -1,6 +1,6 @@
 # Soundness finding: general opening proofs where a zero-opening is required
 
-Date: 2026-09-07. Status: **open, not fixed**. Found while writing the
+Date: 2026-09-07. Status: **fixed the same day** in all three copies (zkpi, defmi, qomm): every site below now uses the zero-relation opening, the threshold assembly gives the linkage and winner nonces no value component (`threshold_sigma::Relation::Zero`), the rule audit proves `!=` as an inverse pinned to a commitment to one, and the tests below pass as regressions. Original status at discovery: open. Found while writing the
 zkfmi.com page "Cryptography in use"; confirmed by the two tests below, run
 against `defmi/rust` at HEAD on the day (both fail, i.e. both forgeries are
 accepted). Tests were run locally on macOS; nothing in the repository was
@@ -68,7 +68,7 @@ step is.
    codex PQC branches, which carry these crates.
 8. Add the two tests below (they must then pass) and a threshold variant.
 
-## Tests (currently failing = forgery accepted)
+## Tests (failing at discovery, passing after the fix)
 
 `qomm-defmi/tests/reconcile_forgery.rs`:
 

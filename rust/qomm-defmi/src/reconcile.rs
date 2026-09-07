@@ -44,7 +44,7 @@ use curve25519_dalek::traits::{Identity, VartimeMultiscalarMul};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use merlin::Transcript;
 use qomm_zk::pedersen::Pedersen;
-use qomm_zk::sigma::{prove_opening, verify_opening, OpeningProof};
+use qomm_zk::sigma::{prove_zero_opening, verify_zero_opening, OpeningProof};
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
 
@@ -130,7 +130,9 @@ pub fn prove<R: RngCore + CryptoRng>(
     let combined: Scalar = blindings.iter().sum();
     let point = residual(key, commitments, attestation.total);
     let mut transcript = attestation.transcript();
-    let proof = prove_opening(key, &mut transcript, &point, &Scalar::ZERO, &combined, rng);
+    // The residual must be a pure power of h. A general opening proof of it is
+    // satisfiable for any total by whoever holds the blindings.
+    let proof = prove_zero_opening(key, &mut transcript, &point, &combined, rng);
     Ok(Reconciliation {
         attestation: attestation.clone(),
         positions: commitments.len(),
@@ -167,7 +169,7 @@ pub fn check(
     }
     let point = residual(key, commitments, attestation.total);
     let mut transcript = attestation.transcript();
-    if !verify_opening(key, &mut transcript, &point, &reconciliation.proof) {
+    if !verify_zero_opening(key, &mut transcript, &point, &reconciliation.proof) {
         return Err(format!(
             "the committed balances do not sum to {}: a break, \
                             and this says nothing about where",
