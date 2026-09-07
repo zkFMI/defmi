@@ -1005,6 +1005,91 @@ dependencies = [
 ]
 
 [[package]]
+name = "defmi"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bulletproofs",
+ "clear_on_drop",
+ "curve25519-dalek 4.1.3",
+ "dekyx-core",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "libc",
+ "merlin",
+ "openssl",
+ "qomm-batch-audit",
+ "qomm-proofs",
+ "qomm-transport",
+ "rand 0.8.8",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 1.0.69",
+ "triptych",
+ "zeroize",
+ "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-measure",
+ "zkfmi-zk",
+ "zkpi",
+]
+
+[[package]]
+name = "defmi-avalanche-vm"
+version = "0.1.0"
+dependencies = [
+ "avalanche-rpcchainvm-qomm",
+ "base64",
+ "bs58",
+ "curve25519-dalek 4.1.3",
+ "defmi",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "merlin",
+ "prost-types",
+ "qomm-proofs",
+ "qomm-transport",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tonic",
+ "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-zk",
+ "zkpi",
+]
+
+[[package]]
+name = "defmi-harness"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "curve25519-dalek 4.1.3",
+ "defmi",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "libc",
+ "merlin",
+ "qomm-proofs",
+ "qomm-sim",
+ "qomm-transport",
+ "rand 0.8.8",
+ "rand_core 0.6.4",
+ "serde_json",
+ "sha2 0.10.9",
+ "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-measure",
+ "zkfmi-zk",
+ "zkpi",
+]
+
+[[package]]
 name = "defmt"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1047,7 +1132,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.20",
- "zkfmi-crypto",
+ "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=26ebfe96563a05c3379219f7fdacea137ab5fb4f)",
 ]
 
 [[package]]
@@ -3751,49 +3836,20 @@ dependencies = [
 [[package]]
 name = "qomm-audit"
 version = "0.1.0"
-source = "git+https://github.com/zkFMI/zkpi.git?rev=6228efed75648ac546cd5926797c847deb681dff#6228efed75648ac546cd5926797c847deb681dff"
+source = "git+https://github.com/zkFMI/zkpi.git?rev=38baa1a86bedd2b47d7439c57412d25a20f9c405#38baa1a86bedd2b47d7439c57412d25a20f9c405"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "hex",
  "libc",
  "qomm-proofs",
- "qomm-zk",
  "rand 0.8.8",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 1.0.69",
- "zkfmi-crypto",
-]
-
-[[package]]
-name = "qomm-avalanche-vm"
-version = "0.1.0"
-dependencies = [
- "avalanche-rpcchainvm-qomm",
- "base64",
- "bs58",
- "curve25519-dalek 4.1.3",
- "ed25519-dalek 2.2.0",
- "hex",
- "merlin",
- "prost-types",
- "qomm-defmi",
- "qomm-proofs",
- "qomm-transport",
- "qomm-zk",
- "qomm-zkpi",
- "rand_chacha 0.3.1",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tonic",
- "zkfmi-crypto",
+ "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-zk",
 ]
 
 [[package]]
@@ -3804,121 +3860,60 @@ dependencies = [
  "miden-vm",
  "serde",
  "serde_json",
- "zkfmi-crypto",
-]
-
-[[package]]
-name = "qomm-defmi"
-version = "0.1.0"
-dependencies = [
- "base64",
- "bulletproofs",
- "clear_on_drop",
- "curve25519-dalek 4.1.3",
- "dekyx-core",
- "ed25519-dalek 2.2.0",
- "hex",
- "libc",
- "merlin",
- "openssl",
- "qomm-batch-audit",
- "qomm-measure",
- "qomm-proofs",
- "qomm-transport",
- "qomm-zk",
- "qomm-zkpi",
- "rand 0.8.8",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 1.0.69",
- "triptych",
- "zeroize",
- "zkfmi-crypto",
+ "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=26ebfe96563a05c3379219f7fdacea137ab5fb4f)",
 ]
 
 [[package]]
 name = "qomm-dsl"
 version = "0.1.0"
-source = "git+https://github.com/zkFMI/zkpi.git?rev=6228efed75648ac546cd5926797c847deb681dff#6228efed75648ac546cd5926797c847deb681dff"
+source = "git+https://github.com/zkFMI/zkpi.git?rev=38baa1a86bedd2b47d7439c57412d25a20f9c405#38baa1a86bedd2b47d7439c57412d25a20f9c405"
 dependencies = [
  "sha2 0.10.9",
 ]
-
-[[package]]
-name = "qomm-harness"
-version = "0.1.0"
-dependencies = [
- "base64",
- "curve25519-dalek 4.1.3",
- "ed25519-dalek 2.2.0",
- "hex",
- "libc",
- "merlin",
- "qomm-defmi",
- "qomm-measure",
- "qomm-proofs",
- "qomm-sim",
- "qomm-transport",
- "qomm-zk",
- "qomm-zkpi",
- "rand 0.8.8",
- "rand_core 0.6.4",
- "serde_json",
- "sha2 0.10.9",
- "zkfmi-crypto",
-]
-
-[[package]]
-name = "qomm-measure"
-version = "0.1.0"
-source = "git+https://github.com/zkFMI/zkpi.git?rev=6228efed75648ac546cd5926797c847deb681dff#6228efed75648ac546cd5926797c847deb681dff"
 
 [[package]]
 name = "qomm-mpc"
 version = "0.1.0"
-source = "git+https://github.com/zkFMI/zkpi.git?rev=6228efed75648ac546cd5926797c847deb681dff#6228efed75648ac546cd5926797c847deb681dff"
+source = "git+https://github.com/zkFMI/zkpi.git?rev=38baa1a86bedd2b47d7439c57412d25a20f9c405#38baa1a86bedd2b47d7439c57412d25a20f9c405"
 dependencies = [
  "qomm-dsl",
- "qomm-measure",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "zkfmi-measure",
 ]
 
 [[package]]
 name = "qomm-proofs"
 version = "0.1.0"
-source = "git+https://github.com/zkFMI/zkpi.git?rev=6228efed75648ac546cd5926797c847deb681dff#6228efed75648ac546cd5926797c847deb681dff"
+source = "git+https://github.com/zkFMI/zkpi.git?rev=38baa1a86bedd2b47d7439c57412d25a20f9c405#38baa1a86bedd2b47d7439c57412d25a20f9c405"
 dependencies = [
  "bulletproofs",
  "curve25519-dalek 4.1.3",
  "ed25519-dalek 2.2.0",
  "merlin",
  "qomm-dsl",
- "qomm-zk",
  "rand_core 0.6.4",
  "serde",
  "sha2 0.10.9",
  "zeroize",
- "zkfmi-crypto",
+ "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-zk",
 ]
 
 [[package]]
 name = "qomm-sim"
 version = "0.1.0"
-source = "git+https://github.com/zkFMI/zkpi.git?rev=6228efed75648ac546cd5926797c847deb681dff#6228efed75648ac546cd5926797c847deb681dff"
+source = "git+https://github.com/zkFMI/zkpi.git?rev=38baa1a86bedd2b47d7439c57412d25a20f9c405#38baa1a86bedd2b47d7439c57412d25a20f9c405"
 dependencies = [
- "qomm-measure",
+ "zkfmi-measure",
 ]
 
 [[package]]
 name = "qomm-transport"
 version = "0.1.0"
-source = "git+https://github.com/zkFMI/zkpi.git?rev=6228efed75648ac546cd5926797c847deb681dff#6228efed75648ac546cd5926797c847deb681dff"
+source = "git+https://github.com/zkFMI/zkpi.git?rev=38baa1a86bedd2b47d7439c57412d25a20f9c405#38baa1a86bedd2b47d7439c57412d25a20f9c405"
 dependencies = [
  "base64",
  "curve25519-dalek 4.1.3",
@@ -3932,8 +3927,6 @@ dependencies = [
  "qomm-dsl",
  "qomm-mpc",
  "qomm-proofs",
- "qomm-zk",
- "qomm-zkpi",
  "rand 0.8.8",
  "rand_core 0.6.4",
  "serde",
@@ -3941,39 +3934,9 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 1.0.69",
  "zeroize",
- "zkfmi-crypto",
-]
-
-[[package]]
-name = "qomm-zk"
-version = "0.1.0"
-source = "git+https://github.com/zkFMI/zkpi.git?rev=6228efed75648ac546cd5926797c847deb681dff#6228efed75648ac546cd5926797c847deb681dff"
-dependencies = [
- "bulletproofs",
- "curve25519-dalek 4.1.3",
- "merlin",
- "rand_core 0.6.4",
- "sha2 0.10.9",
- "subtle",
-]
-
-[[package]]
-name = "qomm-zkpi"
-version = "0.1.0"
-source = "git+https://github.com/zkFMI/zkpi.git?rev=6228efed75648ac546cd5926797c847deb681dff#6228efed75648ac546cd5926797c847deb681dff"
-dependencies = [
- "bulletproofs",
- "curve25519-dalek 4.1.3",
- "frost-core",
- "frost-ristretto255",
- "merlin",
- "qomm-proofs",
- "qomm-zk",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "zkfmi-crypto",
+ "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-zk",
+ "zkpi",
 ]
 
 [[package]]
@@ -5771,6 +5734,28 @@ dependencies = [
  "hkdf 0.12.4",
  "ml-dsa",
  "ml-kem",
+ "rand_core 0.6.4",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "toml 0.8.23",
+ "x25519-dalek 2.0.1",
+ "zeroize",
+]
+
+[[package]]
+name = "zkfmi-crypto"
+version = "0.1.0"
+source = "git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0#9a183c90b6ee6af17fce26ca4b235bdb543dc0a0"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "ed25519-dalek 2.2.0",
+ "getrandom 0.4.3",
+ "hkdf 0.12.4",
+ "ml-dsa",
+ "ml-kem",
  "openssl",
  "openssl-src",
  "rand_core 0.6.4",
@@ -5784,22 +5769,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "zkfmi-measure"
+version = "0.1.0"
+source = "git+https://github.com/zkFMI/zkpi.git?rev=38baa1a86bedd2b47d7439c57412d25a20f9c405#38baa1a86bedd2b47d7439c57412d25a20f9c405"
+
+[[package]]
+name = "zkfmi-zk"
+version = "0.1.0"
+source = "git+https://github.com/zkFMI/zkpi.git?rev=38baa1a86bedd2b47d7439c57412d25a20f9c405#38baa1a86bedd2b47d7439c57412d25a20f9c405"
+dependencies = [
+ "bulletproofs",
+ "curve25519-dalek 4.1.3",
+ "merlin",
+ "rand_core 0.6.4",
+ "sha2 0.10.9",
+ "subtle",
+]
+
+[[package]]
+name = "zkpi"
+version = "0.1.0"
+source = "git+https://github.com/zkFMI/zkpi.git?rev=38baa1a86bedd2b47d7439c57412d25a20f9c405#38baa1a86bedd2b47d7439c57412d25a20f9c405"
+dependencies = [
+ "bulletproofs",
+ "curve25519-dalek 4.1.3",
+ "frost-core",
+ "frost-ristretto255",
+ "merlin",
+ "qomm-proofs",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-zk",
+]
+
+[[package]]
 name = "zkpi-defmi-sdk"
 version = "0.1.0"
 dependencies = [
  "curve25519-dalek 4.1.3",
+ "defmi",
  "ed25519-dalek 2.2.0",
  "hex",
  "openssl",
- "qomm-defmi",
  "qomm-transport",
- "qomm-zk",
- "qomm-zkpi",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 1.0.69",
- "zkfmi-crypto",
+ "zkfmi-crypto 0.1.0 (git+https://github.com/zkFMI/zkfmi-crypto.git?rev=9a183c90b6ee6af17fce26ca4b235bdb543dc0a0)",
+ "zkfmi-zk",
+ "zkpi",
 ]
 
 [[package]]
