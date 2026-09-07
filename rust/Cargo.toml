@@ -10,7 +10,7 @@ license = "MIT"
 [workspace.dependencies]
 zkfmi-crypto = { git = "https://github.com/zkFMI/zkfmi-crypto.git", rev = "9a183c90b6ee6af17fce26ca4b235bdb543dc0a0" }
 defmi-avalanche-vm = { path = "defmi-avalanche-vm" }
-dekyx-core = { git = "https://github.com/zkFMI/dekyx.git", rev = "09c2c1a7295e8cab592aca6af2f89381c3c110ac" }
+dekyx-core = { git = "https://github.com/zkFMI/dekyx.git", rev = "4ea50f5c25482c680716622d39b008dd6e0645c8" }
 # Audited by Quarkslab (2019, commissioned by Tari Labs, 30 man-days) together
 # with subtle and bulletproofs. 4.1.3 is the first release carrying the fix for
 # RUSTSEC-2024-0344, a timing leak LLVM introduced into Scalar::sub, so the
