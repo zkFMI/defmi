@@ -45,7 +45,7 @@ PoCでは次を確認する。
 ## 1. ソースと基準試験を固定する
 
 ```sh
-git clone https://github.com/shukob/defmi.git
+git clone https://github.com/zkFMI/defmi.git
 cd defmi
 git checkout <社内で承認したcommit>
 git rev-parse HEAD
