@@ -28,7 +28,7 @@ avalanche = ["dep:openssl", "dep:dekyx-core", "zkfmi-crypto/tls"]
 public-audit = ["dep:qomm-batch-audit"]
 
 [dependencies]
-qomm-batch-audit = { path = "../../../zkpi/rust/qomm-batch-audit", optional = true }
+qomm-batch-audit = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8", optional = true }
 zkfmi-crypto.workspace = true
 zeroize = { version = "1.8", features = ["alloc"] }
 dekyx-core = { workspace = true, optional = true }
