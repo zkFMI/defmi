@@ -45,9 +45,13 @@ use std::collections::BTreeMap;
 
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::traits::Identity;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use qomm_zk::pedersen::encode;
 use sha2::{Digest, Sha256};
+use zkfmi_crypto::{
+    hybrid::signature::{HybridSigner, HybridVerifier},
+    key::KeyPurpose,
+    traits::{Signer, Verifier},
+};
 
 use crate::credit::{CreditCtx, CreditLine, Tranche, Waterfall};
 
@@ -90,8 +94,8 @@ impl Obligation {
 #[derive(Clone)]
 pub struct SignedObligation {
     pub obligation: Obligation,
-    pub by_payer: Signature,
-    pub by_payee: Signature,
+    pub by_payer: Vec<u8>,
+    pub by_payee: Vec<u8>,
 }
 
 /// A graph of obligations rewritten so every edge touches the house.
@@ -118,11 +122,11 @@ impl Novation {
 pub struct ClearingProvider {
     pub name: String,
     pub handle: Vec<u8>,
-    signing: SigningKey,
+    signing: HybridSigner,
 }
 
 impl ClearingProvider {
-    pub fn new(name: &str, handle: &[u8], signing: SigningKey) -> Self {
+    pub fn new(name: &str, handle: &[u8], signing: HybridSigner) -> Self {
         ClearingProvider {
             name: name.to_string(),
             handle: handle.to_vec(),
@@ -130,8 +134,8 @@ impl ClearingProvider {
         }
     }
 
-    pub fn verifying_key(&self) -> VerifyingKey {
-        self.signing.verifying_key()
+    pub fn public_key(&self) -> Vec<u8> {
+        self.signing.public_key()
     }
 
     /// Interpose this house between every pair. Two point additions an edge.
@@ -178,17 +182,20 @@ impl ClearingProvider {
     }
 
     /// That these were the trades --- the one claim that is not arithmetic.
-    pub fn attest(&self, novation: &Novation, cycle: &[u8]) -> Attestation {
+    pub fn attest(&self, novation: &Novation, cycle: &[u8]) -> Result<Attestation, &'static str> {
         let digest = attestation_digest(novation, cycle);
-        Attestation {
+        Ok(Attestation {
             provider: self.name.clone(),
             handle: self.handle.clone(),
             cycle: cycle.to_vec(),
             digest,
-            signature: self.signing.sign(&digest),
+            signature: self
+                .signing
+                .sign(KeyPurpose::Attestation, &digest)
+                .map_err(|_| "hybrid clearing attestation signing failed")?,
             edges: novation.edges(),
             asset: novation.asset.clone(),
-        }
+        })
     }
 }
 
@@ -197,7 +204,7 @@ pub struct Attestation {
     pub handle: Vec<u8>,
     pub cycle: Vec<u8>,
     pub digest: [u8; 32],
-    pub signature: Signature,
+    pub signature: Vec<u8>,
     pub edges: usize,
     pub asset: String,
 }
@@ -223,15 +230,19 @@ pub fn attestation_digest(novation: &Novation, cycle: &[u8]) -> [u8; 32] {
 /// Sign one obligation as one of its two parties.
 pub fn sign_obligation(
     obligation: &Obligation,
-    payer: &SigningKey,
-    payee: &SigningKey,
-) -> SignedObligation {
+    payer: &HybridSigner,
+    payee: &HybridSigner,
+) -> Result<SignedObligation, &'static str> {
     let body = obligation.body();
-    SignedObligation {
+    Ok(SignedObligation {
         obligation: obligation.clone(),
-        by_payer: payer.sign(&body),
-        by_payee: payee.sign(&body),
-    }
+        by_payer: payer
+            .sign(KeyPurpose::SettlementInstruction, &body)
+            .map_err(|_| "payer hybrid signing failed")?,
+        by_payee: payee
+            .sign(KeyPurpose::SettlementInstruction, &body)
+            .map_err(|_| "payee hybrid signing failed")?,
+    })
 }
 
 /// Whether both parties agreed to this edge.
@@ -240,15 +251,25 @@ pub fn sign_obligation(
 /// never reach a book.
 pub fn check_agreement(
     edge: &SignedObligation,
-    payer: &VerifyingKey,
-    payee: &VerifyingKey,
+    payer: &[u8],
+    payee: &[u8],
 ) -> Result<(), &'static str> {
     let body = edge.obligation.body();
-    payer
-        .verify(&body, &edge.by_payer)
+    HybridVerifier
+        .verify(
+            KeyPurpose::SettlementInstruction,
+            payer,
+            &body,
+            &edge.by_payer,
+        )
         .map_err(|_| "the payer did not sign this")?;
-    payee
-        .verify(&body, &edge.by_payee)
+    HybridVerifier
+        .verify(
+            KeyPurpose::SettlementInstruction,
+            payee,
+            &body,
+            &edge.by_payee,
+        )
         .map_err(|_| "the payee did not sign this")?;
     Ok(())
 }
@@ -319,13 +340,18 @@ pub fn check_novation(house: &[u8], novation: &Novation) -> Result<(), String> {
 pub fn check_attestation(
     attestation: &Attestation,
     novation: &Novation,
-    provider: &VerifyingKey,
+    provider: &[u8],
 ) -> Result<(), &'static str> {
     if attestation.digest != attestation_digest(novation, &attestation.cycle) {
         return Err("the attestation is over a different trade set");
     }
-    provider
-        .verify(&attestation.digest, &attestation.signature)
+    HybridVerifier
+        .verify(
+            KeyPurpose::Attestation,
+            provider,
+            &attestation.digest,
+            &attestation.signature,
+        )
         .map_err(|_| "not signed by that provider")
 }
 
@@ -422,7 +448,7 @@ impl ProviderWaterfall {
 
 struct Admitted {
     handle: Vec<u8>,
-    identity: VerifyingKey,
+    identity: Vec<u8>,
     margin: CreditLine,
     waterfall: ProviderWaterfall,
 }
@@ -484,7 +510,7 @@ impl ClearingRegistry {
             provider.name.clone(),
             Admitted {
                 handle: provider.handle.clone(),
-                identity: provider.verifying_key(),
+                identity: provider.public_key(),
                 margin,
                 waterfall,
             },
@@ -505,7 +531,7 @@ impl ClearingRegistry {
         &self,
         attestation: &Attestation,
         novation: &Novation,
-        parties: &BTreeMap<Vec<u8>, VerifyingKey>,
+        parties: &BTreeMap<Vec<u8>, Vec<u8>>,
     ) -> Result<(), String> {
         let entry = self
             .providers

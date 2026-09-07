@@ -21,7 +21,11 @@ const MAX_TYPED_BYTES: usize = 512 * 1024;
 const MAX_QUOTE_BYTES: usize = 768 * 1024;
 const MAX_LIMIT_BYTES: usize = 128 * 1024;
 const MAX_DVP_BYTES: usize = 256 * 1024;
-const MAX_EXECUTION_ATTESTATION_BYTES: usize = 16 * 1024;
+// The v2 seven-node execution bundle is fixed-width: a 32-byte header plus
+// seven 5,605-byte records carrying the complete Ed25519 + ML-DSA-65
+// application signature envelope. Keep this at the measured canonical wire
+// length so the input bound cannot admit trailing data.
+const MAX_EXECUTION_ATTESTATION_BYTES: usize = 39_267;
 const MAX_TAKER_MANDATE_BYTES: usize = 64 * 1024;
 const NO_FILL_DOMAIN: &[u8] = b"QOMM:DEFMI:MPC-NO-FILL-EVIDENCE:v1";
 const SETTLEMENT_EVIDENCE_DOMAIN: &[u8] = b"QOMM:DEFMI:PRODUCT-SETTLEMENT-EVIDENCE:v1";
@@ -128,12 +132,6 @@ impl ProductSettlementEvidence {
             "price-limit proof",
         )?;
         bounded(&self.dvp_proofs, MAX_DVP_BYTES, "DvP proof")?;
-        bounded(
-            &self.mpc_execution_attestations,
-            MAX_EXECUTION_ATTESTATION_BYTES,
-            "MPC execution attestations",
-        )?;
-
         let typed = qomm_zkpi::typed_wire::decode(&self.typed_instruction)
             .map_err(|error| format!("typed zkPI evidence is invalid: {error:?}"))?;
         if qomm_zkpi::typed_wire::encode(&typed) != self.typed_instruction {
@@ -154,10 +152,7 @@ impl ProductSettlementEvidence {
         if encode_dvp_proofs(&dvp)? != self.dvp_proofs {
             return Err("DvP proof is not canonically encoded".into());
         }
-        let executions = decode_execution_attestations(&self.mpc_execution_attestations)?;
-        if encode_execution_attestations(&executions)? != self.mpc_execution_attestations {
-            return Err("MPC execution attestations are not canonically encoded".into());
-        }
+        validate_execution_attestations(&self.mpc_execution_attestations)?;
         Ok(())
     }
 
@@ -182,5 +177,67 @@ impl ProductSettlementEvidence {
         hash.update(self.asset_link.announcement.compress().as_bytes());
         hash.update(self.asset_link.response.as_bytes());
         Ok(hash.finalize().into())
+    }
+}
+
+fn validate_execution_attestations(raw: &[u8]) -> Result<(), String> {
+    bounded(
+        raw,
+        MAX_EXECUTION_ATTESTATION_BYTES,
+        "MPC execution attestations",
+    )?;
+    let executions = decode_execution_attestations(raw)?;
+    if encode_execution_attestations(&executions)? != raw {
+        return Err("MPC execution attestations are not canonically encoded".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qomm_transport::{
+        application_crypto::{Signature, SigningKey},
+        order::{NodeExecutionAttestation, COMMITTEE_NODES, ZERO},
+    };
+
+    #[test]
+    fn hybrid_execution_bundle_fits_only_its_exact_fixed_bound() {
+        const LEGACY_ED25519_BOUND: usize = 16 * 1024;
+        let attestations = (0..COMMITTEE_NODES)
+            .map(|node| {
+                let key = SigningKey::from_bytes(&[node as u8 + 1; 64]);
+                let mut attestation = NodeExecutionAttestation {
+                    node: node as u16,
+                    slot: 7,
+                    lane: 1,
+                    batch_digest: [node as u8 + 10; 32],
+                    source_digest: [20; 32],
+                    state_generation: 1,
+                    frame_count: 1,
+                    input_count: 32,
+                    stdout_digest: [node as u8 + 30; 32],
+                    stderr_digest: [node as u8 + 40; 32],
+                    persistence_digest: [node as u8 + 50; 32],
+                    receipt_digest: ZERO,
+                    signature: Signature::from_bytes(&[]),
+                };
+                attestation.receipt_digest = attestation.recompute_receipt_digest().unwrap();
+                attestation.sign(&key).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let wire = encode_execution_attestations(&attestations).unwrap();
+
+        assert!(wire.len() > LEGACY_ED25519_BOUND);
+        assert_eq!(wire.len(), MAX_EXECUTION_ATTESTATION_BYTES);
+        validate_execution_attestations(&wire).unwrap();
+
+        let mut oversized = wire.clone();
+        oversized.push(0);
+        assert_eq!(
+            validate_execution_attestations(&oversized),
+            Err("MPC execution attestations size is outside the settlement bound".into())
+        );
+        assert!(validate_execution_attestations(&wire[..wire.len() - 1]).is_err());
     }
 }

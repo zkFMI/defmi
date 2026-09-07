@@ -6,6 +6,7 @@ license.workspace = true
 autobins = false
 
 [dependencies]
+zkfmi-crypto = { workspace = true, features = ["test-support"] }
 qomm-defmi.workspace = true
 qomm-measure.workspace = true
 qomm-proofs.workspace = true

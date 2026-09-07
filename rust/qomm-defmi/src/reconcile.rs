@@ -41,12 +41,12 @@
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::{Identity, VartimeMultiscalarMul};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use merlin::Transcript;
 use qomm_zk::pedersen::Pedersen;
 use qomm_zk::sigma::{prove_zero_opening, verify_zero_opening, OpeningProof};
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
+use zkfmi_crypto::{hybrid::signature::HybridVerifier, key::KeyPurpose, traits::Verifier};
 
 pub const RECONCILE_DOMAIN: &[u8] = b"QOMM:DEFMI:RECONCILE:v1";
 
@@ -63,7 +63,7 @@ pub struct Attestation {
     pub asset: String,
     pub total: u64,
     pub as_of: String,
-    pub signature: Option<Signature>,
+    pub signature: Option<Vec<u8>>,
 }
 
 impl Attestation {
@@ -145,7 +145,7 @@ pub fn check(
     key: &Pedersen,
     commitments: &[RistrettoPoint],
     reconciliation: &Reconciliation,
-    registrar: Option<&VerifyingKey>,
+    registrar: Option<&[u8]>,
 ) -> Result<(), String> {
     if commitments.len() != reconciliation.positions {
         return Err(format!(
@@ -156,8 +156,8 @@ pub fn check(
     }
     let attestation = &reconciliation.attestation;
     match (registrar, &attestation.signature) {
-        (Some(key), Some(signature)) => key
-            .verify(&attestation.body(), signature)
+        (Some(key), Some(signature)) => HybridVerifier
+            .verify(KeyPurpose::Attestation, key, &attestation.body(), signature)
             .map_err(|_| "the attestation is not signed by that registrar")?,
         (Some(_), None) => return Err("that registrar signed nothing here".into()),
         (None, Some(_)) => {

@@ -3,7 +3,6 @@
 use crate::HarnessResult;
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
 use qomm_defmi::assets::AssetRegistry;
 use qomm_defmi::netting::{
     prove_cash_reference, BatchAttestation, Cycle, Mode, Order, PositionBook,
@@ -151,7 +150,8 @@ pub fn one_cycle(
         holders.insert(handle, holder);
     }
     let committee = Committee::new(key.clone(), rng)?;
-    let batch_key = SigningKey::from_bytes(&[7u8; 32]);
+    let batch_key = zkfmi_crypto::hybrid::signature::HybridSigner::generate()
+        .map_err(|error| error.to_string())?;
     let mut cycle = Cycle::new(
         key.clone(),
         format!("harness-{seed}").into_bytes(),
@@ -160,7 +160,7 @@ pub fn one_cycle(
         cash_book,
         committee.venue(key.clone()),
         attest,
-        attest.then_some(batch_key.verifying_key()),
+        attest.then_some(zkfmi_crypto::traits::Signer::public_key(&batch_key)),
     )?;
     let handles = holders.keys().cloned().collect::<Vec<_>>();
     let mut state = seed.wrapping_add(1);
@@ -306,7 +306,9 @@ pub fn one_cycle(
         }
     }
     let close_build = started.elapsed().as_secs_f64() * 1e3;
-    let attestation = attest.then(|| BatchAttestation::sign(&batch_key, cycle.batch_digest()));
+    let attestation = attest
+        .then(|| BatchAttestation::sign(&batch_key, cycle.batch_digest()))
+        .transpose()?;
     let started = Instant::now();
     cycle.close(&securities_coverage, &cash_coverage, attestation.as_ref())?;
     let close_verify = started.elapsed().as_secs_f64() * 1e3;

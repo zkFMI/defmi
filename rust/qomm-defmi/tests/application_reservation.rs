@@ -115,10 +115,10 @@ fn dekyx_mandate_and_note_proofs_bind_without_a_circular_dependency() {
         committee_epoch: 1,
         amount_bits: 32,
     };
-    let participant = SigningKey::from_bytes(&[16; 32]);
+    let participant = zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap();
     let reserve_blinding = Scalar::from(40_u64);
     let mandate = ApplicationReserveMandate {
-        version: 1,
+        version: 2,
         scope: scope.clone(),
         request_commitment: [17; 32],
         facility_id: [18; 32],
@@ -131,12 +131,33 @@ fn dekyx_mandate_and_note_proofs_bind_without_a_circular_dependency() {
         settlement_terms_commitment: commit(1, Scalar::from(22_u64)),
         valid_from: 100,
         valid_until: 900,
-        participant_public: participant.verifying_key().to_bytes(),
+        participant_public: zkfmi_crypto::traits::Signer::public_key(&participant),
         signature: vec![],
     }
     .sign(&participant)
     .unwrap();
     // The mandate is signed BEFORE its randomized DeKYX proof exists.
+    mandate.verify(&scope, 100).unwrap();
+    let mut classical_only = mandate.clone();
+    classical_only.signature.truncate(64);
+    assert!(classical_only.verify(&scope, 100).is_err());
+    let mut missing_key = mandate.clone();
+    missing_key.participant_public.truncate(32);
+    assert!(missing_key.verify(&scope, 100).is_err());
+    let mut bad_pq = mandate.clone();
+    bad_pq.signature[64] ^= 1;
+    assert!(bad_pq.verify(&scope, 100).is_err());
+    let mut old_version = mandate.clone();
+    old_version.version = 1;
+    assert!(old_version.verify(&scope, 100).is_err());
+    let mut wrong_purpose = mandate.clone();
+    wrong_purpose.signature = zkfmi_crypto::traits::Signer::sign(
+        &participant,
+        zkfmi_crypto::key::KeyPurpose::Attestation,
+        &mandate.unsigned().unwrap(),
+    )
+    .unwrap();
+    assert!(wrong_purpose.verify(&scope, 100).is_err());
     let present = |mandate: &ApplicationReserveMandate| {
         AnonymousPresentation::create(
             credential.clone(),
@@ -192,21 +213,25 @@ fn dekyx_mandate_and_note_proofs_bind_without_a_circular_dependency() {
     let covenant = Wallet::new(&mut OsRng);
     let mut ledger = NoteLedger::new(key.clone(), 32);
     let input_blinding = Scalar::from(30_u64);
-    let note = ledger.build_note(
-        &wallet.address,
-        100,
-        key.commit_u64(100, &input_blinding),
-        &input_blinding,
-        &mut OsRng,
-    );
+    let note = ledger
+        .build_note(
+            &wallet.address,
+            100,
+            key.commit_u64(100, &input_blinding),
+            &input_blinding,
+            &mut OsRng,
+        )
+        .expect("valid fixture note encryption");
     ledger.add(note);
-    let note = ledger.build_note(
-        &decoy.address,
-        20,
-        key.commit_u64(20, &input_blinding),
-        &input_blinding,
-        &mut OsRng,
-    );
+    let note = ledger
+        .build_note(
+            &decoy.address,
+            20,
+            key.commit_u64(20, &input_blinding),
+            &input_blinding,
+            &mut OsRng,
+        )
+        .expect("valid fixture note encryption");
     ledger.add(note);
     let opening = ledger
         .scan(&wallet, &key)

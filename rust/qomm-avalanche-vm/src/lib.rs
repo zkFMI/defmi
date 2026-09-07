@@ -5,6 +5,7 @@ pub mod block;
 mod execution;
 pub mod genesis;
 pub mod id;
+pub mod recovery;
 pub mod state;
 pub mod state_sync;
 pub mod transaction;

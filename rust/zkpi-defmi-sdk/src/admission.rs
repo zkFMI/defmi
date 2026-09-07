@@ -9,14 +9,18 @@ use crate::reservation::ReservationPermit;
 use crate::{SdkError, SdkResult};
 use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use openssl::{hash::MessageDigest, pkey::PKey, sign::Signer as MacSigner};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zkfmi_crypto::{
+    hybrid::signature::{HybridSigner, HybridVerifier},
+    key::KeyPurpose,
+    traits::{Signer, Verifier},
+};
 
-const DOMAIN: &[u8] = b"ZKPI:DEFMI:RESERVATION-ADMISSION:v1";
+const DOMAIN: &[u8] = b"ZKPI:DEFMI:RESERVATION-ADMISSION:v2";
 const TAG_DOMAIN: &[u8] = b"ZKPI:DEFMI:RESERVATION-PRIVATE-TAG:v1";
-const MAX_WIRE_BYTES: usize = 8 * 1024;
+const MAX_WIRE_BYTES: usize = 32 * 1024;
 const MAX_UNIX_TIME: u64 = 253_402_300_799;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -37,7 +41,7 @@ pub struct ReservationAdmission {
     /// Commits to the full signed permit kept under threshold encryption.
     pub authority_commitment: [u8; 32],
     pub valid_until: u64,
-    pub signer_public: [u8; 32],
+    pub signer_public: Vec<u8>,
     pub signature: Vec<u8>,
 }
 
@@ -47,17 +51,19 @@ impl ReservationAdmission {
     pub fn from_permit(
         permit: &ReservationPermit,
         reserve_reblinding: &Scalar,
-        signer: &SigningKey,
+        signer: &HybridSigner,
+        private_tag_key: &[u8; 32],
     ) -> SdkResult<Self> {
         permit.verify(
             permit.application_binding,
             permit.defmi_id,
-            &signer.verifying_key(),
+            &signer.public_key(),
             permit.valid_until,
         )?;
-        let mut secret = signer.to_bytes();
-        let mac_key = PKey::hmac(&secret);
-        secret.fill(0);
+        if *private_tag_key == [0; 32] {
+            return Err(invalid("reservation tag key is required"));
+        }
+        let mac_key = PKey::hmac(private_tag_key);
         let mac_key = mac_key.map_err(|_| invalid("reservation tag key failed"))?;
         let mut mac = MacSigner::new(MessageDigest::sha256(), &mac_key)
             .map_err(|_| invalid("reservation tag initialization failed"))?;
@@ -71,7 +77,7 @@ impl ReservationAdmission {
             .try_into()
             .map_err(|_| invalid("reservation tag has an invalid length"))?;
         let mut admission = Self {
-            version: 1,
+            version: 2,
             application_binding: permit.application_binding,
             venue_id: permit.venue_id,
             defmi_id: permit.defmi_id,
@@ -82,10 +88,12 @@ impl ReservationAdmission {
             reservation_nullifier,
             authority_commitment: permit.digest()?,
             valid_until: permit.valid_until,
-            signer_public: signer.verifying_key().to_bytes(),
+            signer_public: signer.public_key(),
             signature: Vec::new(),
         };
-        admission.signature = signer.sign(&admission.body()?).to_bytes().to_vec();
+        admission.signature = signer
+            .sign(KeyPurpose::SettlementInstruction, &admission.body()?)
+            .map_err(|_| invalid("reservation admission signing failed"))?;
         Ok(admission)
     }
 
@@ -93,20 +101,23 @@ impl ReservationAdmission {
         &self,
         application: [u8; 32],
         defmi: [u8; 32],
-        signer: &VerifyingKey,
+        signer: &[u8],
         now: u64,
     ) -> SdkResult<()> {
         if self.application_binding != application
             || self.defmi_id != defmi
-            || self.signer_public != signer.to_bytes()
+            || self.signer_public != signer
             || now > self.valid_until
         {
             return Err(invalid("reservation admission trust or lifetime mismatch"));
         }
-        let signature = Signature::try_from(self.signature.as_slice())
-            .map_err(|_| invalid("reservation admission signature is malformed"))?;
-        signer
-            .verify_strict(&self.body()?, &signature)
+        HybridVerifier
+            .verify(
+                KeyPurpose::SettlementInstruction,
+                signer,
+                &self.body()?,
+                &self.signature,
+            )
             .map_err(|_| invalid("reservation admission signature is invalid"))
     }
 
@@ -134,7 +145,7 @@ impl ReservationAdmission {
     }
 
     pub fn digest(&self) -> SdkResult<[u8; 32]> {
-        if self.signature.len() != 64 {
+        if self.signature.len() != 3373 {
             return Err(invalid("reservation admission is not signed"));
         }
         Ok(Sha256::new()
@@ -164,10 +175,10 @@ impl ReservationAdmission {
     }
 
     fn body(&self) -> SdkResult<Vec<u8>> {
-        if self.version != 1
+        if self.version != 2
             || self.valid_until == 0
             || self.valid_until > MAX_UNIX_TIME
-            || self.signature.len() > 64
+            || self.signature.len() > 3373
         {
             return Err(invalid("reservation admission header is invalid"));
         }
@@ -183,7 +194,6 @@ impl ReservationAdmission {
             self.side_commitment,
             self.reservation_nullifier,
             self.authority_commitment,
-            self.signer_public,
         ] {
             if field == [0; 32] {
                 return Err(invalid("reservation admission has a zero binding"));
@@ -199,6 +209,10 @@ impl ReservationAdmission {
                 return Err(invalid("reservation admission point is malformed"));
             }
         }
+        if self.signer_public.len() != 1984 {
+            return Err(invalid("reservation admission requires a hybrid signer"));
+        }
+        body.extend_from_slice(&self.signer_public);
         body.extend_from_slice(&self.valid_until.to_be_bytes());
         Ok(body)
     }

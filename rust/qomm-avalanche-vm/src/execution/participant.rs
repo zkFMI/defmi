@@ -26,6 +26,7 @@ const COMPOSITE_RESERVATION_DOMAIN: &[u8] = b"QOMM:DEFMI:PARTICIPANT-PRODUCT-RES
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PurposeKeyDto {
     public_key: String,
+    pq_public_key: String,
     epoch: u64,
 }
 
@@ -33,6 +34,8 @@ impl PurposeKeyDto {
     fn domain(self, name: &str) -> Result<PurposeKey, String> {
         Ok(PurposeKey {
             public_key: hex_array(&self.public_key, &format!("{name}.publicKey"))?,
+            pq_public_key: hex::decode(self.pq_public_key)
+                .map_err(|_| format!("{name}.pqPublicKey is invalid hex"))?,
             epoch: self.epoch,
         })
     }

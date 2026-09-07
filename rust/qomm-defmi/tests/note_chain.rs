@@ -5,9 +5,9 @@ use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::{Signature, SigningKey};
 use qomm_defmi::note_chain::{
     escrow_claim_serial, materialize_claim, note_claim_recipient_commitment, note_ring_root,
-    verify_claim_materialization, CsdIssuerDefinition, DelegatedNoteSettlementOrder,
-    EscrowClaimSpend, NoteClaim, NoteClaimKind, NoteIssuance, NoteOutput, NoteSettlementOrder,
-    NoteSpend,
+    verify_claim_materialization, ClaimAuthorizationCommitment, CsdIssuerDefinition,
+    DelegatedNoteSettlementOrder, EscrowClaimSpend, NoteClaim, NoteClaimKind, NoteIssuance,
+    NoteOutput, NoteSettlementOrder, NoteSpend,
 };
 use qomm_defmi::notes::{NoteLedger, Wallet};
 use qomm_proofs::opening_envelope::{
@@ -28,6 +28,10 @@ fn claim(label: &str, asset: [u8; 32], hold: [u8; 32], kind: NoteClaimKind) -> N
         asset_id: asset,
         value_commitment: id(&format!("{label}:value")),
         recipient_commitment: id(&format!("{label}:recipient")),
+        authorization: ClaimAuthorizationCommitment {
+            key_record_commitment: id(&format!("{label}:claim-key-record")),
+            key_fingerprint: id(&format!("{label}:claim-key-fingerprint")),
+        },
         source_hold_id: hold,
         kind,
         opening_envelope: OpeningEnvelope::new(
@@ -37,9 +41,9 @@ fn claim(label: &str, asset: [u8; 32], hold: [u8; 32], kind: NoteClaimKind) -> N
             (1..=3)
                 .map(|party| EncryptedOpeningShare {
                     party,
-                    ephemeral: G,
-                    masked_value: Scalar::from(party as u64),
-                    masked_blinding: Scalar::from(party as u64 + 10),
+                    recipient_public: zkfmi_crypto::test_support::opening_recipient_public(),
+                    sealed: zkfmi_crypto::test_support::threshold_opening_envelope(),
+                    blinding_adjustment: Scalar::from(party as u64 + 10),
                 })
                 .collect(),
         )
@@ -82,6 +86,9 @@ fn note_issuance_must_be_signed_during_csd_validity() {
         jurisdiction: "JP".into(),
         operator_entity_commitment: id("csd-validity-operator"),
         public_key: issuer_key.verifying_key().to_bytes(),
+        pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+            &zkfmi_crypto::test_support::entity_pq_signer(&issuer_key.to_bytes()),
+        ),
         permitted_asset_ids: vec![asset],
         policy_digest: id("csd-validity-policy"),
         valid_from: 100,
@@ -93,8 +100,9 @@ fn note_issuance_must_be_signed_during_csd_validity() {
         one_time: id("csd-validity-one-time"),
         value_commitment: id("csd-validity-value"),
         ephemeral: id("csd-validity-ephemeral"),
-        masked_value: id("csd-validity-masked-value"),
-        masked_blinding: id("csd-validity-masked-blinding"),
+        encrypted_opening: qomm_transport::standing_pool::NoteOpening::Recipient(
+            zkfmi_crypto::test_support::note_envelope(),
+        ),
         lock_id: [0; 32],
     };
     output.note_id = output.derived_id().unwrap();
@@ -107,12 +115,51 @@ fn note_issuance_must_be_signed_during_csd_validity() {
             output: output.clone(),
             proof_digest: id("csd-validity-proof"),
             issuer_signature: Signature::from_bytes(&[0; 64]),
+            issuer_pq_signature: vec![0; 3309],
         }
-        .sign_issuer(&issuer_key)
+        .sign_issuer(
+            &issuer_key,
+            &zkfmi_crypto::test_support::entity_pq_signer(&issuer_key.to_bytes()),
+        )
         .unwrap()
     };
     assert!(issuance(99).verify_issuer(&issuer, 100).is_err());
     issuance(100).verify_issuer(&issuer, 100).unwrap();
+    let signed = issuance(100);
+    let mut corrupted = signed.clone();
+    corrupted.issuer_pq_signature[0] ^= 1;
+    assert!(corrupted.verify_issuer(&issuer, 100).is_err());
+    let mut corrupted = signed.clone();
+    let mut classical = corrupted.issuer_signature.to_bytes();
+    classical[0] ^= 1;
+    corrupted.issuer_signature = Signature::from_bytes(&classical);
+    assert!(corrupted.verify_issuer(&issuer, 100).is_err());
+    for length in [0, 3308, 3310] {
+        let mut corrupted = signed.clone();
+        corrupted.issuer_pq_signature.resize(length, 0);
+        assert!(corrupted.verify_issuer(&issuer, 100).is_err());
+        assert!(corrupted.body().is_err());
+    }
+    let mut wrong_statement = signed.clone();
+    wrong_statement.issuance_nonce[0] ^= 1;
+    assert!(wrong_statement.verify_issuer(&issuer, 100).is_err());
+    let mut wrong_key = issuer.clone();
+    wrong_key.pq_public_key = zkfmi_crypto::traits::Signer::public_key(
+        &zkfmi_crypto::test_support::entity_pq_signer(&[97; 32]),
+    );
+    assert_ne!(wrong_key.statement().unwrap(), issuer.statement().unwrap());
+    assert!(signed.verify_issuer(&wrong_key, 100).is_err());
+    wrong_key.pq_public_key.clear();
+    assert!(wrong_key.body().is_err());
+    assert!(signed.verify_issuer(&wrong_key, 100).is_err());
+    let mut wrong_purpose = signed.clone();
+    wrong_purpose.issuer_pq_signature = zkfmi_crypto::traits::Signer::sign(
+        &zkfmi_crypto::test_support::entity_pq_signer(&issuer_key.to_bytes()),
+        zkfmi_crypto::key::KeyPurpose::KeyRotation,
+        &signed.issuer_message().unwrap(),
+    )
+    .unwrap();
+    assert!(wrong_purpose.verify_issuer(&issuer, 100).is_err());
 }
 
 #[test]
@@ -127,6 +174,9 @@ fn account_free_consensus_timestamps_fit_sqlites_signed_integer_domain() {
         jurisdiction: "JP".into(),
         operator_entity_commitment: id("timestamp-note-operator"),
         public_key: issuer_key.verifying_key().to_bytes(),
+        pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+            &zkfmi_crypto::test_support::entity_pq_signer(&issuer_key.to_bytes()),
+        ),
         permitted_asset_ids: vec![asset],
         policy_digest: id("timestamp-note-policy"),
         valid_from: 1,
@@ -142,8 +192,9 @@ fn account_free_consensus_timestamps_fit_sqlites_signed_integer_domain() {
         one_time: id("timestamp-note-one-time"),
         value_commitment: id("timestamp-note-value"),
         ephemeral: id("timestamp-note-ephemeral"),
-        masked_value: id("timestamp-note-masked-value"),
-        masked_blinding: id("timestamp-note-masked-blinding"),
+        encrypted_opening: qomm_transport::standing_pool::NoteOpening::Recipient(
+            zkfmi_crypto::test_support::note_envelope(),
+        ),
         lock_id: [0; 32],
     };
     output.note_id = output.derived_id().unwrap();
@@ -155,6 +206,7 @@ fn account_free_consensus_timestamps_fit_sqlites_signed_integer_domain() {
         output: output.clone(),
         proof_digest: id("timestamp-note-issuance-proof"),
         issuer_signature: Signature::from_bytes(&[0; 64]),
+        issuer_pq_signature: vec![0; 3309],
     };
     issuance(max).issuer_message().unwrap();
     assert!(issuance(overflow).issuer_message().is_err());
@@ -254,8 +306,9 @@ fn note_consolidation_preserves_the_exact_commitment_sum() {
             one_time: id(&format!("{label}:one-time")),
             value_commitment,
             ephemeral: id(&format!("{label}:ephemeral")),
-            masked_value: id(&format!("{label}:masked-value")),
-            masked_blinding: id(&format!("{label}:masked-blinding")),
+            encrypted_opening: qomm_transport::standing_pool::NoteOpening::Recipient(
+                zkfmi_crypto::test_support::note_envelope(),
+            ),
             lock_id: [0; 32],
         };
         output.note_id = output.derived_id().unwrap();
@@ -330,18 +383,19 @@ fn account_free_note_statements_match_the_pinned_consensus_vectors() {
         one_time: id("note-compat-one-time"),
         value_commitment: id("note-compat-value"),
         ephemeral: id("note-compat-ephemeral"),
-        masked_value: id("note-compat-masked-value"),
-        masked_blinding: id("note-compat-masked-blinding"),
+        encrypted_opening: qomm_transport::standing_pool::NoteOpening::Recipient(
+            zkfmi_crypto::test_support::note_envelope(),
+        ),
         lock_id: [0; 32],
     };
     output.note_id = output.derived_id().unwrap();
     expected(
         output.note_id,
-        "f1e2ec40c854dec248fe3319da8097751bb9f587452745edcebafe84eae3d8ab",
+        "a40dc634f44e533e341ea2ffc0fc936aa496e74654725f29b948f1ca0a314396",
     );
 
     let issuer_seed: [u8; 32] = Sha256::digest(b"note-compat-csd-key").into();
-    let issuance = NoteIssuance {
+    let mut issuance = NoteIssuance {
         operation_id: id("note-compat-issue-op"),
         issuance_nonce: id("note-compat-nonce"),
         issuer_id: id("note-compat-csd-issuer"),
@@ -349,12 +403,19 @@ fn account_free_note_statements_match_the_pinned_consensus_vectors() {
         output: output.clone(),
         proof_digest: id("note-compat-issue-proof"),
         issuer_signature: Signature::from_bytes(&[0_u8; 64]),
+        issuer_pq_signature: vec![0; 3309],
     }
-    .sign_issuer(&SigningKey::from_bytes(&issuer_seed))
+    .sign_issuer(
+        &SigningKey::from_bytes(&issuer_seed),
+        &zkfmi_crypto::test_support::entity_pq_signer(&issuer_seed),
+    )
     .unwrap();
+    // Canonical wire fixture only: real ML-DSA signing is randomized and is
+    // verified separately by note_issuance_must_be_signed_during_csd_validity.
+    issuance.issuer_pq_signature = vec![61; 3309];
     expected(
         issuance.statement().unwrap(),
-        "78bac959a69c58db9dea37c290fafa9aab3e108ebee93734b8047e46705b93d3",
+        "2742611602ae1837aa368a15f4f5d86bd5598bbba12f09c77fd2cafda5421545",
     );
 
     let mut second = output.clone();
@@ -364,7 +425,7 @@ fn account_free_note_statements_match_the_pinned_consensus_vectors() {
     let ring_root = note_ring_root(asset, &ring).unwrap();
     expected(
         ring_root,
-        "c0e8cec5676b1ba5fdad377f7d55eafb5075a57d849ab051b4c226169e8aeb86",
+        "577624603c134816b32092001ff0857fef060dd74a35199a35f96dc06c17e724",
     );
 
     let mut spend_output = output;
@@ -390,7 +451,7 @@ fn account_free_note_statements_match_the_pinned_consensus_vectors() {
     };
     expected(
         settlement.statement().unwrap(),
-        "b5c76c5f996f58591c21a84342f6b8441b1a4fc63b6fdb5fb2eb4e5828715ac1",
+        "065b0b2b4f221f9f1a61baf92c39d05465d95d424802bca610fd18cfb35175c6",
     );
 }
 
@@ -454,15 +515,15 @@ fn delegated_claim_statements_match_the_pinned_consensus_vectors() {
     };
     expected(
         securities_delivery.claim_id,
-        "302dedeb517545e88811906e8f2cbba09a9605e883eda56ac3addab761a1f589",
+        "17e0fdefa0df7ee3c45fea7702b4533bfdfbf66dec56ab0d2374ac5e73f964cd",
     );
     expected(
         cash_delivery.claim_id,
-        "0957d6e0ec9aa2f4ac69be5a52bb9fed2c0730c1b23d00d213387e87da624747",
+        "cdf810b3b5e50bf0e52007471aef0f29fde077f732831a2dc6ca1600b29f64ac",
     );
     expected(
         settlement.statement().unwrap(),
-        "b0e8377e44d4e802928c0ffb7744e46344ec3f79a07cdc5a432cbfe5536899d8",
+        "e570618aa7066f8f5b52d4a92a91700547f22adc41249691c943718afc276e64",
     );
     expected(
         escrow_claim_serial(securities_escrow, securities_hold),
@@ -475,6 +536,7 @@ fn recipient_recovers_and_materializes_a_final_claim_without_revealing_its_openi
     let key = Pedersen::new(b"claim-materialization-test");
     let recipient_secret = Scalar::from(77_u64);
     let recipient_handle = G * recipient_secret;
+    let recipient_key = zkfmi_crypto::hybrid::kem::HybridKemKey::generate().unwrap();
     let destination = Wallet::new(&mut OsRng);
     let amount = 41_u64;
     let blinding = Scalar::from(91_u64);
@@ -503,6 +565,7 @@ fn recipient_recovers_and_materializes_a_final_claim_without_revealing_its_openi
                     shared.value_shares[party],
                     shared.blinding_shares[party],
                     &recipient_handle,
+                    &zkfmi_crypto::traits::KemDecapsulator::public_key(&recipient_key),
                     &mut OsRng,
                 )
                 .unwrap()
@@ -525,6 +588,10 @@ fn recipient_recovers_and_materializes_a_final_claim_without_revealing_its_openi
             NoteClaimKind::Delivery,
         )
         .unwrap(),
+        authorization: ClaimAuthorizationCommitment {
+            key_record_commitment: id("materialize-claim-key-record"),
+            key_fingerprint: id("materialize-claim-key-fingerprint"),
+        },
         source_hold_id: hold,
         kind: NoteClaimKind::Delivery,
         opening_envelope: envelope,
@@ -537,6 +604,7 @@ fn recipient_recovers_and_materializes_a_final_claim_without_revealing_its_openi
         8,
         rfq,
         &recipient_secret,
+        &recipient_key,
         &destination.address,
         &[1, 4, 7],
         id("materialize-operation"),
@@ -564,6 +632,7 @@ fn recipient_recovers_and_materializes_a_final_claim_without_revealing_its_openi
         8,
         rfq,
         &Scalar::from(78_u64),
+        &recipient_key,
         &destination.address,
         &[1, 4, 7],
         id("wrong-recipient-operation"),

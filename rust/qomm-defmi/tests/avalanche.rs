@@ -1,4 +1,3 @@
-use ed25519_dalek::SigningKey;
 use qomm_defmi::avalanche::{
     AcceptedTransition, AvalancheClient, AvalancheNoteBridge, AvalancheRpcClient,
     FacilityAvalancheBridge,
@@ -8,7 +7,6 @@ use qomm_defmi::facility::{
     SettlementOrder, StateLeg,
 };
 use qomm_defmi::note_chain::NoteOutput;
-use rand_core::OsRng;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -178,13 +176,13 @@ fn pair(
     let local = DefmiFacility::open(
         directory.path().join("local.sqlite3"),
         authorizer.clone(),
-        SigningKey::generate(&mut OsRng),
+        std::sync::Arc::new(zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap()),
     )
     .unwrap();
     let mirror = DefmiFacility::open(
         directory.path().join("chain.sqlite3"),
         authorizer.clone(),
-        SigningKey::generate(&mut OsRng),
+        std::sync::Arc::new(zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap()),
     )
     .unwrap();
     (
@@ -417,8 +415,9 @@ fn rpc_reads_one_root_consistent_account_free_authoring_snapshot() {
         one_time: h("one-time"),
         value_commitment: h("value"),
         ephemeral: h("ephemeral"),
-        masked_value: h("masked-value"),
-        masked_blinding: h("masked-blinding"),
+        encrypted_opening: qomm_transport::standing_pool::NoteOpening::Recipient(
+            zkfmi_crypto::test_support::note_envelope(),
+        ),
         lock_id: [0; 32],
     };
     note.note_id = note.derived_id().unwrap();
@@ -439,8 +438,7 @@ fn rpc_reads_one_root_consistent_account_free_authoring_snapshot() {
                     "oneTime": hex::encode(note_for_rpc.one_time),
                     "valueCommitment": hex::encode(note_for_rpc.value_commitment),
                     "ephemeral": hex::encode(note_for_rpc.ephemeral),
-                    "maskedValue": hex::encode(note_for_rpc.masked_value),
-                    "maskedBlinding": hex::encode(note_for_rpc.masked_blinding),
+                    "encryptedOpening": note_for_rpc.encrypted_opening,
                     "lockID": hex::encode(note_for_rpc.lock_id),
                 })
             };

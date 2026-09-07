@@ -33,13 +33,15 @@ fn pool(rng: &mut OsRng) -> Pool {
         };
         let value = 1_000 + i as u64;
         let blinding = Scalar::random(rng);
-        let note = ledger.build_note(
-            &owner,
-            value,
-            asset_key.commit_u64(value, &blinding),
-            &blinding,
-            rng,
-        );
+        let note = ledger
+            .build_note(
+                &owner,
+                value,
+                asset_key.commit_u64(value, &blinding),
+                &blinding,
+                rng,
+            )
+            .expect("valid fixture note encryption");
         ledger.add(note);
     }
     Pool {
@@ -194,13 +196,16 @@ fn two_payments_to_one_address_are_unlinkable() {
     let mut made = Vec::new();
     for _ in 0..2 {
         let blinding = Scalar::random(&mut rng);
-        let note = p.ledger.build_note(
-            &p.bob.address,
-            100,
-            p.asset_key.commit_u64(100, &blinding),
-            &blinding,
-            &mut rng,
-        );
+        let note = p
+            .ledger
+            .build_note(
+                &p.bob.address,
+                100,
+                p.asset_key.commit_u64(100, &blinding),
+                &blinding,
+                &mut rng,
+            )
+            .expect("valid fixture note encryption");
         made.push(note.clone());
         p.ledger.add(note);
     }
@@ -402,13 +407,16 @@ fn the_state_root_moves_on_every_change_and_agrees_across_ledgers() {
         "a spend left the root where it was"
     );
 
-    let note = p.ledger.build_note(
-        &Wallet::new(&mut rng).address,
-        42,
-        p.asset_key.commit_u64(42, &Scalar::ONE),
-        &Scalar::ONE,
-        &mut rng,
-    );
+    let note = p
+        .ledger
+        .build_note(
+            &Wallet::new(&mut rng).address,
+            42,
+            p.asset_key.commit_u64(42, &Scalar::ONE),
+            &Scalar::ONE,
+            &mut rng,
+        )
+        .expect("valid fixture note encryption");
     p.ledger.add(note);
     assert!(
         seen.insert(p.ledger.snapshot()),
@@ -431,13 +439,16 @@ fn the_state_root_is_a_function_of_what_the_ledger_holds() {
 
     let mut c = pool(&mut rng);
     let before = c.ledger.snapshot();
-    let extra = c.ledger.build_note(
-        &Wallet::new(&mut rng).address,
-        7,
-        c.asset_key.commit_u64(7, &Scalar::ONE),
-        &Scalar::ONE,
-        &mut rng,
-    );
+    let extra = c
+        .ledger
+        .build_note(
+            &Wallet::new(&mut rng).address,
+            7,
+            c.asset_key.commit_u64(7, &Scalar::ONE),
+            &Scalar::ONE,
+            &mut rng,
+        )
+        .expect("valid fixture note encryption");
     c.ledger.add(extra);
     assert_ne!(
         before,
@@ -451,33 +462,39 @@ fn the_state_root_is_a_function_of_what_the_ledger_holds() {
 /// after admission there too.
 #[test]
 fn a_note_ledger_under_an_issuer_refuses_an_unsigned_note() {
-    use ed25519_dalek::{Signer, SigningKey};
     use qomm_defmi::notes::note_issuance_body;
+    use zkfmi_crypto::{hybrid::signature::HybridSigner, key::KeyPurpose, traits::Signer};
 
     let mut rng = OsRng;
     let key = Pedersen::new(b"qomm:defmi:v1");
-    let issuer = SigningKey::generate(&mut rng);
+    let issuer = HybridSigner::generate().unwrap();
     let asset_key = key.with_value_generator(AssetRegistry::new(key.clone(), 16).tags[3]);
-    let mut ledger = NoteLedger::new(key.clone(), BITS).under_issuer(issuer.verifying_key());
+    let mut ledger = NoteLedger::new(key.clone(), BITS).under_issuer(issuer.public_key());
 
     let owner = Wallet::new(&mut rng);
     let blinding = Scalar::random(&mut rng);
-    let note = ledger.build_note(
-        &owner.address,
-        1_000,
-        asset_key.commit_u64(1_000, &blinding),
-        &blinding,
-        &mut rng,
-    );
+    let note = ledger
+        .build_note(
+            &owner.address,
+            1_000,
+            asset_key.commit_u64(1_000, &blinding),
+            &blinding,
+            &mut rng,
+        )
+        .expect("valid fixture note encryption");
     let body = note_issuance_body(&ledger.commitment_of(&note), b"n1");
 
-    let elsewhere = SigningKey::generate(&mut rng);
+    let elsewhere = HybridSigner::generate().unwrap();
     assert_eq!(
-        ledger.add_issued(note.clone(), b"n1", &elsewhere.sign(&body)),
+        ledger.add_issued(
+            note.clone(),
+            b"n1",
+            &elsewhere.sign(KeyPurpose::Attestation, &body).unwrap()
+        ),
         Err("the note is not signed by the issuer")
     );
 
-    let signature = issuer.sign(&body);
+    let signature = issuer.sign(KeyPurpose::Attestation, &body).unwrap();
     assert!(ledger.add_issued(note.clone(), b"n1", &signature).is_ok());
     assert_eq!(
         ledger.add_issued(note, b"n1", &signature),
@@ -488,20 +505,22 @@ fn a_note_ledger_under_an_issuer_refuses_an_unsigned_note() {
 #[test]
 #[should_panic(expected = "use add_issued")]
 fn the_unchecked_append_is_closed_once_a_note_ledger_has_an_issuer() {
-    use ed25519_dalek::SigningKey;
+    use zkfmi_crypto::{hybrid::signature::HybridSigner, traits::Signer};
     let mut rng = OsRng;
     let key = Pedersen::new(b"qomm:defmi:v1");
-    let issuer = SigningKey::generate(&mut rng);
+    let issuer = HybridSigner::generate().unwrap();
     let asset_key = key.with_value_generator(AssetRegistry::new(key.clone(), 16).tags[3]);
-    let mut ledger = NoteLedger::new(key.clone(), BITS).under_issuer(issuer.verifying_key());
+    let mut ledger = NoteLedger::new(key.clone(), BITS).under_issuer(issuer.public_key());
     let owner = Wallet::new(&mut rng);
     let blinding = Scalar::random(&mut rng);
-    let note = ledger.build_note(
-        &owner.address,
-        1,
-        asset_key.commit_u64(1, &blinding),
-        &blinding,
-        &mut rng,
-    );
+    let note = ledger
+        .build_note(
+            &owner.address,
+            1,
+            asset_key.commit_u64(1, &blinding),
+            &blinding,
+            &mut rng,
+        )
+        .expect("valid fixture note encryption");
     ledger.add(note);
 }

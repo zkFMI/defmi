@@ -42,12 +42,20 @@ fn insert_claim(
     if state.note_claims.contains_key(&key) {
         return Err("application claim already exists".into());
     }
+    if state
+        .note_claims
+        .values()
+        .any(|record| record.authorization.key_fingerprint == claim.authorization.key_fingerprint)
+    {
+        return Err("application claim authorization key was already committed".into());
+    }
     state.note_claims.insert(
         key,
         NoteClaimRecord {
             asset_id: claim.asset_id,
             value_commitment: claim.value_commitment,
             recipient_commitment: claim.recipient_commitment,
+            authorization: claim.authorization,
             source_hold_id: claim.source_hold_id,
             kind: claim.kind.as_str().into(),
             opening_envelope: OpeningEnvelopeRecord::from_domain(&claim.opening_envelope)?,
@@ -294,11 +302,13 @@ pub(super) fn release(
             .remaining_opening
             .as_ref()
             .ok_or_else(|| "application remainder recovery data is absent".to_string())?;
+        // The retained one-time key was authorized for the original fill
+        // nullifier carried by this opening. The release operation identifier
+        // authorizes this transition; it must not rebind the recipient claim.
         let claim = application_claim(
             record.binding.asset_id,
             order.hold_id,
             record.remaining(),
-            order.operation_id,
             NoteClaimKind::Refund,
             opening,
         )?;

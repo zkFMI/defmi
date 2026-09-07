@@ -1,8 +1,8 @@
 //! Bind completed MPC quote proofs to already-authoritative DeFMI reserves.
 
 use curve25519_dalek::ristretto::CompressedRistretto;
-use ed25519_dalek::{SigningKey, VerifyingKey};
 use qomm_defmi::facility::reserve_handle_for;
+use qomm_transport::application_crypto::VerifyingKey;
 use qomm_transport::mandate::Direction;
 use qomm_transport::pretrade_authority::{
     read_ack_private, read_authority_private, ReservationParty,
@@ -23,9 +23,16 @@ fn hash(parts: &[&[u8]]) -> [u8; 32] {
     digest.finalize().into()
 }
 
+// Public acceptance fixture, separate from CSD, guarantor and facility receipt keys.
+fn acknowledgement_key() -> qomm_transport::application_crypto::SigningKey {
+    let mut seed = [0; 64];
+    seed[..32].copy_from_slice(&Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:ED:v2"));
+    seed[32..].copy_from_slice(&Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:PQ:v2"));
+    qomm_transport::application_crypto::SigningKey::from_bytes(&seed)
+}
+
 fn receipt_public() -> VerifyingKey {
-    let seed: [u8; 32] = Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:v1").into();
-    SigningKey::from_bytes(&seed).verifying_key()
+    acknowledgement_key().verifying_key()
 }
 
 fn required(arguments: &[String], name: &str) -> Result<PathBuf, String> {

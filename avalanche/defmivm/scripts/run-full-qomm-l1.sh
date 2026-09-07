@@ -210,7 +210,9 @@ fi
   --proof-root "$reserve_proof_root" --account-free-notes \
   --csd-signer-bin "$qomm_hsm_signer" --csd-signer-store "$csd_signer_store" \
   --csd-signer-pin-file "$csd_signer_pin" --csd-signer-key-id "$csd_signer_key_id" \
-  --csd-signer-public "$csd_signer_public"
+  --csd-signer-public "$csd_signer_public" \
+  --csd-signer-pq-key-id "$(jq -r .pq_key_id "$csd_signer_metadata")" \
+  --csd-signer-pq-public "$(jq -r .pq_public_key "$csd_signer_metadata")"
 
 if ! wait "$cluster_pid"; then
   cluster_pid=""

@@ -12,7 +12,7 @@ use curve25519_dalek::{
     ristretto::{CompressedRistretto, RistrettoPoint},
     scalar::Scalar,
 };
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::Signature;
 use qomm_defmi::asset_link::{self, AssetLinkProof};
 use qomm_defmi::central_bank_liquidity::{
     operation_statement as boj_operation_statement, ApplyFundsReceipt, BojParticipant,
@@ -128,6 +128,7 @@ struct GuarantorDto {
     kind: String,
     name: String,
     public_key: String,
+    pq_public_key: String,
     risk_policy_digest: String,
 }
 
@@ -404,6 +405,7 @@ struct CsdIssuerDto {
     jurisdiction: String,
     operator_entity_commitment: String,
     public_key: String,
+    pq_public_key: String,
     #[serde(rename = "permittedAssetIDs")]
     permitted_asset_ids: Vec<String>,
     policy_digest: String,
@@ -433,8 +435,7 @@ struct NoteOutputDto {
     one_time: String,
     value_commitment: String,
     ephemeral: String,
-    masked_value: String,
-    masked_blinding: String,
+    encrypted_opening: qomm_transport::standing_pool::NoteOpening,
     #[serde(rename = "lockID")]
     lock_id: String,
 }
@@ -451,6 +452,7 @@ struct NoteIssuanceDto {
     output: NoteOutputDto,
     proof_digest: String,
     issuer_signature: String,
+    issuer_pq_signature: String,
 }
 
 #[derive(Deserialize)]
@@ -591,9 +593,9 @@ struct MpcNoFillEvidenceDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OpeningShareDto {
     party: usize,
-    ephemeral: String,
-    masked_value: String,
-    masked_blinding: String,
+    recipient_public: Vec<u8>,
+    sealed: zkfmi_crypto::sealed::SealedMessage,
+    blinding_adjustment: String,
 }
 
 #[derive(Deserialize)]
@@ -614,6 +616,7 @@ struct NoteClaimDto {
     asset_id: String,
     value_commitment: String,
     recipient_commitment: String,
+    authorization: qomm_defmi::note_chain::ClaimAuthorizationCommitment,
     #[serde(rename = "sourceHoldID")]
     source_hold_id: String,
     kind: String,
@@ -1007,7 +1010,9 @@ pub(crate) fn execute(
         "defmivm.issueNoteClaimMaterialization" => {
             materialize_note_claim(state, params, authorizer)
         }
-        "defmivm.issueNoteClaimRedemption" => redeem_note_claim(state, params, authorizer),
+        "defmivm.issueNoteClaimRedemption" => {
+            redeem_note_claim(state, params, authorizer, timestamp)
+        }
         "defmivm.issueNoteSettlement" => settle_notes(state, params, authorizer, timestamp),
         "defmivm.issueAdmissionCommittee" => {
             register_admission_committee(state, params, authorizer, timestamp)
@@ -1722,6 +1727,7 @@ fn csd_issuer_from_dto(dto: CsdIssuerDto) -> Result<CsdIssuerDefinition, String>
             "issuer.operatorEntityCommitment",
         )?,
         public_key: hex_array(&dto.public_key, "issuer.publicKey")?,
+        pq_public_key: hex_array::<1952>(&dto.pq_public_key, "issuer.pqPublicKey")?.to_vec(),
         permitted_asset_ids: dto
             .permitted_asset_ids
             .iter()
@@ -1758,11 +1764,7 @@ fn note_output_from_dto(dto: NoteOutputDto, field_name: &str) -> Result<NoteOutp
             &format!("{field_name}.valueCommitment"),
         )?,
         ephemeral: hex_array(&dto.ephemeral, &format!("{field_name}.ephemeral"))?,
-        masked_value: hex_array(&dto.masked_value, &format!("{field_name}.maskedValue"))?,
-        masked_blinding: hex_array(
-            &dto.masked_blinding,
-            &format!("{field_name}.maskedBlinding"),
-        )?,
+        encrypted_opening: dto.encrypted_opening,
         lock_id: hex_array(&dto.lock_id, &format!("{field_name}.lockID"))?,
     };
     output.validate()?;
@@ -1847,14 +1849,11 @@ fn opening_envelope_from_dto(
                 let share_name = format!("{field_name}.shares[{index}]");
                 Ok(EncryptedOpeningShare {
                     party: share.party,
-                    ephemeral: point(&share.ephemeral, &format!("{share_name}.ephemeral"))?,
-                    masked_value: scalar(
-                        &share.masked_value,
-                        &format!("{share_name}.maskedValue"),
-                    )?,
-                    masked_blinding: scalar(
-                        &share.masked_blinding,
-                        &format!("{share_name}.maskedBlinding"),
+                    recipient_public: share.recipient_public,
+                    sealed: share.sealed,
+                    blinding_adjustment: scalar(
+                        &share.blinding_adjustment,
+                        &format!("{share_name}.blindingAdjustment"),
                     )?,
                 })
             })
@@ -1874,6 +1873,7 @@ fn note_claim_from_dto(dto: NoteClaimDto, field_name: &str) -> Result<NoteClaim,
             &dto.recipient_commitment,
             &format!("{field_name}.recipientCommitment"),
         )?,
+        authorization: dto.authorization,
         source_hold_id: hex_array(&dto.source_hold_id, &format!("{field_name}.sourceHoldID"))?,
         kind: match dto.kind.as_str() {
             "delivery" => NoteClaimKind::Delivery,
@@ -1982,6 +1982,7 @@ fn register_csd_issuer(
             jurisdiction: issuer.jurisdiction,
             operator_entity_commitment: issuer.operator_entity_commitment,
             public_key: issuer.public_key,
+            pq_public_key: issuer.pq_public_key,
             permitted_asset_ids: issuer.permitted_asset_ids,
             policy_digest: issuer.policy_digest,
             valid_from: issuer.valid_from,
@@ -2062,8 +2063,7 @@ fn insert_note(state: &mut State, output: &NoteOutput) -> Result<(), String> {
             one_time: output.one_time,
             value_commitment: output.value_commitment,
             ephemeral: output.ephemeral,
-            masked_value: output.masked_value,
-            masked_blinding: output.masked_blinding,
+            encrypted_opening: output.encrypted_opening.clone(),
             lock_id: output.lock_id,
         },
     );
@@ -2085,6 +2085,11 @@ fn issue_note(
         issued_at: dto.issued_at,
         output: note_output_from_dto(dto.output, "issuance.output")?,
         proof_digest: hex_array(&dto.proof_digest, "issuance.proofDigest")?,
+        issuer_pq_signature: hex_array::<3309>(
+            &dto.issuer_pq_signature,
+            "issuance.issuerPqSignature",
+        )?
+        .to_vec(),
         issuer_signature: Signature::from_bytes(&hex_array::<64>(
             &dto.issuer_signature,
             "issuance.issuerSignature",
@@ -2621,6 +2626,7 @@ fn redeem_note_claim(
     state: &mut State,
     params: &Map<String, Value>,
     authorizer: &QuorumAuthorizer,
+    now: u64,
 ) -> Result<[u8; 32], String> {
     require_keys(params, &["redemption"])?;
     let redemption: qomm_defmi::claim_redemption::NoteClaimRedemption =
@@ -2651,11 +2657,12 @@ fn redeem_note_claim(
         asset_id: record.asset_id,
         value_commitment: record.value_commitment,
         recipient_commitment: record.recipient_commitment,
+        authorization: record.authorization,
         source_hold_id: record.source_hold_id,
         kind,
         opening_envelope: record.opening_envelope.domain()?,
     };
-    redemption.verify(&claim, authorizer.domain())?;
+    redemption.verify(&claim, authorizer.domain(), now)?;
     let statement = redemption.signing_message()?;
     insert_note(state, &redemption.output)?;
     record.status = "materialized".into();
@@ -3041,7 +3048,7 @@ fn register_admission_batch(
         .node_keys
         .iter()
         .map(|key| {
-            VerifyingKey::from_bytes(key)
+            qomm_transport::application_crypto::VerifyingKey::from_bytes(key)
                 .map_err(|_| "stored admission committee key is invalid".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -3070,10 +3077,12 @@ fn register_admission_batch(
                         claim_digest: hex_array(&dto.claim_digest, "admissionLanes.claimDigest")?,
                         batch_digest: hex_array(&dto.batch_digest, "admissionLanes.batchDigest")?,
                         order_digest: hex_array(&dto.order_digest, "admissionLanes.orderDigest")?,
-                        signature: Signature::from_bytes(&hex_array(
-                            &dto.signature,
-                            "admissionLanes.signature",
-                        )?),
+                        signature: qomm_transport::application_crypto::Signature::try_from(
+                            hex::decode(&dto.signature)
+                                .map_err(|_| "admission signature is not hexadecimal")?
+                                .as_slice(),
+                        )
+                        .map_err(|_| "admission requires a complete hybrid signature")?,
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -4377,7 +4386,7 @@ fn release_note_product_no_fill(
         .node_keys
         .iter()
         .map(|value| {
-            VerifyingKey::from_bytes(value)
+            qomm_transport::application_crypto::VerifyingKey::from_bytes(value)
                 .map_err(|_| "stored resident result key is invalid".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -5347,12 +5356,18 @@ fn apply_note_product_settlement(
             },
         );
         for claim in &spend.claims {
+            if state.note_claims.values().any(|record| {
+                record.authorization.key_fingerprint == claim.authorization.key_fingerprint
+            }) {
+                return Err("note claim authorization key was already committed".into());
+            }
             state.note_claims.insert(
                 id_key(&claim.claim_id),
                 NoteClaimRecord {
                     asset_id: claim.asset_id,
                     value_commitment: claim.value_commitment,
                     recipient_commitment: claim.recipient_commitment,
+                    authorization: claim.authorization,
                     source_hold_id: claim.source_hold_id,
                     kind: claim.kind.as_str().into(),
                     opening_envelope: OpeningEnvelopeRecord::from_domain(&claim.opening_envelope)?,
@@ -5657,7 +5672,7 @@ fn verify_product_settlement_evidence(
         .node_keys
         .iter()
         .map(|value| {
-            VerifyingKey::from_bytes(value)
+            qomm_transport::application_crypto::VerifyingKey::from_bytes(value)
                 .map_err(|_| "stored resident execution key is invalid".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -6250,6 +6265,8 @@ fn register_guarantor(
         },
         name: dto.name,
         public_key: hex_array(&dto.public_key, "guarantor.publicKey")?,
+        pq_public_key: hex::decode(&dto.pq_public_key)
+            .map_err(|_| "guarantor.pqPublicKey must be hexadecimal".to_string())?,
         risk_policy_digest: hex_array(&dto.risk_policy_digest, "guarantor.riskPolicyDigest")?,
     };
     definition.body()?;
@@ -6259,12 +6276,19 @@ fn register_guarantor(
     if state.guarantors.contains_key(&key) {
         return Err("guarantor identifier is already registered".into());
     }
+    if state.guarantors.values().any(|record| {
+        record.public_key == definition.public_key
+            || record.pq_public_key == definition.pq_public_key
+    }) {
+        return Err("guarantor key component is already registered".into());
+    }
     state.guarantors.insert(
         key,
         GuarantorRecord {
             kind: definition.kind.as_str().into(),
             name: definition.name,
             public_key: definition.public_key,
+            pq_public_key: definition.pq_public_key,
             risk_policy_digest: definition.risk_policy_digest,
             active: true,
         },
@@ -6302,10 +6326,8 @@ fn grant_credit(
         valid_from: dto.valid_from,
         valid_until: dto.valid_until,
         nonce: hex_array(&dto.nonce, "grant.nonce")?,
-        guarantor_signature: Signature::from_bytes(&hex_array(
-            &dto.guarantor_signature,
-            "grant.guarantorSignature",
-        )?),
+        guarantor_signature: hex::decode(&dto.guarantor_signature)
+            .map_err(|_| "grant.guarantorSignature must be hexadecimal".to_string())?,
     };
     grant.unsigned_body()?;
     let statement = grant.statement()?;
@@ -6323,10 +6345,12 @@ fn grant_credit(
     if !guarantor.active || guarantor.risk_policy_digest != grant.risk_policy_digest {
         return Err("credit facility uses an inactive guarantor or unregistered policy".into());
     }
-    VerifyingKey::from_bytes(&guarantor.public_key)
-        .map_err(|_| "stored guarantor public key is invalid".to_string())?
-        .verify(&grant.guarantor_message()?, &grant.guarantor_signature)
-        .map_err(|_| "credit facility has an invalid guarantor signature".to_string())?;
+    qomm_defmi::facility::verify_guarantor_signature(
+        &guarantor.public_key,
+        &guarantor.pq_public_key,
+        &grant.guarantor_message()?,
+        &grant.guarantor_signature,
+    )?;
     if !state
         .assets
         .get(&id_key(&grant.rail_asset_id))
@@ -6545,10 +6569,8 @@ fn control_credit(
         before_sequence: dto.before_sequence,
         effective_at: dto.effective_at,
         reason_digest: hex_array(&dto.reason_digest, "control.reasonDigest")?,
-        guarantor_signature: Signature::from_bytes(&hex_array(
-            &dto.guarantor_signature,
-            "control.guarantorSignature",
-        )?),
+        guarantor_signature: hex::decode(&dto.guarantor_signature)
+            .map_err(|_| "control.guarantorSignature must be hexadecimal".to_string())?,
     };
     control.unsigned_body()?;
     let statement = control.statement()?;
@@ -6578,10 +6600,12 @@ fn control_credit(
     if !guarantor.active {
         return Err("inactive guarantor cannot control a facility".into());
     }
-    VerifyingKey::from_bytes(&guarantor.public_key)
-        .map_err(|_| "stored guarantor public key is invalid".to_string())?
-        .verify(&control.guarantor_message()?, &control.guarantor_signature)
-        .map_err(|_| "credit control lacks the guarantor signature".to_string())?;
+    qomm_defmi::facility::verify_guarantor_signature(
+        &guarantor.public_key,
+        &guarantor.pq_public_key,
+        &control.guarantor_message()?,
+        &control.guarantor_signature,
+    )?;
     match control.action {
         CreditControlAction::Activate if facility.status != "frozen" => {
             return Err("only a frozen facility can be reactivated".into());
@@ -6688,10 +6712,8 @@ fn amend_credit(
             &dto.relation_proof_digest,
             "amendment.relationProofDigest",
         )?,
-        guarantor_signature: Signature::from_bytes(&hex_array(
-            &dto.guarantor_signature,
-            "amendment.guarantorSignature",
-        )?),
+        guarantor_signature: hex::decode(&dto.guarantor_signature)
+            .map_err(|_| "amendment.guarantorSignature must be hexadecimal".to_string())?,
     };
     amendment.unsigned_body()?;
     let statement = amendment.statement()?;
@@ -6739,13 +6761,12 @@ fn amend_credit(
     if guarantor.risk_policy_digest != amendment.after_risk_policy_digest {
         return Err("credit amendment uses an unregistered guarantor risk policy".into());
     }
-    VerifyingKey::from_bytes(&guarantor.public_key)
-        .map_err(|_| "stored guarantor public key is invalid".to_string())?
-        .verify(
-            &amendment.guarantor_message()?,
-            &amendment.guarantor_signature,
-        )
-        .map_err(|_| "credit amendment lacks the guarantor signature".to_string())?;
+    qomm_defmi::facility::verify_guarantor_signature(
+        &guarantor.public_key,
+        &guarantor.pq_public_key,
+        &amendment.guarantor_message()?,
+        &amendment.guarantor_signature,
+    )?;
     facility.cap_commitment = amendment.after_cap_commitment;
     facility.available_commitment = amendment.after_available_commitment;
     facility.overlimit_commitment = amendment.after_overlimit_commitment;
@@ -6955,7 +6976,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use curve25519_dalek::{constants::RISTRETTO_BASEPOINT_POINT as G, scalar::Scalar};
-    use ed25519_dalek::{Signer, SigningKey};
+    use ed25519_dalek::SigningKey;
     use merlin::Transcript;
     use qomm_defmi::facility::DefmiFacility;
     use qomm_defmi::note_chain::{
@@ -7056,20 +7077,24 @@ mod tests {
         let covenant = Wallet::new(&mut OsRng);
         let mut ledger = NoteLedger::new(key.clone(), 32);
         let source_blinding = Scalar::from(33_u64);
-        let source = ledger.build_note(
-            &wallet.address,
-            100,
-            key.commit_u64(100, &source_blinding),
-            &source_blinding,
-            &mut OsRng,
-        );
-        let decoy_note = ledger.build_note(
-            &decoy.address,
-            25,
-            key.commit_u64(25, &Scalar::from(34_u64)),
-            &Scalar::from(34_u64),
-            &mut OsRng,
-        );
+        let source = ledger
+            .build_note(
+                &wallet.address,
+                100,
+                key.commit_u64(100, &source_blinding),
+                &source_blinding,
+                &mut OsRng,
+            )
+            .expect("valid fixture note encryption");
+        let decoy_note = ledger
+            .build_note(
+                &decoy.address,
+                25,
+                key.commit_u64(25, &Scalar::from(34_u64)),
+                &Scalar::from(34_u64),
+                &mut OsRng,
+            )
+            .expect("valid fixture note encryption");
         ledger.add(source);
         ledger.add(decoy_note);
         for note in &ledger.notes {
@@ -7106,9 +7131,9 @@ mod tests {
         )
         .is_err());
         assert_eq!(state.root(), scope_root);
-        let participant = SigningKey::from_bytes(&[173; 32]);
+        let participant = zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap();
         let mandate = ApplicationReserveMandate {
-            version: 1,
+            version: 2,
             scope: scope.clone(),
             request_commitment: [174; 32],
             facility_id,
@@ -7121,7 +7146,7 @@ mod tests {
             settlement_terms_commitment: commit(1, Scalar::from(52_u64)),
             valid_from: 100,
             valid_until: 900,
-            participant_public: participant.verifying_key().to_bytes(),
+            participant_public: zkfmi_crypto::traits::Signer::public_key(&participant),
             signature: Vec::new(),
         }
         .sign(&participant)
@@ -7688,7 +7713,7 @@ mod tests {
             "beforeSequence": control.before_sequence,
             "effectiveAt": control.effective_at,
             "reasonDigest": hex::encode(control.reason_digest),
-            "guarantorSignature": hex::encode(control.guarantor_signature.to_bytes()),
+            "guarantorSignature": hex::encode(&control.guarantor_signature),
         })
     }
 
@@ -7715,7 +7740,7 @@ mod tests {
             "effectiveAt": amendment.effective_at,
             "reasonDigest": hex::encode(amendment.reason_digest),
             "relationProofDigest": hex::encode(amendment.relation_proof_digest),
-            "guarantorSignature": hex::encode(amendment.guarantor_signature.to_bytes()),
+            "guarantorSignature": hex::encode(&amendment.guarantor_signature),
         })
     }
 
@@ -7913,6 +7938,7 @@ mod tests {
             "jurisdiction": issuer.jurisdiction,
             "operatorEntityCommitment": hex::encode(issuer.operator_entity_commitment),
             "publicKey": hex::encode(issuer.public_key),
+            "pqPublicKey": hex::encode(&issuer.pq_public_key),
             "permittedAssetIDs": issuer.permitted_asset_ids.iter().map(hex::encode).collect::<Vec<_>>(),
             "policyDigest": hex::encode(issuer.policy_digest),
             "validFrom": issuer.valid_from,
@@ -7942,8 +7968,9 @@ mod tests {
             one_time: (G * Scalar::from(seed * 3 + 1)).compress().to_bytes(),
             value_commitment,
             ephemeral: (G * Scalar::from(seed * 3 + 2)).compress().to_bytes(),
-            masked_value: Scalar::from(seed * 3 + 3).to_bytes(),
-            masked_blinding: Scalar::from(seed * 3 + 4).to_bytes(),
+            encrypted_opening: qomm_transport::standing_pool::NoteOpening::Recipient(
+                zkfmi_crypto::test_support::note_envelope(),
+            ),
             lock_id,
         };
         output.note_id = output.derived_id().expect("synthetic note identifier");
@@ -7958,8 +7985,7 @@ mod tests {
             "oneTime": hex::encode(output.one_time),
             "valueCommitment": hex::encode(output.value_commitment),
             "ephemeral": hex::encode(output.ephemeral),
-            "maskedValue": hex::encode(output.masked_value),
-            "maskedBlinding": hex::encode(output.masked_blinding),
+            "encryptedOpening": output.encrypted_opening,
             "lockID": hex::encode(output.lock_id),
         })
     }
@@ -7973,6 +7999,7 @@ mod tests {
             "output": note_output_json(&issuance.output),
             "proofDigest": hex::encode(issuance.proof_digest),
             "issuerSignature": hex::encode(issuance.issuer_signature.to_bytes()),
+            "issuerPqSignature": hex::encode(&issuance.issuer_pq_signature),
         })
     }
 
@@ -8118,9 +8145,9 @@ mod tests {
             "recipientView": hex::encode(envelope.recipient_view.compress().to_bytes()),
             "shares": envelope.shares.iter().map(|share| json!({
                 "party": share.party,
-                "ephemeral": hex::encode(share.ephemeral.compress().to_bytes()),
-                "maskedValue": hex::encode(share.masked_value.to_bytes()),
-                "maskedBlinding": hex::encode(share.masked_blinding.to_bytes()),
+                "recipientPublic": share.recipient_public,
+                    "sealed": share.sealed,
+                    "blindingAdjustment": hex::encode(share.blinding_adjustment.to_bytes()),
             })).collect::<Vec<_>>(),
         })
     }
@@ -8131,6 +8158,7 @@ mod tests {
             "assetID": hex::encode(claim.asset_id),
             "valueCommitment": hex::encode(claim.value_commitment),
             "recipientCommitment": hex::encode(claim.recipient_commitment),
+            "authorization": claim.authorization,
             "sourceHoldID": hex::encode(claim.source_hold_id),
             "kind": claim.kind.as_str(),
             "openingEnvelope": opening_envelope_json(&claim.opening_envelope),
@@ -8232,9 +8260,9 @@ mod tests {
             G * Scalar::from(seed * 4 + 1),
             vec![EncryptedOpeningShare {
                 party: 1,
-                ephemeral: G * Scalar::from(seed * 4 + 2),
-                masked_value: Scalar::from(seed * 4 + 3),
-                masked_blinding: Scalar::from(seed * 4 + 4),
+                recipient_public: zkfmi_crypto::test_support::opening_recipient_public(),
+                sealed: zkfmi_crypto::test_support::threshold_opening_envelope(),
+                blinding_adjustment: Scalar::from(seed * 4 + 4),
             }],
         )
         .expect("synthetic opening envelope");
@@ -8243,6 +8271,10 @@ mod tests {
             asset_id,
             value_commitment,
             recipient_commitment: [seed as u8 + 1; 32],
+            authorization: qomm_defmi::note_chain::ClaimAuthorizationCommitment {
+                key_record_commitment: [seed as u8 + 2; 32],
+                key_fingerprint: [seed as u8 + 3; 32],
+            },
             source_hold_id: hold_id,
             kind,
             opening_envelope: envelope,
@@ -8283,7 +8315,9 @@ mod tests {
         let taker_mandate = [131; 32];
         let admission_order_digest = [133; 32];
         let admission_keys = (0u8..7)
-            .map(|node| SigningKey::from_bytes(&[151 + node; 32]))
+            .map(|node| {
+                qomm_transport::application_crypto::SigningKey::from_bytes(&[151 + node; 64])
+            })
             .collect::<Vec<_>>();
         let execution_attestations = admission_keys
             .iter()
@@ -8302,7 +8336,7 @@ mod tests {
                     stderr_digest: [200 + node as u8; 32],
                     persistence_digest: [210 + node as u8; 32],
                     receipt_digest: ZERO,
-                    signature: Signature::from_bytes(&[0; 64]),
+                    signature: qomm_transport::application_crypto::Signature::from_bytes(&[0; 64]),
                 };
                 value.receipt_digest = value.recompute_receipt_digest().unwrap();
                 value.sign(key).unwrap()
@@ -8310,7 +8344,7 @@ mod tests {
             .collect::<Vec<_>>();
         let trusted_execution_keys = admission_keys
             .iter()
-            .map(SigningKey::verifying_key)
+            .map(qomm_transport::application_crypto::SigningKey::verifying_key)
             .collect::<Vec<_>>();
         let execution = verify_execution_lane(
             &execution_attestations,
@@ -9879,6 +9913,9 @@ mod tests {
             jurisdiction: "JP".into(),
             operator_entity_commitment: [45; 32],
             public_key: issuer_key.verifying_key().to_bytes(),
+            pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+                &zkfmi_crypto::test_support::entity_pq_signer(&issuer_key.to_bytes()),
+            ),
             permitted_asset_ids: vec![asset_id],
             policy_digest: [46; 32],
             valid_from: 1,
@@ -9896,6 +9933,19 @@ mod tests {
         )
         .expect("register CSD issuer");
         assert_eq!(state.csd_issuers[&id_key(&issuer_id)].status, "active");
+        let mut other_key_state = state.clone();
+        other_key_state
+            .csd_issuers
+            .get_mut(&id_key(&issuer_id))
+            .unwrap()
+            .pq_public_key[1] ^= 1;
+        assert_ne!(state.root(), other_key_state.root());
+        let encoded_csd = serde_json::to_value(&state.csd_issuers[&id_key(&issuer_id)]).unwrap();
+        let restored: CsdIssuerRecord = serde_json::from_value(encoded_csd.clone()).unwrap();
+        assert_eq!(restored.definition(issuer_id), issuer);
+        let mut legacy_csd = encoded_csd;
+        legacy_csd.as_object_mut().unwrap().remove("pqPublicKey");
+        assert!(serde_json::from_value::<CsdIssuerRecord>(legacy_csd).is_err());
 
         let first_output = synthetic_note(
             asset_id,
@@ -9911,6 +9961,7 @@ mod tests {
             output: first_output.clone(),
             proof_digest: [49; 32],
             issuer_signature: Signature::from_bytes(&[0; 64]),
+            issuer_pq_signature: vec![0; 3309],
         };
         let invalid_transaction = authorized_transaction(
             &state,
@@ -9929,7 +9980,28 @@ mod tests {
             .contains("signature is invalid"));
         assert_eq!(state, before_invalid_signature);
 
-        let first = unsigned.sign_issuer(&issuer_key).expect("sign first note");
+        let first = unsigned
+            .sign_issuer(
+                &issuer_key,
+                &zkfmi_crypto::test_support::entity_pq_signer(&issuer_key.to_bytes()),
+            )
+            .expect("sign first note");
+        let mut bad_pq = first.clone();
+        bad_pq.issuer_pq_signature[0] ^= 1;
+        let before_bad_pq = state.clone();
+        assert!(apply(
+            &mut state,
+            &authorizer,
+            &signers,
+            "defmivm.issueNote",
+            "issuance",
+            note_issuance_json(&bad_pq),
+            bad_pq.statement().unwrap(),
+            100
+        )
+        .unwrap_err()
+        .contains("PQ signature is invalid"));
+        assert_eq!(state, before_bad_pq);
         apply(
             &mut state,
             &authorizer,
@@ -9956,8 +10028,12 @@ mod tests {
             output: second_output.clone(),
             proof_digest: [54; 32],
             issuer_signature: Signature::from_bytes(&[0; 64]),
+            issuer_pq_signature: vec![0; 3309],
         }
-        .sign_issuer(&issuer_key)
+        .sign_issuer(
+            &issuer_key,
+            &zkfmi_crypto::test_support::entity_pq_signer(&issuer_key.to_bytes()),
+        )
         .expect("sign second note");
         apply(
             &mut state,
@@ -10009,8 +10085,12 @@ mod tests {
             ),
             proof_digest: [60; 32],
             issuer_signature: Signature::from_bytes(&[0; 64]),
+            issuer_pq_signature: vec![0; 3309],
         }
-        .sign_issuer(&issuer_key)
+        .sign_issuer(
+            &issuer_key,
+            &zkfmi_crypto::test_support::entity_pq_signer(&issuer_key.to_bytes()),
+        )
         .expect("sign blocked note");
         let blocked_transaction = authorized_transaction(
             &state,
@@ -10233,9 +10313,9 @@ mod tests {
             G * Scalar::from(82_u64),
             vec![EncryptedOpeningShare {
                 party: 1,
-                ephemeral: G * Scalar::from(83_u64),
-                masked_value: Scalar::from(84_u64),
-                masked_blinding: Scalar::from(85_u64),
+                recipient_public: zkfmi_crypto::test_support::opening_recipient_public(),
+                sealed: zkfmi_crypto::test_support::threshold_opening_envelope(),
+                blinding_adjustment: Scalar::from(85_u64),
             }],
         )
         .expect("opening envelope");
@@ -10245,6 +10325,10 @@ mod tests {
             asset_id,
             value_commitment: claim_value,
             recipient_commitment: [87; 32],
+            authorization: qomm_defmi::note_chain::ClaimAuthorizationCommitment {
+                key_record_commitment: [89; 32],
+                key_fingerprint: [90; 32],
+            },
             source_hold_id: hold_id,
             kind: NoteClaimKind::Delivery,
             opening_envelope: envelope.clone(),
@@ -10257,6 +10341,7 @@ mod tests {
                 asset_id,
                 value_commitment: claim_value,
                 recipient_commitment: claim.recipient_commitment,
+                authorization: claim.authorization,
                 source_hold_id: hold_id,
                 kind: "delivery".into(),
                 opening_envelope: crate::state::OpeningEnvelopeRecord::from_domain(&envelope)
@@ -10325,7 +10410,7 @@ mod tests {
         let facility = DefmiFacility::open(
             directory.path().join("facility.sqlite"),
             authorizer.clone(),
-            SigningKey::from_bytes(&[9; 32]),
+            std::sync::Arc::new(zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap()),
         )
         .expect("facility");
         let mut state = State::default();
@@ -10374,6 +10459,9 @@ mod tests {
             kind: GuarantorKind::CentralCounterparty,
             name: "test CCP".into(),
             public_key: guarantor_key.verifying_key().to_bytes(),
+            pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+                &zkfmi_crypto::test_support::entity_pq_signer(&guarantor_key.to_bytes()),
+            ),
             risk_policy_digest: [73; 32],
         };
         let guarantor_statement = guarantor.statement().expect("guarantor statement");
@@ -10398,6 +10486,7 @@ mod tests {
                 "kind": guarantor.kind.as_str(),
                 "name": guarantor.name,
                 "publicKey": hex::encode(guarantor.public_key),
+                "pqPublicKey": hex::encode(&guarantor.pq_public_key),
                 "riskPolicyDigest": hex::encode(guarantor.risk_policy_digest),
             }),
             guarantor_statement,
@@ -10422,10 +10511,14 @@ mod tests {
             valid_from: 1,
             valid_until: 1_000,
             nonce: [80; 32],
-            guarantor_signature: Signature::from_bytes(&[0; 64]),
+            guarantor_signature: Vec::new(),
         };
-        grant.guarantor_signature =
-            guarantor_key.sign(&grant.guarantor_message().expect("guarantor grant message"));
+        grant.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+            &guarantor_key,
+            &zkfmi_crypto::test_support::entity_pq_signer(&guarantor_key.to_bytes()),
+            &grant.guarantor_message().expect("guarantor grant message"),
+        )
+        .unwrap();
         let grant_statement = grant.statement().expect("grant statement");
         let approval = authorizer
             .approve(
@@ -10434,6 +10527,51 @@ mod tests {
                 &signers,
             )
             .expect("approval");
+        let grant_rpc = json!({
+            "operationID": hex::encode(grant.operation_id),
+            "facilityID": hex::encode(grant.facility_id),
+            "guarantorID": hex::encode(grant.guarantor_id),
+            "beneficiaryCommitment": hex::encode(grant.beneficiary_commitment),
+            "railAssetID": hex::encode(grant.rail_asset_id),
+            "capCommitment": hex::encode(grant.cap_commitment),
+            "availableCommitment": hex::encode(grant.available_commitment),
+            "heldCommitment": hex::encode(grant.held_commitment),
+            "outstandingCommitment": hex::encode(grant.outstanding_commitment),
+            "collateralCommitment": hex::encode(grant.collateral_commitment),
+            "riskPolicyDigest": hex::encode(grant.risk_policy_digest),
+            "relationProofDigest": hex::encode(grant.relation_proof_digest),
+            "validFrom": grant.valid_from,
+            "validUntil": grant.valid_until,
+            "nonce": hex::encode(grant.nonce),
+            "guarantorSignature": hex::encode(&grant.guarantor_signature),
+        });
+        let before = state.root();
+        for index in [0, 64, grant.guarantor_signature.len()] {
+            let mut bad = grant.clone();
+            if index == bad.guarantor_signature.len() {
+                bad.guarantor_signature.truncate(64);
+            } else {
+                bad.guarantor_signature[index] ^= 1;
+            }
+            assert!(facility
+                .grant_credit_facility(&bad, &approval, 100)
+                .is_err());
+            assert_eq!(facility.state_root().unwrap(), before);
+            let mut bad_rpc = grant_rpc.clone();
+            bad_rpc["guarantorSignature"] = Value::String(hex::encode(&bad.guarantor_signature));
+            assert!(apply(
+                &mut state,
+                &authorizer,
+                &signers,
+                "defmivm.issueCreditGrant",
+                "grant",
+                bad_rpc,
+                grant_statement,
+                100
+            )
+            .is_err());
+            assert_eq!(state.root(), before);
+        }
         facility
             .grant_credit_facility(&grant, &approval, 100)
             .expect("facility grant");
@@ -10443,24 +10581,7 @@ mod tests {
             &signers,
             "defmivm.issueCreditGrant",
             "grant",
-            json!({
-                "operationID": hex::encode(grant.operation_id),
-                "facilityID": hex::encode(grant.facility_id),
-                "guarantorID": hex::encode(grant.guarantor_id),
-                "beneficiaryCommitment": hex::encode(grant.beneficiary_commitment),
-                "railAssetID": hex::encode(grant.rail_asset_id),
-                "capCommitment": hex::encode(grant.cap_commitment),
-                "availableCommitment": hex::encode(grant.available_commitment),
-                "heldCommitment": hex::encode(grant.held_commitment),
-                "outstandingCommitment": hex::encode(grant.outstanding_commitment),
-                "collateralCommitment": hex::encode(grant.collateral_commitment),
-                "riskPolicyDigest": hex::encode(grant.risk_policy_digest),
-                "relationProofDigest": hex::encode(grant.relation_proof_digest),
-                "validFrom": grant.valid_from,
-                "validUntil": grant.valid_until,
-                "nonce": hex::encode(grant.nonce),
-                "guarantorSignature": hex::encode(grant.guarantor_signature.to_bytes()),
-            }),
+            grant_rpc,
             grant_statement,
             100,
         )
@@ -10686,6 +10807,9 @@ mod tests {
                 kind: "ccp".into(),
                 name: "test guarantor".into(),
                 public_key: guarantor_key.verifying_key().to_bytes(),
+                pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+                    &zkfmi_crypto::test_support::entity_pq_signer(&guarantor_key.to_bytes()),
+                ),
                 risk_policy_digest: policy,
                 active: true,
             },
@@ -10732,13 +10856,16 @@ mod tests {
             effective_at: 100,
             reason_digest: [135; 32],
             relation_proof_digest: [136; 32],
-            guarantor_signature: Signature::from_bytes(&[0; 64]),
+            guarantor_signature: Vec::new(),
         };
-        over_limit.guarantor_signature = guarantor_key.sign(
+        over_limit.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+            &guarantor_key,
+            &zkfmi_crypto::test_support::entity_pq_signer(&guarantor_key.to_bytes()),
             &over_limit
                 .guarantor_message()
                 .expect("over-limit guarantor message"),
-        );
+        )
+        .unwrap();
         let stale_over_limit = authorized_transaction(
             &state,
             &authorizer,
@@ -10772,13 +10899,17 @@ mod tests {
             before_sequence: 1,
             effective_at: 100,
             reason_digest: [138; 32],
-            guarantor_signature: Signature::from_bytes(&[0; 64]),
+            guarantor_signature: Vec::new(),
         };
-        activate_while_over_limit.guarantor_signature = guarantor_key.sign(
-            &activate_while_over_limit
-                .guarantor_message()
-                .expect("activation message"),
-        );
+        activate_while_over_limit.guarantor_signature =
+            qomm_defmi::facility::sign_guarantor_message(
+                &guarantor_key,
+                &zkfmi_crypto::test_support::entity_pq_signer(&guarantor_key.to_bytes()),
+                &activate_while_over_limit
+                    .guarantor_message()
+                    .expect("activation message"),
+            )
+            .unwrap();
         let activation = authorized_transaction(
             &state,
             &authorizer,
@@ -10813,14 +10944,17 @@ mod tests {
             before_sequence: 1,
             reason_digest: [143; 32],
             relation_proof_digest: [144; 32],
-            guarantor_signature: Signature::from_bytes(&[0; 64]),
+            guarantor_signature: Vec::new(),
             ..over_limit.clone()
         };
-        rehabilitate.guarantor_signature = guarantor_key.sign(
+        rehabilitate.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+            &guarantor_key,
+            &zkfmi_crypto::test_support::entity_pq_signer(&guarantor_key.to_bytes()),
             &rehabilitate
                 .guarantor_message()
                 .expect("rehabilitation message"),
-        );
+        )
+        .unwrap();
         apply(
             &mut state,
             &authorizer,
@@ -10844,11 +10978,14 @@ mod tests {
             reason_digest: [146; 32],
             ..activate_while_over_limit
         };
-        activate.guarantor_signature = guarantor_key.sign(
+        activate.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+            &guarantor_key,
+            &zkfmi_crypto::test_support::entity_pq_signer(&guarantor_key.to_bytes()),
             &activate
                 .guarantor_message()
                 .expect("rehabilitated activation message"),
-        );
+        )
+        .unwrap();
         apply(
             &mut state,
             &authorizer,
@@ -11614,7 +11751,7 @@ mod tests {
         let facility = DefmiFacility::open(
             directory.path().join("settlement-verifier.sqlite"),
             authorizer.clone(),
-            SigningKey::from_bytes(&[9; 32]),
+            std::sync::Arc::new(zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap()),
         )
         .expect("facility");
         let mut state = State::default();
@@ -11677,12 +11814,14 @@ mod tests {
         let facility = DefmiFacility::open(
             directory.path().join("admission.sqlite"),
             authorizer.clone(),
-            SigningKey::from_bytes(&[9; 32]),
+            std::sync::Arc::new(zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap()),
         )
         .expect("facility");
         let mut state = State::default();
         let admission_keys = (0u8..7)
-            .map(|node| SigningKey::from_bytes(&[151 + node; 32]))
+            .map(|node| {
+                qomm_transport::application_crypto::SigningKey::from_bytes(&[151 + node; 64])
+            })
             .collect::<Vec<_>>();
         let committee_plan = AdmissionCommitteePlan {
             operation_id: [159; 32],
@@ -11745,7 +11884,9 @@ mod tests {
                             claim_digest: [186 + sequence as u8; 32],
                             batch_digest: node_batch_digests[node],
                             order_digest,
-                            signature: Signature::from_bytes(&[0; 64]),
+                            signature: qomm_transport::application_crypto::Signature::from_bytes(
+                                &[0; 64],
+                            ),
                         }
                         .sign(key)
                         .expect("admission signature")
@@ -11900,7 +12041,7 @@ mod tests {
                     claim_digest: [212; 32],
                     batch_digest: next_node_batches[node],
                     order_digest: next_order_digest,
-                    signature: Signature::from_bytes(&[0; 64]),
+                    signature: qomm_transport::application_crypto::Signature::from_bytes(&[0; 64]),
                 }
                 .sign(key)
                 .expect("next admission signature")

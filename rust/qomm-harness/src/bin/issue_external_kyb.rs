@@ -5,7 +5,6 @@
 //! deployment replaces this executable with its regulated KYC/KYB connector
 //! while retaining the same fail-closed ingestion boundary.
 
-use ed25519_dalek::{Signature, SigningKey};
 use qomm_proofs::kyb::BusinessAttributes;
 use qomm_transport::external_kyb::{
     write_external_kyb_inputs, ExternalKybAssertion, ExternalKybBundle, ExternalKybTrustAnchor,
@@ -15,6 +14,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use zkfmi_crypto::{hybrid::signature::HybridSigner, traits::Signer};
 
 fn required_path(arguments: &[String], name: &str) -> Result<PathBuf, String> {
     arguments
@@ -31,7 +31,7 @@ fn assertion(
     audience: &str,
     subject: &str,
     now: u64,
-    signing: &SigningKey,
+    signing: &HybridSigner,
 ) -> Result<ExternalKybAssertion, String> {
     let mut nonce = [0_u8; 32];
     OsRng.fill_bytes(&mut nonce);
@@ -78,7 +78,7 @@ fn assertion(
         issued_at: now.saturating_sub(1).max(1),
         expires_at: now.saturating_add(3_600),
         nonce,
-        signature: Signature::from_bytes(&[0_u8; 64]),
+        signature: vec![],
     }
     .sign(signing)
 }
@@ -93,12 +93,13 @@ fn run(arguments: &[String]) -> Result<(), String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_secs();
-    let signing = SigningKey::generate(&mut OsRng);
+    let signing = HybridSigner::generate().map_err(|error| error.to_string())?;
     let anchor = ExternalKybTrustAnchor {
         provider: provider.into(),
         key_id: key_id.into(),
         audience: audience.into(),
-        public_key: signing.verifying_key(),
+        public_key: qomm_proofs::kyb::KybIssuerKey::from_bytes(&signing.public_key())
+            .map_err(str::to_string)?,
         valid_from: now.saturating_sub(60).max(1),
         valid_until: now.saturating_add(86_400),
         minimum_assurance_level: 3,

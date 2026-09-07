@@ -6,7 +6,6 @@
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
 use qomm_defmi::assets::AssetRegistry;
 use qomm_defmi::credit::CreditCtx;
 use qomm_defmi::netting::*;
@@ -14,6 +13,7 @@ use qomm_zk::pedersen::Pedersen;
 use qomm_zkpi::{deal_quorum, frost, Bounds, Issuer, Venue};
 use rand::rngs::OsRng;
 use std::collections::BTreeMap;
+use zkfmi_crypto::{hybrid::signature::HybridSigner, traits::Signer};
 
 const BITS: usize = 32;
 
@@ -29,7 +29,7 @@ struct Fixture {
     shares: BTreeMap<frost::Identifier, frost::keys::KeyPackage>,
     public: frost::keys::PublicKeyPackage,
     holders: BTreeMap<Vec<u8>, Holder>,
-    quorum_key: SigningKey,
+    quorum_key: HybridSigner,
 }
 
 fn fixture(
@@ -88,7 +88,7 @@ fn fixture(
         .collect();
     let venue = Venue::new(key.clone(), &Bounds::default(), public.clone());
     // the key an attested cycle's batch attestation verifies under
-    let quorum_key = SigningKey::from_bytes(&[7u8; 32]);
+    let quorum_key = HybridSigner::generate().unwrap();
     Fixture {
         issuer: Issuer::new(key.clone(), Bounds::default()),
         cycle: Cycle::new(
@@ -99,7 +99,7 @@ fn fixture(
             cash_book,
             venue,
             attest,
-            Some(quorum_key.verifying_key()),
+            Some(quorum_key.public_key()),
         )
         .unwrap(),
         quorum_key,
@@ -504,7 +504,7 @@ fn an_attestation_for_other_positions_is_refused() {
         f.cycle.close(
             &coverage,
             &[],
-            Some(&BatchAttestation::sign(&f.quorum_key, [0u8; 32]))
+            Some(&BatchAttestation::sign(&f.quorum_key, [0u8; 32]).unwrap())
         ),
         Err("the attestation is for other positions")
     );
@@ -539,15 +539,29 @@ fn a_batch_attestation_signed_by_nobody_is_refused() {
         .collect();
 
     let digest = f.cycle.batch_digest();
-    let stranger = SigningKey::from_bytes(&[9u8; 32]);
+    let stranger = HybridSigner::generate().unwrap();
     assert_eq!(
         f.cycle.close(
             &coverage,
             &[],
-            Some(&BatchAttestation::sign(&stranger, digest))
+            Some(&BatchAttestation::sign(&stranger, digest).unwrap())
         ),
         Err("the attestation is not signed by the quorum"),
         "a cycle closed on an attestation the quorum never made"
+    );
+    for component in [0, 64] {
+        let mut attestation = BatchAttestation::sign(&f.quorum_key, digest).unwrap();
+        attestation.signature[component] ^= 1;
+        assert_eq!(
+            f.cycle.close(&coverage, &[], Some(&attestation)),
+            Err("the attestation is not signed by the quorum")
+        );
+    }
+    let mut classical_only = BatchAttestation::sign(&f.quorum_key, digest).unwrap();
+    classical_only.signature.truncate(64);
+    assert_eq!(
+        f.cycle.close(&coverage, &[], Some(&classical_only)),
+        Err("the attestation is not signed by the quorum")
     );
 }
 
@@ -689,7 +703,7 @@ fn an_attestation_does_not_move_between_cycles_that_end_the_same_way() {
     let opening: Vec<(Vec<u8>, Scalar)> = (0..3)
         .map(|i| (format!("p{i}").into_bytes(), Scalar::random(&mut rng)))
         .collect();
-    let build = |id: &[u8], rng: &mut OsRng| {
+    let build = |id: &[u8], _rng: &mut OsRng| {
         let mut sec = PositionBook::new(key.clone(), sec_tag.clone(), true, "securities", BITS);
         let mut cash = PositionBook::new(key.clone(), cash_tag.clone(), true, "cash", BITS);
         for (handle, blinding) in &opening {
@@ -713,7 +727,7 @@ fn an_attestation_does_not_move_between_cycles_that_end_the_same_way() {
             cash,
             venue,
             true,
-            Some(SigningKey::generate(rng).verifying_key()),
+            Some(HybridSigner::generate().unwrap().public_key()),
         )
         .unwrap()
     };

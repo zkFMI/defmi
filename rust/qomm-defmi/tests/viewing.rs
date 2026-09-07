@@ -30,13 +30,15 @@ fn fill(ledger: &mut NoteLedger, owner: &ScopedWallet, scopes: &[&str], per: usi
         for _ in 0..per {
             let value = rng.gen_range(1..500);
             let blinding = Scalar::random(&mut rng);
-            let note = ledger.build_note(
-                &owner.address(scope),
-                value,
-                key.commit_u64(value, &blinding),
-                &blinding,
-                &mut rng,
-            );
+            let note = ledger
+                .build_note(
+                    &owner.address(scope),
+                    value,
+                    key.commit_u64(value, &blinding),
+                    &blinding,
+                    &mut rng,
+                )
+                .expect("valid fixture note encryption");
             ledger.add(note);
             planted[i] += value;
         }
@@ -147,13 +149,15 @@ fn revocation_is_the_next_scope_and_not_a_message() {
 
     let key = asset_key();
     let b1 = Scalar::random(&mut rng);
-    let note = ledger.build_note(
-        &owner.address("s"),
-        4242,
-        key.commit_u64(4242, &b1),
-        &b1,
-        &mut rng,
-    );
+    let note = ledger
+        .build_note(
+            &owner.address("s"),
+            4242,
+            key.commit_u64(4242, &b1),
+            &b1,
+            &mut rng,
+        )
+        .expect("valid fixture note encryption");
     ledger.add(note);
     let seen = scan_scope(&ledger, &grant, &key);
     assert!(
@@ -162,13 +166,15 @@ fn revocation_is_the_next_scope_and_not_a_message() {
     );
 
     let b2 = Scalar::random(&mut rng);
-    let later = ledger.build_note(
-        &owner.address("s+1"),
-        777,
-        key.commit_u64(777, &b2),
-        &b2,
-        &mut rng,
-    );
+    let later = ledger
+        .build_note(
+            &owner.address("s+1"),
+            777,
+            key.commit_u64(777, &b2),
+            &b2,
+            &mut rng,
+        )
+        .expect("valid fixture note encryption");
     ledger.add(later);
     let seen = scan_scope(&ledger, &grant, &key);
     assert!(
@@ -404,13 +410,15 @@ fn a_payer_using_a_stale_address_puts_the_note_in_a_stale_scope() {
         (rolling.scope(NOW + 91 * 86_400), 200),
     ] {
         let blinding = Scalar::random(&mut rng);
-        let note = ledger.build_note(
-            &owner.address(&scope),
-            value,
-            key.commit_u64(value, &blinding),
-            &blinding,
-            &mut rng,
-        );
+        let note = ledger
+            .build_note(
+                &owner.address(&scope),
+                value,
+                key.commit_u64(value, &blinding),
+                &blinding,
+                &mut rng,
+            )
+            .expect("valid fixture note encryption");
         ledger.add(note);
     }
     let late = arrived_off_schedule(&ledger, &owner, &rolling, NOW + 91 * 86_400, &key);
@@ -432,13 +440,15 @@ fn rolling_does_not_make_an_old_key_stop_working() {
 
     // somebody pays into the old address long after the roll
     let blinding = Scalar::random(&mut rng);
-    let note = ledger.build_note(
-        &owner.address(&grant.scope),
-        42,
-        key.commit_u64(42, &blinding),
-        &blinding,
-        &mut rng,
-    );
+    let note = ledger
+        .build_note(
+            &owner.address(&grant.scope),
+            42,
+            key.commit_u64(42, &blinding),
+            &blinding,
+            &mut rng,
+        )
+        .expect("valid fixture note encryption");
     ledger.add(note);
     let seen = scan_scope(&ledger, &grant, &key);
     assert!(

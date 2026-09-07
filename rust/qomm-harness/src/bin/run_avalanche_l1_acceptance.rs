@@ -75,8 +75,12 @@ fn run(options: &Options) -> HarnessResult<Value> {
 
     let (authorizer, keys) = committee(&options.chain_id)?;
     let receipt_key = SigningKey::from_bytes(&digest("qomm-avalanche-acceptance-receipt-key-v1"));
-    let facility =
-        DefmiFacility::open(&options.projection, authorizer, receipt_key).map_err(string_error)?;
+    let facility = DefmiFacility::open(
+        &options.projection,
+        authorizer,
+        zkfmi_crypto::test_support::hybrid_signer(&receipt_key.to_bytes()),
+    )
+    .map_err(string_error)?;
     let bridge = FacilityAvalancheBridge::new(&facility, &rpc_clients[0]);
     let mut operation_timings = serde_json::Map::new();
 

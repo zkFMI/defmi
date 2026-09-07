@@ -12,13 +12,13 @@
 use std::collections::BTreeMap;
 
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{SigningKey, VerifyingKey};
 use qomm_defmi::ccp::*;
 use qomm_defmi::credit::CreditCtx;
 use qomm_measure::{hosts, time_us, Summary};
 use qomm_zk::pedersen::Pedersen;
 use rand::rngs::OsRng;
 use rand::Rng;
+use zkfmi_crypto::{hybrid::signature::HybridSigner, traits::Signer};
 
 const ASSET: &str = "an instrument";
 const PARTICIPANTS: usize = 8;
@@ -32,15 +32,15 @@ fn shell(program: &str, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-fn build(edges: usize, key: &Pedersen) -> (Vec<SignedObligation>, BTreeMap<Vec<u8>, VerifyingKey>) {
+fn build(edges: usize, key: &Pedersen) -> (Vec<SignedObligation>, BTreeMap<Vec<u8>, Vec<u8>>) {
     let mut rng = OsRng;
     let mut signing = BTreeMap::new();
     let mut parties = BTreeMap::new();
     let mut members = Vec::new();
     for i in 0..PARTICIPANTS {
         let handle = format!("p{i}").into_bytes();
-        let sk = SigningKey::generate(&mut rng);
-        parties.insert(handle.clone(), sk.verifying_key());
+        let sk = HybridSigner::generate().unwrap();
+        parties.insert(handle.clone(), sk.public_key());
         signing.insert(handle.clone(), sk);
         members.push(handle);
     }
@@ -54,11 +54,7 @@ fn build(edges: usize, key: &Pedersen) -> (Vec<SignedObligation>, BTreeMap<Vec<u
             asset: ASSET.to_string(),
             commitment: key.commit_u64(rng.gen_range(1..1000), &Scalar::random(&mut rng)),
         };
-        graph.push(sign_obligation(
-            &obligation,
-            &signing[&payer],
-            &signing[&payee],
-        ));
+        graph.push(sign_obligation(&obligation, &signing[&payer], &signing[&payee]).unwrap());
     }
     (graph, parties)
 }
@@ -78,7 +74,7 @@ fn main() {
 
     for edges in [16usize, 64, 256, 1024] {
         let (graph, parties) = build(edges, &key);
-        let house = ClearingProvider::new("DeCCP-A", b"house-a", SigningKey::generate(&mut rng));
+        let house = ClearingProvider::new("DeCCP-A", b"house-a", HybridSigner::generate().unwrap());
         let margin = ctx
             .grant(
                 b"house-a",
@@ -101,9 +97,9 @@ fn main() {
         });
         let novation = house.novate(&graph).unwrap();
         let attest = time_us(repeats, || {
-            house.attest(&novation, b"cycle-1");
+            house.attest(&novation, b"cycle-1").unwrap();
         });
-        let attestation = house.attest(&novation, b"cycle-1");
+        let attestation = house.attest(&novation, b"cycle-1").unwrap();
 
         let arithmetic = time_us(repeats, || {
             check_novation(&house.handle, &novation).unwrap();

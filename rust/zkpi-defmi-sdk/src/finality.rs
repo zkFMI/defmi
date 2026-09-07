@@ -1,5 +1,4 @@
 use crate::{SdkError, SdkResult};
-use ed25519_dalek::VerifyingKey;
 use qomm_defmi::facility::SettlementReceipt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -151,7 +150,7 @@ pub fn accept_canonical_transition(
 pub fn accept_signed_facility_receipt(
     application_binding: [u8; 32],
     receipt: &SettlementReceipt,
-    verifying_key: &VerifyingKey,
+    verifying_key: &[u8],
     expected_statement: [u8; 32],
     expected_before_root: [u8; 32],
 ) -> SdkResult<ApplicationSettlementReceipt> {
@@ -239,7 +238,7 @@ fn finality_digest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
+    use zkfmi_crypto::{key::KeyPurpose, traits::Signer};
 
     #[test]
     fn canonical_finality_requires_matching_readbacks() {
@@ -269,7 +268,7 @@ mod tests {
 
     #[test]
     fn signed_facility_finality_rejects_another_key() {
-        let signing = SigningKey::from_bytes(&[7; 32]);
+        let signing = zkfmi_crypto::test_support::hybrid_signer(&[7; 32]);
         let mut receipt = SettlementReceipt {
             operation_id: [1; 32],
             nullifier: [2; 32],
@@ -283,22 +282,24 @@ mod tests {
             response_bytes: 11,
             database_bytes_before: 12,
             database_bytes_after: 13,
-            signature: ed25519_dalek::Signature::from_bytes(&[0; 64]),
+            signature: vec![0; 3373],
         };
-        receipt.signature = signing.sign(&receipt.unsigned().unwrap());
+        receipt.signature = signing
+            .sign(KeyPurpose::AuditCheckpoint, &receipt.unsigned().unwrap())
+            .unwrap();
         assert!(accept_signed_facility_receipt(
             [9; 32],
             &receipt,
-            &signing.verifying_key(),
+            &signing.public_key(),
             [3; 32],
             [4; 32],
         )
         .is_ok());
-        let other = SigningKey::from_bytes(&[8; 32]);
+        let other = zkfmi_crypto::test_support::hybrid_signer(&[8; 32]);
         assert!(accept_signed_facility_receipt(
             [9; 32],
             &receipt,
-            &other.verifying_key(),
+            &other.public_key(),
             [3; 32],
             [4; 32],
         )

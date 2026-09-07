@@ -24,10 +24,13 @@ wasm-measurement = ["clear_on_drop"]
 # and reads Unix paths, and `std::os::unix` does not exist on wasm32 either. On
 # by default, because every host build wants both.
 default = ["avalanche"]
-avalanche = ["dep:openssl", "dep:dekyx-core", "dep:zkfmi-crypto", "zkfmi-crypto/tls"]
+avalanche = ["dep:openssl", "dep:dekyx-core", "zkfmi-crypto/tls"]
+public-audit = ["dep:qomm-batch-audit"]
 
 [dependencies]
-zkfmi-crypto = { workspace = true, optional = true }
+qomm-batch-audit = { path = "../../../zkpi/rust/qomm-batch-audit", optional = true }
+zkfmi-crypto.workspace = true
+zeroize = { version = "1.8", features = ["alloc"] }
 dekyx-core = { workspace = true, optional = true }
 clear_on_drop = { version = "0.2.5", features = ["no_cc"], optional = true }
 qomm-zk.workspace = true

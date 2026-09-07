@@ -1,7 +1,6 @@
 //! Delivery versus payment on ledgers that cannot read themselves.
 
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{Signer, SigningKey};
 use qomm_defmi::assets::AssetRegistry;
 use qomm_defmi::ledger::Ledger;
 use qomm_defmi::settlement::*;
@@ -422,28 +421,35 @@ fn accounts_are_a_function_of_the_handle_and_the_rail() {
 
 #[test]
 fn a_ledger_under_an_issuer_refuses_an_unsigned_opening() {
+    use zkfmi_crypto::{hybrid::signature::HybridSigner, key::KeyPurpose, traits::Signer};
     let mut rng = OsRng;
     let key = Pedersen::new(b"qomm:defmi:v1");
-    let issuer = SigningKey::generate(&mut rng);
-    let mut ledger = Ledger::under_issuer(key.clone(), 32, issuer.verifying_key());
+    let issuer = HybridSigner::generate().unwrap();
+    let mut ledger = Ledger::under_issuer(key.clone(), 32, issuer.public_key());
     let balance = key.commit_u64(1_000, &Scalar::random(&mut rng));
-    let elsewhere = SigningKey::generate(&mut rng);
+    let elsewhere = HybridSigner::generate().unwrap();
     let body = qomm_defmi::ledger::issuance_body(b"alice", &balance, b"n1");
     assert_eq!(
-        ledger.open_authorised(b"alice", balance, b"n1", &elsewhere.sign(&body)),
+        ledger.open_authorised(
+            b"alice",
+            balance,
+            b"n1",
+            &elsewhere.sign(KeyPurpose::Attestation, &body).unwrap()
+        ),
         Err("the opening balance is not signed by the issuer")
     );
 }
 
 #[test]
 fn an_issued_opening_is_admitted_once_and_not_twice() {
+    use zkfmi_crypto::{hybrid::signature::HybridSigner, key::KeyPurpose, traits::Signer};
     let mut rng = OsRng;
     let key = Pedersen::new(b"qomm:defmi:v1");
-    let issuer = SigningKey::generate(&mut rng);
-    let mut ledger = Ledger::under_issuer(key.clone(), 32, issuer.verifying_key());
+    let issuer = HybridSigner::generate().unwrap();
+    let mut ledger = Ledger::under_issuer(key.clone(), 32, issuer.public_key());
     let balance = key.commit_u64(1_000, &Scalar::random(&mut rng));
     let body = qomm_defmi::ledger::issuance_body(b"alice", &balance, b"n1");
-    let signature = issuer.sign(&body);
+    let signature = issuer.sign(KeyPurpose::Attestation, &body).unwrap();
     assert_eq!(
         ledger.open_authorised(b"alice", balance, b"n1", &signature),
         Ok(())
@@ -461,13 +467,19 @@ fn an_issued_opening_is_admitted_once_and_not_twice() {
 
 #[test]
 fn an_authorisation_does_not_carry_to_another_amount() {
+    use zkfmi_crypto::{hybrid::signature::HybridSigner, key::KeyPurpose, traits::Signer};
     let mut rng = OsRng;
     let key = Pedersen::new(b"qomm:defmi:v1");
-    let issuer = SigningKey::generate(&mut rng);
-    let mut ledger = Ledger::under_issuer(key.clone(), 32, issuer.verifying_key());
+    let issuer = HybridSigner::generate().unwrap();
+    let mut ledger = Ledger::under_issuer(key.clone(), 32, issuer.public_key());
     let small = key.commit_u64(1, &Scalar::random(&mut rng));
     let large = key.commit_u64(1_000_000, &Scalar::random(&mut rng));
-    let signature = issuer.sign(&qomm_defmi::ledger::issuance_body(b"alice", &small, b"n1"));
+    let signature = issuer
+        .sign(
+            KeyPurpose::Attestation,
+            &qomm_defmi::ledger::issuance_body(b"alice", &small, b"n1"),
+        )
+        .unwrap();
     assert_eq!(
         ledger.open_authorised(b"alice", large, b"n1", &signature),
         Err("the opening balance is not signed by the issuer")
@@ -477,10 +489,11 @@ fn an_authorisation_does_not_carry_to_another_amount() {
 #[test]
 #[should_panic(expected = "use open_authorised")]
 fn the_unchecked_opening_is_closed_once_a_ledger_has_an_issuer() {
+    use zkfmi_crypto::{hybrid::signature::HybridSigner, traits::Signer};
     let mut rng = OsRng;
     let key = Pedersen::new(b"qomm:defmi:v1");
-    let issuer = SigningKey::generate(&mut rng);
-    let mut ledger = Ledger::under_issuer(key.clone(), 32, issuer.verifying_key());
+    let issuer = HybridSigner::generate().unwrap();
+    let mut ledger = Ledger::under_issuer(key.clone(), 32, issuer.public_key());
     ledger.open(b"alice", key.commit_u64(1_000, &Scalar::random(&mut rng)));
 }
 

@@ -11,9 +11,12 @@ use qomm_defmi::application_settlement::{
     ApplicationNoteFillBatch, ApplicationNoteRelease, ApplicationOpening, ApplicationReleaseReason,
     ApplicationSpendHead,
 };
+use qomm_defmi::claim_redemption::NoteClaimAuthorization;
 use qomm_defmi::facility::CreditFacilityRelationProof;
+use qomm_defmi::note_chain::{note_claim_recipient_commitment, ClaimAuthorizationCommitment};
 use qomm_defmi::notes::{encode_spend_proof, NoteLedger, Wallet};
 use qomm_proofs::opening_envelope::{encrypt_opening_share, opening_context};
+use std::cell::RefCell;
 
 const ASSETS: [[u8; 32]; 2] = [[201; 32], [202; 32]];
 const FACILITIES: [[u8; 32]; 2] = [[203; 32], [204; 32]];
@@ -35,6 +38,7 @@ struct Fixture {
     pq_committee: qomm_zkpi::QuorumPolicy,
     scope: ApplicationReserveScope,
     wallets: [Wallet; 2],
+    claim_authorizations: RefCell<BTreeMap<[u8; 32], NoteClaimAuthorization>>,
     initial: Witness,
 }
 
@@ -69,8 +73,14 @@ impl Fixture {
             public,
             pq_committee,
             scope,
-            wallets: VIEW_SECRETS
-                .map(|value| Wallet::from_parts(Scalar::from(value), Scalar::from(value + 10))),
+            wallets: VIEW_SECRETS.map(|value| {
+                Wallet::from_parts(
+                    Scalar::from(value),
+                    Scalar::from(value + 10),
+                    zkfmi_crypto::hybrid::kem::HybridKemKey::from_seed(&[29; 96]),
+                )
+            }),
+            claim_authorizations: RefCell::new(BTreeMap::new()),
             initial: Witness {
                 values: [100, 1_000],
                 blindings: [Scalar::from(41_u64), Scalar::from(42_u64)],
@@ -140,20 +150,24 @@ impl Fixture {
         let wallet = &self.wallets[index];
         let mut ledger = NoteLedger::new(self.key.clone(), 32);
         let source_blind = Scalar::from(81_u64);
-        let source = ledger.build_note(
-            &wallet.address,
-            value + 10,
-            self.key.commit_u64(value + 10, &source_blind),
-            &source_blind,
-            &mut OsRng,
-        );
-        let other = ledger.build_note(
-            &decoy.address,
-            25,
-            self.key.commit_u64(25, &source_blind),
-            &source_blind,
-            &mut OsRng,
-        );
+        let source = ledger
+            .build_note(
+                &wallet.address,
+                value + 10,
+                self.key.commit_u64(value + 10, &source_blind),
+                &source_blind,
+                &mut OsRng,
+            )
+            .expect("valid fixture note encryption");
+        let other = ledger
+            .build_note(
+                &decoy.address,
+                25,
+                self.key.commit_u64(25, &source_blind),
+                &source_blind,
+                &mut OsRng,
+            )
+            .expect("valid fixture note encryption");
         ledger.add(source);
         ledger.add(other);
         for note in &ledger.notes {
@@ -163,9 +177,9 @@ impl Fixture {
             )
             .unwrap();
         }
-        let participant = SigningKey::from_bytes(&[226 + index as u8; 32]);
+        let participant = zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap();
         let mandate = ApplicationReserveMandate {
-            version: 1,
+            version: 2,
             scope: self.scope.clone(),
             request_commitment: [228 + index as u8; 32],
             facility_id,
@@ -178,7 +192,7 @@ impl Fixture {
             settlement_terms_commitment: commit(1, Scalar::from(91_u64)),
             valid_from: 100,
             valid_until: 900,
-            participant_public: participant.verifying_key().to_bytes(),
+            participant_public: zkfmi_crypto::traits::Signer::public_key(&participant),
             signature: Vec::new(),
         }
         .sign(&participant)
@@ -280,6 +294,28 @@ impl Fixture {
             .unwrap();
     }
 
+    fn claim_authorization(
+        &self,
+        recipient_handle: [u8; 32],
+        context: [u8; 32],
+        asset_id: [u8; 32],
+        hold_id: [u8; 32],
+        kind: NoteClaimKind,
+    ) -> ClaimAuthorizationCommitment {
+        let recipient_commitment =
+            note_claim_recipient_commitment(recipient_handle, context, asset_id, hold_id, kind)
+                .unwrap();
+        let authorization = NoteClaimAuthorization::generate(recipient_commitment, 100, 1_000)
+            .expect("fresh claim authorization");
+        let commitment = authorization.commitment().unwrap();
+        assert!(self
+            .claim_authorizations
+            .borrow_mut()
+            .insert(commitment.key_fingerprint, authorization)
+            .is_none());
+        commitment
+    }
+
     fn fill(
         &self,
         prior: Witness,
@@ -340,6 +376,36 @@ impl Fixture {
             100,
         );
         let payment = partial.sealed_hybrid(signature, pq);
+        let claim_authorizations = [
+            self.claim_authorization(
+                self.wallets[1].address.view.compress().to_bytes(),
+                payment.nullifier(),
+                ASSETS[0],
+                HOLDS[0],
+                NoteClaimKind::Delivery,
+            ),
+            self.claim_authorization(
+                self.wallets[0].address.view.compress().to_bytes(),
+                payment.nullifier(),
+                ASSETS[0],
+                HOLDS[0],
+                NoteClaimKind::Refund,
+            ),
+            self.claim_authorization(
+                self.wallets[0].address.view.compress().to_bytes(),
+                payment.nullifier(),
+                ASSETS[1],
+                HOLDS[1],
+                NoteClaimKind::Delivery,
+            ),
+            self.claim_authorization(
+                self.wallets[1].address.view.compress().to_bytes(),
+                payment.nullifier(),
+                ASSETS[1],
+                HOLDS[1],
+                NoteClaimKind::Refund,
+            ),
+        ];
         let proofs = DvpProofs {
             product: prove_product(
                 &self.key,
@@ -406,6 +472,8 @@ impl Fixture {
                     quantity,
                     blinds[0],
                     &self.wallets[1],
+                    payment.nullifier(),
+                    claim_authorizations[0],
                 ),
                 opening(
                     nonce,
@@ -413,6 +481,8 @@ impl Fixture {
                     next.values[0],
                     next.blindings[0] + deltas[0],
                     &self.wallets[0],
+                    payment.nullifier(),
+                    claim_authorizations[1],
                 ),
                 opening(
                     nonce,
@@ -420,6 +490,8 @@ impl Fixture {
                     values[1],
                     blinds[1],
                     &self.wallets[0],
+                    payment.nullifier(),
+                    claim_authorizations[2],
                 ),
                 opening(
                     nonce,
@@ -427,6 +499,8 @@ impl Fixture {
                     next.values[1],
                     next.blindings[1] + deltas[1],
                     &self.wallets[1],
+                    payment.nullifier(),
+                    claim_authorizations[3],
                 ),
             ],
             committee_public: self.public.serialize().unwrap(),
@@ -482,6 +556,8 @@ fn opening(
     value: u64,
     blind: Scalar,
     recipient: &Wallet,
+    claim_context: [u8; 32],
+    claim_authorization: ClaimAuthorizationCommitment,
 ) -> ApplicationOpening {
     let context = opening_context(&nonce, leg).unwrap();
     // Actual encrypted degree-two Shamir evaluations; known test-only
@@ -495,6 +571,7 @@ fn opening(
                 Scalar::from(value) + Scalar::from(7_u64) * x + Scalar::from(13_u64) * x * x,
                 blind + Scalar::from(17_u64) * x + Scalar::from(19_u64) * x * x,
                 &recipient.address.view,
+                &recipient.address.opening_public,
                 &mut OsRng,
             )
             .unwrap()
@@ -502,6 +579,8 @@ fn opening(
         .collect();
     ApplicationOpening::from_domain(
         &OpeningEnvelope::new(context, 3, recipient.address.view, shares).unwrap(),
+        claim_context,
+        claim_authorization,
     )
     .unwrap()
 }
@@ -688,7 +767,11 @@ fn successive_partial_fills_keep_only_remainders_locked_and_recover_after_restar
         let encrypted = record.remaining_opening.as_ref().unwrap().domain().unwrap();
         for quorum in [[1, 4, 7], [2, 3, 6]] {
             let (value, blind) = encrypted
-                .decrypt(&Scalar::from(VIEW_SECRETS[index]), &quorum)
+                .decrypt(
+                    &Scalar::from(VIEW_SECRETS[index]),
+                    fixture.wallets[index].opening_key(),
+                    &quorum,
+                )
                 .unwrap();
             assert_eq!(value, Scalar::from(remaining.values[index]));
             assert_eq!(blind, remaining.blindings[index]);
@@ -792,6 +875,15 @@ fn unsigned_candidate_verification_never_authorizes_native_execution() {
     let mut bad = candidate.clone();
     bad.dvp_proofs[80] ^= 1;
     assert!(bad.verify_unsigned(&fixture.scope, 200).is_err());
+    let mut rebound_claim = candidate.clone();
+    rebound_claim.openings[1].claim_context = [244; 32];
+    assert!(rebound_claim.verify_unsigned(&fixture.scope, 200).is_err());
+    let mut legacy = serde_json::to_value(&candidate).unwrap();
+    legacy["openings"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("claimContext");
+    assert!(serde_json::from_value::<ApplicationNoteFill>(legacy).is_err());
     let mut other_scope = fixture.scope.clone();
     other_scope.committee_epoch += 1;
     assert!(candidate.verify_unsigned(&other_scope, 200).is_err());
@@ -808,7 +900,7 @@ fn native_monetary_and_head_checks_reject_even_freshly_committee_signed_forgery(
     let before = fixture.state.root();
     // Except the last case, replace the committee certificate too. This
     // distinguishes native verification from signature-only authorization.
-    for mutation in 0..10 {
+    for mutation in 0..19 {
         let mut bad = first.clone();
         match mutation {
             0 => bad.dvp_proofs[80] ^= 1,
@@ -940,6 +1032,11 @@ fn partial_expiry_and_ordered_cancellation_release_exact_current_head() {
     let mut fixture = Fixture::new();
     let stale_cancel = fixture.release(0, ApplicationReleaseReason::Cancelled, 21);
     let (fill, remainder) = fixture.fill(fixture.initial, 40, 4, [false; 2]);
+    let fill_nullifier = fill.verify(&fixture.scope, 200).unwrap().nullifier;
+    let refund_authorizations = [
+        fill.openings[1].claim_authorization,
+        fill.openings[3].claim_authorization,
+    ];
     fixture
         .state
         .apply(&fill_tx(&fill), &fixture.authorizer, 200)
@@ -950,6 +1047,32 @@ fn partial_expiry_and_ordered_cancellation_release_exact_current_head() {
         .apply(&release_tx(&stale_cancel), &fixture.authorizer, 201)
         .is_err());
     assert_eq!(fixture.state.root(), before);
+    for hold in HOLDS {
+        assert_eq!(
+            fixture.state.application_reservations[&id_key(&hold)]
+                .remaining_opening
+                .as_ref()
+                .unwrap()
+                .claim_context,
+            fill_nullifier
+        );
+    }
+    let mut legacy = serde_json::to_value(&fixture.state).unwrap();
+    legacy["applicationReservations"][id_key(&HOLDS[0])]["remainingOpening"]
+        .as_object_mut()
+        .unwrap()
+        .remove("claimContext");
+    assert!(serde_json::from_value::<State>(legacy).is_err());
+    let mut rebound = fixture.state.clone();
+    rebound
+        .application_reservations
+        .get_mut(&id_key(&HOLDS[0]))
+        .unwrap()
+        .remaining_opening
+        .as_mut()
+        .unwrap()
+        .claim_context = [245; 32];
+    assert!(rebound.validate().is_err());
     fixture.state = restored(&fixture.state);
     let cancel = fixture.release(0, ApplicationReleaseReason::Cancelled, 22);
     let mut unsigned = cancel.clone();
@@ -969,6 +1092,7 @@ fn partial_expiry_and_ordered_cancellation_release_exact_current_head() {
         .apply(&release_tx(&expiry), &fixture.authorizer, 901)
         .unwrap();
     assert_eq!(fixture.state.note_claims.len(), 4);
+    let release_contexts = [cancel.operation_id, expiry.operation_id];
     for index in 0..2 {
         let record = &fixture.state.application_reservations[&id_key(&HOLDS[index])];
         assert_eq!(record.status, "released");
@@ -979,9 +1103,37 @@ fn partial_expiry_and_ordered_cancellation_release_exact_current_head() {
             .values()
             .find(|claim| claim.source_hold_id == HOLDS[index] && claim.kind == "refund")
             .unwrap();
+        let refund_opening = &fill.openings[index * 2 + 1];
+        assert_eq!(claim.authorization, refund_authorizations[index]);
+        assert_eq!(
+            claim.recipient_commitment,
+            note_claim_recipient_commitment(
+                refund_opening.recipient_view,
+                fill_nullifier,
+                ASSETS[index],
+                HOLDS[index],
+                NoteClaimKind::Refund,
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            claim.recipient_commitment,
+            note_claim_recipient_commitment(
+                refund_opening.recipient_view,
+                release_contexts[index],
+                ASSETS[index],
+                HOLDS[index],
+                NoteClaimKind::Refund,
+            )
+            .unwrap()
+        );
         let encrypted = claim.opening_envelope.domain().unwrap();
         let (value, blind) = encrypted
-            .decrypt(&Scalar::from(VIEW_SECRETS[index]), &[1, 4, 7])
+            .decrypt(
+                &Scalar::from(VIEW_SECRETS[index]),
+                fixture.wallets[index].opening_key(),
+                &[1, 4, 7],
+            )
             .unwrap();
         assert_eq!(value, Scalar::from(remainder.values[index]));
         assert_eq!(blind, remainder.blindings[index]);
@@ -1206,7 +1358,7 @@ fn closing_one_order_does_not_release_the_counterpartys_remaining_reserve() {
 
 #[test]
 fn native_recipient_redeems_final_refund_without_governance_or_destination_keys() {
-    use qomm_defmi::claim_redemption::redeem_claim;
+    use qomm_defmi::claim_redemption::{claim_participant_id, redeem_claim};
     let mut fixture = Fixture::new();
     let (fill, remainder) = fixture.fill(fixture.initial, 40, 7, [false, true]);
     let claim = fill
@@ -1221,19 +1373,40 @@ fn native_recipient_redeems_final_refund_without_governance_or_destination_keys(
         .apply(&fill_tx(&fill), &fixture.authorizer, 200)
         .unwrap();
     let destination = Wallet::new(&mut OsRng);
-    let redemption = redeem_claim(
-        &claim,
-        &fixture.key,
-        32,
-        &Scalar::from(VIEW_SECRETS[1]),
-        &destination.address,
-        &[1, 4, 7],
-        fixture.authorizer.domain(),
-        fixture.state.root(),
-        [71; 32],
-        &mut OsRng,
-    )
-    .unwrap();
+    let redemption = {
+        let authorizations = fixture.claim_authorizations.borrow();
+        redeem_claim(
+            &claim,
+            &fixture.key,
+            32,
+            &Scalar::from(VIEW_SECRETS[1]),
+            fixture.wallets[1].opening_key(),
+            &destination.address,
+            &[1, 4, 7],
+            fixture.authorizer.domain(),
+            fixture.state.root(),
+            [71; 32],
+            &authorizations[&claim.authorization.key_fingerprint],
+            201,
+            &mut OsRng,
+        )
+        .unwrap()
+    };
+    assert_eq!(redemption.version, 2);
+    assert_eq!(redemption.authorization_signature.len(), 64 + 3_309);
+    assert_eq!(redemption.authorization_key.public_key.len(), 32 + 1_952);
+    assert_eq!(
+        redemption.authorization_key.participant_id,
+        claim_participant_id(claim.recipient_commitment).unwrap()
+    );
+    let persisted = serde_json::to_vec(&redemption).unwrap();
+    let restored_redemption: qomm_defmi::claim_redemption::NoteClaimRedemption =
+        serde_json::from_slice(&persisted).unwrap();
+    assert_eq!(serde_json::to_vec(&restored_redemption).unwrap(), persisted);
+    assert_eq!(
+        restored_redemption.authorization_signature,
+        redemption.authorization_signature
+    );
     assert_ne!(
         redemption.output.one_time,
         destination.address.view.compress().to_bytes()
@@ -1275,6 +1448,46 @@ fn native_recipient_redeems_final_refund_without_governance_or_destination_keys(
 }
 
 #[test]
+fn claim_authorization_keys_are_fresh_per_claim_and_cannot_be_reused() {
+    let mut fixture = Fixture::new();
+    let (first, remaining) = fixture.fill(fixture.initial, 40, 18, [false; 2]);
+    let first_claims = first.verify(&fixture.scope, 200).unwrap().claims;
+    let first_fingerprints = first_claims
+        .iter()
+        .map(|claim| claim.authorization.key_fingerprint)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(first_fingerprints.len(), first_claims.len());
+    fixture
+        .state
+        .apply(&fill_tx(&first), &fixture.authorizer, 200)
+        .unwrap();
+    let mut legacy_state = serde_json::to_value(&fixture.state).unwrap();
+    let legacy_claims = legacy_state["noteClaims"].as_object_mut().unwrap();
+    legacy_claims
+        .values_mut()
+        .next()
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("authorization");
+    assert!(serde_json::from_value::<State>(legacy_state).is_err());
+
+    let (mut second, _) = fixture.fill(remaining, 20, 19, [false; 2]);
+    let second_claims = second.verify(&fixture.scope, 201).unwrap().claims;
+    assert!(second_claims
+        .iter()
+        .all(|claim| { !first_fingerprints.contains(&claim.authorization.key_fingerprint) }));
+    second.openings[0].claim_authorization = first.openings[0].claim_authorization;
+    fixture.sign_fill(&mut second);
+    let before = fixture.state.clone();
+    assert!(fixture
+        .state
+        .apply(&fill_tx(&second), &fixture.authorizer, 201)
+        .is_err());
+    assert_eq!(fixture.state, before);
+}
+
+#[test]
 fn native_claim_redemption_rejects_rebinding_and_legacy_approval_bypass() {
     use qomm_defmi::claim_redemption::redeem_claim;
     let mut fixture = Fixture::new();
@@ -1290,33 +1503,44 @@ fn native_claim_redemption_rejects_rebinding_and_legacy_approval_bypass() {
         .state
         .apply(&fill_tx(&fill), &fixture.authorizer, 200)
         .unwrap();
-    let redemption = redeem_claim(
-        &claim,
-        &fixture.key,
-        32,
-        &Scalar::from(VIEW_SECRETS[1]),
-        &fixture.wallets[1].address,
-        &[1, 4, 7],
-        fixture.authorizer.domain(),
-        fixture.state.root(),
-        [72; 32],
-        &mut OsRng,
-    )
-    .unwrap();
-    assert!(redeem_claim(
-        &claim,
-        &fixture.key,
-        32,
-        &Scalar::from(VIEW_SECRETS[0]),
-        &fixture.wallets[0].address,
-        &[1, 4, 7],
-        fixture.authorizer.domain(),
-        fixture.state.root(),
-        [73; 32],
-        &mut OsRng
-    )
-    .is_err());
-    for mutation in 0..10 {
+    let redemption = {
+        let authorizations = fixture.claim_authorizations.borrow();
+        let authorization = &authorizations[&claim.authorization.key_fingerprint];
+        let redemption = redeem_claim(
+            &claim,
+            &fixture.key,
+            32,
+            &Scalar::from(VIEW_SECRETS[1]),
+            fixture.wallets[1].opening_key(),
+            &fixture.wallets[1].address,
+            &[1, 4, 7],
+            fixture.authorizer.domain(),
+            fixture.state.root(),
+            [72; 32],
+            authorization,
+            201,
+            &mut OsRng,
+        )
+        .unwrap();
+        assert!(redeem_claim(
+            &claim,
+            &fixture.key,
+            32,
+            &Scalar::from(VIEW_SECRETS[0]),
+            fixture.wallets[0].opening_key(),
+            &fixture.wallets[0].address,
+            &[1, 4, 7],
+            fixture.authorizer.domain(),
+            fixture.state.root(),
+            [73; 32],
+            authorization,
+            201,
+            &mut OsRng
+        )
+        .is_err());
+        redemption
+    };
+    for mutation in 0..19 {
         let mut bad = redemption.clone();
         match mutation {
             0 => bad.domain.push('x'),
@@ -1325,10 +1549,27 @@ fn native_claim_redemption_rejects_rebinding_and_legacy_approval_bypass() {
             3 => bad.claim_id[0] ^= 1,
             4 => bad.output.asset_id = ASSETS[0],
             5 => bad.output.one_time = fixture.wallets[0].address.spend.compress().to_bytes(),
-            6 => bad.output.masked_value = Scalar::ONE.to_bytes(),
+            6 => {
+                bad.output.encrypted_opening = qomm_transport::standing_pool::NoteOpening::Covenant
+            }
             7 => bad.output.lock_id = HOLDS[0],
             8 => bad.recipient_signature[40] ^= 1,
-            _ => bad.recipient_signature.push(0),
+            9 => bad.recipient_signature.push(0),
+            10 => bad.authorization_signature[0] ^= 1,
+            11 => bad.authorization_signature[100] ^= 1,
+            12 => bad.authorization_signature = bad.recipient_signature.clone(),
+            13 => bad.authorization_key.public_key[0] ^= 1,
+            14 => {
+                bad.authorization_key.participant_id =
+                    zkfmi_crypto::key::ParticipantId::new("another-claim").unwrap();
+            }
+            15 => bad.authorization_key.key_version += 1,
+            16 => bad.version = 1,
+            17 => {
+                bad.authorization_key.suite =
+                    zkfmi_crypto::suite::Suite::new(zkfmi_crypto::suite::SuiteId::MlDsa65)
+            }
+            _ => bad.authorization_key.purpose = zkfmi_crypto::key::KeyPurpose::Order,
         }
         if (4..=7).contains(&mutation) {
             bad.output.note_id = bad.output.derived_id().unwrap();
@@ -1347,6 +1588,73 @@ fn native_claim_redemption_rejects_rebinding_and_legacy_approval_bypass() {
         );
         assert_eq!(fixture.state.root(), before);
     }
+    for lifecycle in 0..3 {
+        let mut bad = redemption.clone();
+        match lifecycle {
+            0 => bad.authorization_key.not_before = 202,
+            1 => bad.authorization_key.not_after = 201,
+            _ => bad.authorization_key.revoked_at = Some(201),
+        }
+        let tx = TransactionEnvelope::new(
+            "defmivm.issueNoteClaimRedemption",
+            json!({"redemption": bad}),
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        let before = fixture.state.root();
+        assert!(fixture.state.apply(&tx, &fixture.authorizer, 201).is_err());
+        assert_eq!(fixture.state.root(), before);
+    }
+    let expired_tx = TransactionEnvelope::new(
+        "defmivm.issueNoteClaimRedemption",
+        json!({"redemption": redemption}),
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    let before = fixture.state.root();
+    assert!(fixture
+        .state
+        .apply(&expired_tx, &fixture.authorizer, 1_000)
+        .is_err());
+    assert_eq!(fixture.state.root(), before);
+
+    let wrong_authorization =
+        NoteClaimAuthorization::generate(claim.recipient_commitment, 100, 1_000).unwrap();
+    let mut wrong_key = redemption.clone();
+    wrong_key.authorization_key = wrong_authorization.key_record().clone();
+    let wrong_key_tx = TransactionEnvelope::new(
+        "defmivm.issueNoteClaimRedemption",
+        json!({"redemption": wrong_key}),
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    assert!(fixture
+        .state
+        .apply(&wrong_key_tx, &fixture.authorizer, 201)
+        .is_err());
+    assert_eq!(fixture.state.root(), before);
+
+    let mut legacy = serde_json::to_value(&redemption).unwrap();
+    let legacy = legacy.as_object_mut().unwrap();
+    legacy.remove("version");
+    legacy.remove("authorizationKey");
+    legacy.remove("authorizationSignature");
+    let legacy_tx = TransactionEnvelope::new(
+        "defmivm.issueNoteClaimRedemption",
+        json!({"redemption": legacy}),
+    )
+    .unwrap()
+    .encode()
+    .unwrap();
+    let before = fixture.state.root();
+    assert!(fixture
+        .state
+        .apply(&legacy_tx, &fixture.authorizer, 201)
+        .is_err());
+    assert_eq!(fixture.state.root(), before);
     // Even a valid governance quorum must not replace ownership of native
     // claims with the old digest-only approval boundary.
     let (_, signers) = committee();

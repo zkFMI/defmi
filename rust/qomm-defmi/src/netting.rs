@@ -24,7 +24,6 @@ use bulletproofs::{BulletproofGens, PedersenGens, RangeProof};
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::Identity;
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use merlin::Transcript;
 use qomm_zk::pedersen::Pedersen;
 use qomm_zk::sigma::{
@@ -35,6 +34,11 @@ use qomm_zkpi::{Instruction, Venue};
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use zkfmi_crypto::{
+    hybrid::signature::{HybridSigner, HybridVerifier},
+    key::KeyPurpose,
+    traits::{Signer, Verifier},
+};
 
 use crate::assets::BlindedTag;
 use crate::credit::{CreditCtx, CreditLine};
@@ -106,7 +110,7 @@ pub struct Coverage {
 /// checks it against the key the cycle was opened with.
 pub struct BatchAttestation {
     pub digest: [u8; 32],
-    pub signature: Signature,
+    pub signature: Vec<u8>,
 }
 
 impl BatchAttestation {
@@ -119,11 +123,13 @@ impl BatchAttestation {
         out
     }
 
-    pub fn sign(key: &SigningKey, digest: [u8; 32]) -> Self {
-        BatchAttestation {
+    pub fn sign(key: &HybridSigner, digest: [u8; 32]) -> Result<Self, &'static str> {
+        Ok(BatchAttestation {
             digest,
-            signature: key.sign(&Self::body(&digest)),
-        }
+            signature: key
+                .sign(KeyPurpose::Attestation, &Self::body(&digest))
+                .map_err(|_| "hybrid batch attestation signing failed")?,
+        })
     }
 }
 
@@ -444,7 +450,7 @@ pub struct Cycle {
     pub venue: Venue,
     /// The key an attested cycle's batch attestation must verify under. `None`
     /// on an unattested cycle, where every trade carries its own instruction.
-    pub quorum: Option<VerifyingKey>,
+    pub quorum: Option<Vec<u8>>,
     pub admitted: usize,
     pub refused: usize,
     closed: bool,
@@ -464,7 +470,7 @@ impl Cycle {
         cash: PositionBook,
         venue: Venue,
         attest_batch: bool,
-        quorum: Option<VerifyingKey>,
+        quorum: Option<Vec<u8>>,
     ) -> Result<Self, &'static str> {
         if id.is_empty() {
             return Err("a cycle needs an identity; an attestation over an \
@@ -620,8 +626,13 @@ impl Cycle {
                 Some(a) if a.digest != self.batch_digest() => {
                     return Err("the attestation is for other positions")
                 }
-                Some(a) => quorum
-                    .verify_strict(&BatchAttestation::body(&a.digest), &a.signature)
+                Some(a) => HybridVerifier
+                    .verify(
+                        KeyPurpose::Attestation,
+                        quorum,
+                        &BatchAttestation::body(&a.digest),
+                        &a.signature,
+                    )
                     .map_err(|_| "the attestation is not signed by the quorum")?,
             }
         }

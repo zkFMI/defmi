@@ -6,8 +6,9 @@
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
 use qomm_defmi::assets::AssetRegistry;
+use qomm_defmi::claim_redemption::NoteClaimAuthorization;
+use qomm_defmi::note_chain::note_claim_recipient_commitment;
 use qomm_defmi::note_settlement::*;
 use qomm_defmi::notes::{ring_for, NoteLedger, Wallet};
 use qomm_proofs::threshold_range::{deal_bits, joint_prove_range_from_contributions};
@@ -18,6 +19,7 @@ use qomm_zkpi::{
 };
 use rand::rngs::OsRng;
 use std::collections::BTreeMap;
+use zkfmi_crypto::hybrid::signature::HybridSigner;
 
 const BITS: usize = 32;
 const RING: usize = 8;
@@ -58,13 +60,15 @@ fn stock_rail(
         };
         let held = if i == 0 { value } else { value + i as u64 };
         let blinding = Scalar::random(rng);
-        let note = ledger.build_note(
-            &address,
-            held,
-            asset_key.commit_u64(held, &blinding),
-            &blinding,
-            rng,
-        );
+        let note = ledger
+            .build_note(
+                &address,
+                held,
+                asset_key.commit_u64(held, &blinding),
+                &blinding,
+                rng,
+            )
+            .expect("valid fixture note encryption");
         ledger.add(note);
     }
     ledger
@@ -91,7 +95,7 @@ fn world(rng: &mut OsRng) -> World {
             securities,
             cash,
             venue,
-            SigningKey::generate(rng),
+            HybridSigner::generate().unwrap(),
         ),
         key,
         registry,
@@ -313,12 +317,39 @@ fn an_honest_settlement_moves_both_rails_and_signs_a_receipt() {
     let rng = &mut OsRng;
     let mut w = world(rng);
     let p = package(&w, rng, 1, QTY, PRICE).unwrap();
+    #[cfg(feature = "public-audit")]
+    let package_digest = p.digest();
     let before = (w.defmi.securities.snapshot(), w.defmi.cash.snapshot());
-    let receipt = w.defmi.settle(p, 1_000, b"ctx", rng);
+    let receipt = w.defmi.settle(p, 1_000, b"ctx", rng).unwrap();
     assert!(receipt.settled, "{}", receipt.reason);
     assert!(receipt.verify(&w.defmi.public_key()));
     assert_ne!(receipt.securities_after, before.0);
     assert_ne!(receipt.cash_after, before.1);
+    assert_eq!(receipt.securities_after, w.defmi.securities.snapshot());
+    assert_eq!(receipt.cash_after, w.defmi.cash.snapshot());
+    #[cfg(feature = "public-audit")]
+    {
+        use qomm_batch_audit::BatchContext;
+        let rows = [receipt
+            .public_audit_transition(&w.defmi.public_key(), package_digest)
+            .unwrap()];
+        let expected = qomm_batch_audit::statement(
+            BatchContext {
+                network_id: [71; 32],
+                deployment_id: [73; 32],
+                period: 1_000,
+                partition: 0,
+            },
+            rows[0].before.clone(),
+            &rows,
+        )
+        .unwrap();
+        let proof = qomm_batch_audit::prove(&expected, &rows).unwrap();
+        qomm_batch_audit::verify(&expected, &proof).unwrap();
+        let mut altered = expected.clone();
+        altered.final_state.cash[0] ^= 1;
+        assert!(qomm_batch_audit::verify(&altered, &proof).is_err());
+    }
 }
 
 #[test]
@@ -326,11 +357,11 @@ fn the_same_instruction_cannot_settle_twice() {
     let rng = &mut OsRng;
     let mut w = world(rng);
     let first = package(&w, rng, 2, QTY, PRICE).unwrap();
-    assert!(w.defmi.settle(first, 1_000, b"ctx", rng).settled);
+    assert!(w.defmi.settle(first, 1_000, b"ctx", rng).unwrap().settled);
     // A second package reusing the nonce carries the same nullifier.
     let again = package(&w, rng, 2, QTY, PRICE);
     if let Ok(p) = again {
-        let receipt = w.defmi.settle(p, 1_000, b"ctx", rng);
+        let receipt = w.defmi.settle(p, 1_000, b"ctx", rng).unwrap();
         assert!(!receipt.settled);
     }
 }
@@ -340,8 +371,21 @@ fn a_receipt_is_signed_over_what_it_says() {
     let rng = &mut OsRng;
     let mut w = world(rng);
     let p = package(&w, rng, 3, QTY, PRICE).unwrap();
-    let mut receipt = w.defmi.settle(p, 1_000, b"ctx", rng);
+    let mut receipt = w.defmi.settle(p, 1_000, b"ctx", rng).unwrap();
     assert!(receipt.verify(&w.defmi.public_key()));
+    let complete = receipt.signature.clone();
+    for component in [0, 64] {
+        receipt.signature[component] ^= 1;
+        assert!(!receipt.verify(&w.defmi.public_key()));
+        #[cfg(feature = "public-audit")]
+        assert!(receipt
+            .public_audit_transition(&w.defmi.public_key(), [17; 32])
+            .is_err());
+        receipt.signature.clone_from(&complete);
+    }
+    receipt.signature.truncate(64);
+    assert!(!receipt.verify(&w.defmi.public_key()));
+    receipt.signature = complete;
     receipt.settled_at += 1;
     assert!(
         !receipt.verify(&w.defmi.public_key()),
@@ -357,7 +401,7 @@ fn a_cash_leg_for_the_wrong_value_is_refused() {
     // something the product relation does not produce.
     let mut p = package(&w, rng, 4, QTY, PRICE).unwrap();
     p.cash_value_commitment = w.key.commit_u64(QTY * PRICE + 1, &Scalar::random(rng));
-    let receipt = w.defmi.settle(p, 1_000, b"ctx", rng);
+    let receipt = w.defmi.settle(p, 1_000, b"ctx", rng).unwrap();
     assert!(!receipt.settled);
 }
 
@@ -368,7 +412,7 @@ fn nothing_is_applied_when_a_leg_fails() {
     let mut p = package(&w, rng, 5, QTY, PRICE).unwrap();
     p.securities.spend.outputs[0] += w.key.g; // no longer the proved value
     let before = (w.defmi.securities.snapshot(), w.defmi.cash.snapshot());
-    let receipt = w.defmi.settle(p, 1_000, b"ctx", rng);
+    let receipt = w.defmi.settle(p, 1_000, b"ctx", rng).unwrap();
     assert!(!receipt.settled);
     assert_eq!(
         receipt.securities_after, before.0,
@@ -388,7 +432,7 @@ fn two_payments_to_one_address_share_no_bytes() {
         .iter()
         .map(|n| n.ephemeral.compress().to_bytes())
         .collect();
-    assert!(w.defmi.settle(first, 1_000, b"ctx", rng).settled);
+    assert!(w.defmi.settle(first, 1_000, b"ctx", rng).unwrap().settled);
 
     let second = package(&w, rng, 7, QTY, PRICE);
     if let Ok(p) = second {
@@ -686,6 +730,7 @@ fn threshold_dvp_projects_to_predelegated_claims_without_a_post_quote_wallet_spe
                         Scalar::from(*party as u64),
                         Scalar::from(*party as u64 + 20),
                         &recipient,
+                        &zkfmi_crypto::test_support::opening_recipient_public(),
                         rng,
                     )
                     .unwrap()
@@ -700,6 +745,49 @@ fn threshold_dvp_projects_to_predelegated_claims_without_a_post_quote_wallet_spe
         securities_refund: envelope("securities_refund", typed.payment.payee_handle),
         cash_delivery: envelope("cash_delivery", typed.payment.payee_handle),
         cash_refund: envelope("cash_refund", typed.payment.payer_handle),
+        authorizations: [
+            (
+                typed.payment.payer_handle.compress().to_bytes(),
+                securities_asset,
+                maker_hold,
+                NoteClaimKind::Delivery,
+            ),
+            (
+                typed.payment.payee_handle.compress().to_bytes(),
+                securities_asset,
+                maker_hold,
+                NoteClaimKind::Refund,
+            ),
+            (
+                typed.payment.payee_handle.compress().to_bytes(),
+                cash_asset,
+                taker_hold,
+                NoteClaimKind::Delivery,
+            ),
+            (
+                typed.payment.payer_handle.compress().to_bytes(),
+                cash_asset,
+                taker_hold,
+                NoteClaimKind::Refund,
+            ),
+        ]
+        .map(|(recipient, asset, hold, kind)| {
+            NoteClaimAuthorization::generate(
+                note_claim_recipient_commitment(
+                    recipient,
+                    typed.context.rfq_nullifier,
+                    asset,
+                    hold,
+                    kind,
+                )
+                .unwrap(),
+                1,
+                1_000,
+            )
+            .unwrap()
+            .commitment()
+            .unwrap()
+        }),
     };
     let projection = VerifiedDelegatedNoteSettlementProjection::verify_and_project(
         &w.defmi.venue,

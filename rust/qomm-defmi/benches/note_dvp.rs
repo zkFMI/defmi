@@ -13,7 +13,6 @@ use std::collections::BTreeMap;
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
 use qomm_defmi::assets::AssetRegistry;
 use qomm_defmi::note_settlement::*;
 use qomm_defmi::notes::{ring_for, NoteLedger, Wallet};
@@ -21,6 +20,7 @@ use qomm_measure::{hosts, time_ms};
 use qomm_zk::pedersen::Pedersen;
 use qomm_zkpi::{deal_quorum, frost, Bounds, Instruction, Issuer, Venue};
 use rand::rngs::OsRng;
+use zkfmi_crypto::hybrid::signature::HybridSigner;
 
 const BITS: usize = 32;
 const QTY: u64 = 100;
@@ -70,13 +70,15 @@ fn rail(
         };
         let held = if i == 0 { value } else { value + i as u64 };
         let blinding = Scalar::random(rng);
-        let note = ledger.build_note(
-            &address,
-            held,
-            asset_key.commit_u64(held, &blinding),
-            &blinding,
-            rng,
-        );
+        let note = ledger
+            .build_note(
+                &address,
+                held,
+                asset_key.commit_u64(held, &blinding),
+                &blinding,
+                rng,
+            )
+            .expect("valid fixture note encryption");
         ledger.add(note);
     }
     ledger
@@ -102,7 +104,7 @@ fn world(ring: usize, rng: &mut OsRng) -> World {
             securities,
             cash,
             venue,
-            SigningKey::generate(rng),
+            HybridSigner::generate().unwrap(),
         ),
         key,
         registry,
@@ -236,7 +238,7 @@ fn main() {
             let mut fresh = world(ring, rng);
             let p = package(&fresh, rng, nonce);
             nonce = nonce.wrapping_add(1);
-            let receipt = fresh.defmi.settle(p, 1_000, b"ctx", rng);
+            let receipt = fresh.defmi.settle(p, 1_000, b"ctx", rng).unwrap();
             assert!(receipt.settled, "an honest package must settle");
         });
         let _ = &mut w;

@@ -6,7 +6,7 @@
 use bulletproofs::{BulletproofGens, PedersenGens, RangeProof};
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use merlin::Transcript;
 use qomm_zk::pedersen::Pedersen;
 use rand_core::{CryptoRng, RngCore};
@@ -19,8 +19,13 @@ use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use zkfmi_crypto::{
+    hybrid::signature::{HybridSigner, HybridVerifier},
+    key::KeyPurpose,
+    traits::{Signer as CryptoSigner, Verifier as CryptoVerifier},
+};
 
 use crate::MAX_UNIX_TIME;
 
@@ -41,13 +46,13 @@ const GUARANTOR_SIGNATURE_DOMAIN: &[u8] = b"QOMM:DEFMI:GUARANTOR:SIGNATURE:v1";
 const RESERVATION_DOMAIN: &[u8] = b"QOMM:DEFMI:BOUND-RESERVATION:v1";
 const RESERVATION_ESCROW_DOMAIN: &[u8] = b"QOMM:DEFMI:RESERVATION-ESCROW:v1";
 const ADMISSION_BATCH_DOMAIN: &[u8] = b"QOMM:DEFMI:ADMISSION-BATCH:v1";
-const ADMISSION_COMMITTEE_DOMAIN: &[u8] = b"QOMM:DEFMI:ADMISSION-COMMITTEE:v1";
+const ADMISSION_COMMITTEE_DOMAIN: &[u8] = b"QOMM:DEFMI:ADMISSION-COMMITTEE:v2";
 const ADMISSION_ADVANCE_DOMAIN: &[u8] = b"QOMM:DEFMI:ADMISSION-ADVANCE:v1";
 const PRODUCT_RELEASE_DOMAIN: &[u8] = b"QOMM:DEFMI:PRODUCT-RELEASE:v1";
 const SETTLEMENT_DOMAIN: &[u8] = b"QOMM:DEFMI:SETTLEMENT:v1";
 const PRODUCT_SETTLEMENT_DOMAIN: &[u8] = b"QOMM:DEFMI:PRODUCT-SETTLEMENT:v1";
 const PRODUCT_SETTLEMENT_BATCH_DOMAIN: &[u8] = b"QOMM:DEFMI:PRODUCT-SETTLEMENT-BATCH:v1";
-const RECEIPT_DOMAIN: &[u8] = b"QOMM:DEFMI:RECEIPT:v1";
+const RECEIPT_DOMAIN: &[u8] = b"QOMM:DEFMI:RECEIPT:v2";
 // v2 commits the global operation replay set. In v1, two nodes could expose
 // the same root while disagreeing about whether an operation ID was spent.
 // v3 additionally commits the governance-pinned quote/zkPI verifier epochs.
@@ -79,10 +84,9 @@ impl AdmissionCommitteePlan {
             || [self.operation_id, self.venue_id].contains(&ZERO)
             || self.node_keys.contains(&ZERO)
             || self.node_keys.iter().collect::<BTreeSet<_>>().len() != self.node_keys.len()
-            || self
-                .node_keys
-                .iter()
-                .any(|key| VerifyingKey::from_bytes(key).is_err())
+            || self.node_keys.iter().any(|key| {
+                qomm_transport::application_crypto::VerifyingKey::from_bytes(key).is_err()
+            })
         {
             return Err("admission committee is incomplete, duplicated, or invalid".into());
         }
@@ -100,11 +104,13 @@ impl AdmissionCommitteePlan {
         digest(ADMISSION_COMMITTEE_DOMAIN, &self.body()?)
     }
 
-    fn verifying_keys(&self) -> Result<Vec<VerifyingKey>, String> {
+    fn verifying_keys(
+        &self,
+    ) -> Result<Vec<qomm_transport::application_crypto::VerifyingKey>, String> {
         self.node_keys
             .iter()
             .map(|key| {
-                VerifyingKey::from_bytes(key)
+                qomm_transport::application_crypto::VerifyingKey::from_bytes(key)
                     .map_err(|_| "admission committee key is not canonical".to_string())
             })
             .collect()
@@ -491,7 +497,60 @@ pub struct GuarantorDefinition {
     pub kind: GuarantorKind,
     pub name: String,
     pub public_key: [u8; 32],
+    pub pq_public_key: Vec<u8>,
     pub risk_policy_digest: [u8; 32],
+}
+
+/// Mandatory composite guarantor authorization over the unchanged purpose/domain
+/// message. The raw Ed25519 component and standalone ML-DSA-65 Attestation
+/// component are both required; this is distinct from HybridSigner's framing.
+pub fn sign_guarantor_message(
+    classical: &SigningKey,
+    pq: &dyn zkfmi_crypto::traits::Signer,
+    message: &[u8],
+) -> Result<Vec<u8>, String> {
+    if pq.suite() != zkfmi_crypto::suite::Suite::new(zkfmi_crypto::suite::SuiteId::MlDsa65) {
+        return Err("guarantor PQ signer must be ML-DSA-65".into());
+    }
+    let mut signature = classical.sign(message).to_bytes().to_vec();
+    signature.extend(
+        pq.sign(zkfmi_crypto::key::KeyPurpose::Attestation, message)
+            .map_err(|error| error.to_string())?,
+    );
+    Ok(signature)
+}
+
+pub fn verify_guarantor_signature(
+    classical: &[u8; 32],
+    pq: &[u8],
+    message: &[u8],
+    signature: &[u8],
+) -> Result<(), String> {
+    if pq.len() != zkfmi_crypto::suite::ML_DSA_65_PK_BYTES
+        || signature.len() != 64 + zkfmi_crypto::suite::ML_DSA_65_SIG_BYTES
+    {
+        return Err(
+            "guarantor authorization requires both Ed25519 and ML-DSA-65 components".into(),
+        );
+    }
+    let key = VerifyingKey::from_bytes(classical)
+        .map_err(|_| "guarantor classical key is invalid".to_string())?;
+    if key.is_weak() {
+        return Err("guarantor classical key is weak".into());
+    }
+    let classical_signature: [u8; 64] = signature[..64]
+        .try_into()
+        .map_err(|_| "guarantor signature is malformed".to_string())?;
+    key.verify_strict(message, &Signature::from_bytes(&classical_signature))
+        .map_err(|_| "guarantor Ed25519 signature is invalid".to_string())?;
+    zkfmi_crypto::traits::Verifier::verify(
+        &zkfmi_crypto::backend::MlDsa65Verifier,
+        zkfmi_crypto::key::KeyPurpose::Attestation,
+        pq,
+        message,
+        &signature[64..],
+    )
+    .map_err(|_| "guarantor ML-DSA-65 signature is invalid".to_string())
 }
 
 impl GuarantorDefinition {
@@ -499,13 +558,18 @@ impl GuarantorDefinition {
         if self.name.is_empty() || self.name.len() > 128 || self.public_key == ZERO {
             return Err("guarantor name or public key is invalid".into());
         }
-        VerifyingKey::from_bytes(&self.public_key)
+        let key = VerifyingKey::from_bytes(&self.public_key)
             .map_err(|_| "guarantor public key is malformed".to_string())?;
+        if key.is_weak() || self.pq_public_key.len() != zkfmi_crypto::suite::ML_DSA_65_PK_BYTES {
+            return Err("guarantor requires an enrolled Ed25519 and ML-DSA-65 key pair; explicit re-enrollment is required for legacy keys".into());
+        }
         Ok(json!({
             "guarantor_id": nonzero(&self.guarantor_id, "guarantor_id")?,
             "kind": self.kind.as_str(),
             "name": self.name,
             "public_key": hex::encode(self.public_key),
+            "pq_public_key": hex::encode(&self.pq_public_key),
+            "signature_suite": zkfmi_crypto::suite::Suite::new(zkfmi_crypto::suite::SuiteId::Ed25519MlDsa65),
             "risk_policy_digest": nonzero(&self.risk_policy_digest, "risk_policy_digest")?,
         }))
     }
@@ -564,7 +628,7 @@ pub struct CreditFacilityGrant {
     pub valid_from: u64,
     pub valid_until: u64,
     pub nonce: [u8; 32],
-    pub guarantor_signature: Signature,
+    pub guarantor_signature: Vec<u8>,
 }
 
 impl CreditFacilityGrant {
@@ -1033,7 +1097,7 @@ pub struct CreditFacilityControl {
     pub before_sequence: u64,
     pub effective_at: u64,
     pub reason_digest: [u8; 32],
-    pub guarantor_signature: Signature,
+    pub guarantor_signature: Vec<u8>,
 }
 
 /// Whether an amended contractual cap still covers the already committed
@@ -1080,7 +1144,7 @@ pub struct CreditFacilityAmendment {
     pub effective_at: u64,
     pub reason_digest: [u8; 32],
     pub relation_proof_digest: [u8; 32],
-    pub guarantor_signature: Signature,
+    pub guarantor_signature: Vec<u8>,
 }
 
 impl CreditFacilityAmendment {
@@ -2349,7 +2413,7 @@ pub struct SettlementReceipt {
     pub response_bytes: u64,
     pub database_bytes_before: u64,
     pub database_bytes_after: u64,
-    pub signature: Signature,
+    pub signature: Vec<u8>,
 }
 
 impl SettlementReceipt {
@@ -2375,13 +2439,16 @@ impl SettlementReceipt {
     pub fn digest(&self) -> Result<[u8; 32], String> {
         let mut hash = Sha256::new();
         hash.update(self.unsigned()?);
-        hash.update(self.signature.to_bytes());
+        hash.update(&self.signature);
         Ok(hash.finalize().into())
     }
 
-    pub fn verify(&self, key: &VerifyingKey) -> bool {
-        self.unsigned()
-            .is_ok_and(|body| key.verify(&body, &self.signature).is_ok())
+    pub fn verify(&self, key: &[u8]) -> bool {
+        self.unsigned().is_ok_and(|body| {
+            HybridVerifier
+                .verify(KeyPurpose::AuditCheckpoint, key, &body, &self.signature)
+                .is_ok()
+        })
     }
 }
 
@@ -2565,15 +2632,16 @@ impl ReceiptWire {
             response_bytes: receipt.response_bytes,
             database_bytes_before: receipt.database_bytes_before,
             database_bytes_after: receipt.database_bytes_after,
-            signature: hex::encode(receipt.signature.to_bytes()),
+            signature: hex::encode(&receipt.signature),
         }
     }
 
     fn into_receipt(self) -> Result<SettlementReceipt, String> {
-        let signature: [u8; 64] = hex::decode(self.signature)
-            .map_err(|_| "receipt signature is malformed".to_string())?
-            .try_into()
+        let signature = hex::decode(self.signature)
             .map_err(|_| "receipt signature is malformed".to_string())?;
+        if signature.len() != 3373 {
+            return Err("legacy or malformed receipt signature: explicit archived checkpoint migration required".into());
+        }
         Ok(SettlementReceipt {
             operation_id: parse_hex32(&self.operation_id, "operation_id")?,
             nullifier: parse_hex32(&self.nullifier, "nullifier")?,
@@ -2587,7 +2655,7 @@ impl ReceiptWire {
             response_bytes: self.response_bytes,
             database_bytes_before: self.database_bytes_before,
             database_bytes_after: self.database_bytes_after,
-            signature: Signature::from_bytes(&signature),
+            signature,
         })
     }
 }
@@ -2596,15 +2664,15 @@ pub struct DefmiFacility {
     path: PathBuf,
     database: Mutex<Database>,
     pub authorizer: QuorumAuthorizer,
-    receipt_key: SigningKey,
-    pub receipt_public_key: VerifyingKey,
+    receipt_key: Arc<HybridSigner>,
+    pub receipt_public_key: Vec<u8>,
 }
 
 impl DefmiFacility {
     pub fn open(
         path: impl AsRef<Path>,
         authorizer: QuorumAuthorizer,
-        receipt_key: SigningKey,
+        receipt_key: Arc<HybridSigner>,
     ) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
@@ -2673,6 +2741,7 @@ impl DefmiFacility {
                 guarantor_id BLOB PRIMARY KEY CHECK(length(guarantor_id)=32),\
                 kind TEXT NOT NULL CHECK(kind IN ('central_bank','ccp','bank','credit_provider','self')),\
                 name TEXT NOT NULL,public_key BLOB NOT NULL UNIQUE CHECK(length(public_key)=32),\
+                pq_public_key BLOB NOT NULL UNIQUE CHECK(length(pq_public_key)=1952),\
                 risk_policy_digest BLOB NOT NULL CHECK(length(risk_policy_digest)=32),\
                 active INTEGER NOT NULL DEFAULT 1,statement BLOB NOT NULL UNIQUE);\
              CREATE TABLE IF NOT EXISTS credit_facilities(\
@@ -2810,6 +2879,13 @@ impl DefmiFacility {
             .into_iter()
             .filter_map(|row| row.get(1).and_then(Clone::clone))
             .collect::<BTreeSet<_>>();
+        if !guarantor_columns.contains("pq_public_key")
+            && !database
+                .query("SELECT guarantor_id FROM guarantors LIMIT 1")?
+                .is_empty()
+        {
+            return Err("legacy guarantor registry has no ML-DSA-65 enrollment; explicit authenticated migration is required; existing rows were preserved".into());
+        }
         if !guarantor_columns.contains("kind") {
             // Schema v11 makes the economic guarantor role explicit. Legacy
             // deployments represented every external signer as a bank; that
@@ -2889,6 +2965,17 @@ impl DefmiFacility {
                 ));
             }
             database.execute("PRAGMA foreign_keys=ON;")?;
+        }
+        if !database
+            .query("PRAGMA table_info(guarantors)")?
+            .iter()
+            .any(|row| row[1].as_deref() == Some("pq_public_key"))
+        {
+            database.execute("ALTER TABLE guarantors ADD COLUMN pq_public_key BLOB CHECK(length(pq_public_key)=1952)")?;
+        }
+        database.execute("CREATE UNIQUE INDEX IF NOT EXISTS guarantor_pq_key_unique ON guarantors(pq_public_key)")?;
+        if !database.query("SELECT guarantor_id FROM guarantors WHERE pq_public_key IS NULL OR length(pq_public_key) != 1952 LIMIT 1")?.is_empty() {
+            return Err("guarantor registry has missing or invalid ML-DSA-65 enrollment; authenticated migration is required".into());
         }
         for row in database.query("SELECT kind FROM guarantors")? {
             GuarantorKind::parse(row[0].as_deref().unwrap_or_default())?;
@@ -3086,7 +3173,7 @@ impl DefmiFacility {
             blob(&ZERO),
             blob(&ZERO)
         ))?;
-        let receipt_public_key = receipt_key.verifying_key();
+        let receipt_public_key = receipt_key.public_key();
         Ok(Self {
             path,
             database: Mutex::new(database),
@@ -3132,7 +3219,7 @@ impl DefmiFacility {
             hash.update(row[3].as_deref().unwrap_or("0").parse::<u64>().map_err(|error| error.to_string())?.to_be_bytes());
         }
         for row in database.query(
-            "SELECT hex(guarantor_id),kind,name,hex(public_key),hex(risk_policy_digest),active \
+            "SELECT hex(guarantor_id),kind,name,hex(public_key),hex(risk_policy_digest),active,hex(pq_public_key) \
              FROM guarantors ORDER BY guarantor_id",
         )? {
             let encoded = json!([
@@ -3141,6 +3228,7 @@ impl DefmiFacility {
                 row[2].as_deref().unwrap_or_default(),
                 row[3].as_deref().unwrap_or_default().to_ascii_lowercase(),
                 row[4].as_deref().unwrap_or_default().to_ascii_lowercase(),
+                row[6].as_deref().unwrap_or_default().to_ascii_lowercase(),
                 row[5]
                     .as_deref()
                     .unwrap_or("0")
@@ -4313,12 +4401,13 @@ impl DefmiFacility {
         self.require_quorum(&statement, &root, approval)?;
         database
             .execute(&format!(
-                "INSERT INTO guarantors(guarantor_id,kind,name,public_key,risk_policy_digest,statement) \
-                 VALUES({},{},{},{},{},{})",
+                "INSERT INTO guarantors(guarantor_id,kind,name,public_key,pq_public_key,risk_policy_digest,statement) \
+                 VALUES({},{},{},{},{},{},{})",
                 blob(&guarantor.guarantor_id),
                 quoted(guarantor.kind.as_str()),
                 quoted(&guarantor.name),
                 blob(&guarantor.public_key),
+                blob(&guarantor.pq_public_key),
                 blob(&guarantor.risk_policy_digest),
                 blob(&statement),
             ))
@@ -4446,7 +4535,7 @@ impl DefmiFacility {
             let before_root = Self::calculate_root(&database)?;
             self.require_quorum(&statement, &before_root, approval)?;
             let guarantor_rows = database.query(&format!(
-                "SELECT hex(public_key),hex(risk_policy_digest),active FROM guarantors \
+                "SELECT hex(public_key),hex(risk_policy_digest),active,hex(pq_public_key) FROM guarantors \
                  WHERE guarantor_id={}",
                 blob(&grant.guarantor_id)
             ))?;
@@ -4463,14 +4552,16 @@ impl DefmiFacility {
             {
                 return Err("credit facility uses an unregistered risk policy".into());
             }
-            let public_key = VerifyingKey::from_bytes(&parse_hex32(
-                guarantor[0].as_deref().unwrap_or_default(),
-                "guarantor public key",
-            )?)
-            .map_err(|_| "stored guarantor public key is malformed".to_string())?;
-            public_key
-                .verify(&grant.guarantor_message()?, &grant.guarantor_signature)
-                .map_err(|_| "credit facility lacks the guarantor signature".to_string())?;
+            verify_guarantor_signature(
+                &parse_hex32(
+                    guarantor[0].as_deref().unwrap_or_default(),
+                    "guarantor public key",
+                )?,
+                &hex::decode(guarantor[3].as_deref().unwrap_or_default())
+                    .map_err(|error| error.to_string())?,
+                &grant.guarantor_message()?,
+                &grant.guarantor_signature,
+            )?;
             if database
                 .query(&format!(
                     "SELECT active FROM assets WHERE asset_id={}",
@@ -5375,10 +5466,13 @@ impl DefmiFacility {
                 response_bytes: 0,
                 database_bytes_before: database_before,
                 database_bytes_after: database_after,
-                signature: Signature::from_bytes(&[0; 64]),
+                signature: vec![0; 3373],
             };
             receipt.response_bytes = Self::receipt_json(&receipt)?.len() as u64;
-            receipt.signature = self.receipt_key.sign(&receipt.unsigned()?);
+            receipt.signature = self
+                .receipt_key
+                .sign(KeyPurpose::AuditCheckpoint, &receipt.unsigned()?)
+                .map_err(|error| error.to_string())?;
             let raw = Self::receipt_json(&receipt)?;
             let receipt_digest = receipt.digest()?;
             database.execute(&format!(
@@ -5463,7 +5557,7 @@ impl DefmiFacility {
                 return Err("credit amendment ends before the facility starts".into());
             }
             let guarantor_rows = database.query(&format!(
-                "SELECT hex(public_key),hex(risk_policy_digest),active FROM guarantors \
+                "SELECT hex(public_key),hex(risk_policy_digest),active,hex(pq_public_key) FROM guarantors \
                  WHERE guarantor_id={}",
                 blob(&facility.guarantor_id)
             ))?;
@@ -5480,17 +5574,16 @@ impl DefmiFacility {
             {
                 return Err("credit amendment uses an unregistered guarantor risk policy".into());
             }
-            let public_key = VerifyingKey::from_bytes(&parse_hex32(
-                guarantor[0].as_deref().unwrap_or_default(),
-                "guarantor public key",
-            )?)
-            .map_err(|_| "stored guarantor public key is malformed".to_string())?;
-            public_key
-                .verify(
-                    &amendment.guarantor_message()?,
-                    &amendment.guarantor_signature,
-                )
-                .map_err(|_| "credit amendment lacks the guarantor signature".to_string())?;
+            verify_guarantor_signature(
+                &parse_hex32(
+                    guarantor[0].as_deref().unwrap_or_default(),
+                    "guarantor public key",
+                )?,
+                &hex::decode(guarantor[3].as_deref().unwrap_or_default())
+                    .map_err(|error| error.to_string())?,
+                &amendment.guarantor_message()?,
+                &amendment.guarantor_signature,
+            )?;
             let next_status = if amendment.mode == CreditAmendmentMode::OverLimit {
                 CreditFacilityStatus::Frozen
             } else {
@@ -5568,7 +5661,7 @@ impl DefmiFacility {
                 return Err("credit control was signed against stale facility state".into());
             }
             let guarantor_rows = database.query(&format!(
-                "SELECT hex(public_key),active FROM guarantors WHERE guarantor_id={}",
+                "SELECT hex(public_key),active,hex(pq_public_key) FROM guarantors WHERE guarantor_id={}",
                 blob(&facility.guarantor_id)
             ))?;
             let guarantor = guarantor_rows
@@ -5577,14 +5670,16 @@ impl DefmiFacility {
             if guarantor[1].as_deref() != Some("1") {
                 return Err("inactive guarantor cannot control a facility".into());
             }
-            let public_key = VerifyingKey::from_bytes(&parse_hex32(
-                guarantor[0].as_deref().unwrap_or_default(),
-                "guarantor public key",
-            )?)
-            .map_err(|_| "stored guarantor public key is malformed".to_string())?;
-            public_key
-                .verify(&control.guarantor_message()?, &control.guarantor_signature)
-                .map_err(|_| "credit control lacks the guarantor signature".to_string())?;
+            verify_guarantor_signature(
+                &parse_hex32(
+                    guarantor[0].as_deref().unwrap_or_default(),
+                    "guarantor public key",
+                )?,
+                &hex::decode(guarantor[2].as_deref().unwrap_or_default())
+                    .map_err(|error| error.to_string())?,
+                &control.guarantor_message()?,
+                &control.guarantor_signature,
+            )?;
             match control.action {
                 CreditControlAction::Activate
                     if facility.status != CreditFacilityStatus::Frozen =>
@@ -6076,10 +6171,13 @@ impl DefmiFacility {
                     response_bytes: 0,
                     database_bytes_before: database_before,
                     database_bytes_after: database_after,
-                    signature: Signature::from_bytes(&[0; 64]),
+                    signature: vec![0; 3373],
                 };
                 receipt.response_bytes = Self::receipt_json(&receipt)?.len() as u64;
-                receipt.signature = self.receipt_key.sign(&receipt.unsigned()?);
+                receipt.signature = self
+                    .receipt_key
+                    .sign(KeyPurpose::AuditCheckpoint, &receipt.unsigned()?)
+                    .map_err(|error| error.to_string())?;
                 let raw = Self::receipt_json(&receipt)?;
                 let receipt_digest = receipt.digest()?;
                 database.execute(&format!(
@@ -6788,10 +6886,13 @@ impl DefmiFacility {
                 response_bytes: 0,
                 database_bytes_before: database_before,
                 database_bytes_after: database_after,
-                signature: Signature::from_bytes(&[0; 64]),
+                signature: vec![0; 3373],
             };
             receipt.response_bytes = Self::receipt_json(&receipt)?.len() as u64;
-            receipt.signature = self.receipt_key.sign(&receipt.unsigned()?);
+            receipt.signature = self
+                .receipt_key
+                .sign(KeyPurpose::AuditCheckpoint, &receipt.unsigned()?)
+                .map_err(|error| error.to_string())?;
             let raw = Self::receipt_json(&receipt)?;
             let receipt_digest = receipt.digest()?;
             database.execute(&format!(
@@ -6943,10 +7044,13 @@ impl DefmiFacility {
                 response_bytes: 0,
                 database_bytes_before: database_before,
                 database_bytes_after: database_after,
-                signature: Signature::from_bytes(&[0; 64]),
+                signature: vec![0; 3373],
             };
             receipt.response_bytes = Self::receipt_json(&receipt)?.len() as u64;
-            receipt.signature = self.receipt_key.sign(&receipt.unsigned()?);
+            receipt.signature = self
+                .receipt_key
+                .sign(KeyPurpose::AuditCheckpoint, &receipt.unsigned()?)
+                .map_err(|error| error.to_string())?;
             let raw = Self::receipt_json(&receipt)?;
             let receipt_digest = receipt.digest()?;
             database.execute(&format!(
@@ -7116,9 +7220,13 @@ mod schema_tests {
             "test:legacy-verifier",
         )
         .unwrap();
-        let error = DefmiFacility::open(&path, authorizer, SigningKey::from_bytes(&[2; 32]))
-            .err()
-            .expect("missing PQ enrollment must fail closed");
+        let error = DefmiFacility::open(
+            &path,
+            authorizer,
+            zkfmi_crypto::test_support::hybrid_signer(&[2; 32]),
+        )
+        .err()
+        .expect("missing PQ enrollment must fail closed");
         assert!(error.contains("explicit PQ committee enrollment"));
         let database = Database::open(&path).unwrap();
         assert_eq!(
@@ -7147,7 +7255,7 @@ mod schema_tests {
     }
 
     #[test]
-    fn v14_guarantor_table_migrates_to_all_supported_kinds() {
+    fn legacy_guarantor_table_requires_explicit_pq_enrollment_without_deleting_rows() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("legacy-v14.sqlite3");
         let legacy_signer = SigningKey::generate(&mut OsRng);
@@ -7185,56 +7293,33 @@ mod schema_tests {
             "defmi:test:migration",
         )
         .unwrap();
-        let facility =
-            DefmiFacility::open(&path, authorizer, SigningKey::generate(&mut OsRng)).unwrap();
-        let database = facility.database.lock().expect("DeFMI database lock");
-
-        assert_eq!(
-            database.query("PRAGMA user_version").unwrap()[0][0].as_deref(),
-            Some("16")
-        );
+        let error = DefmiFacility::open(
+            &path,
+            authorizer,
+            Arc::new(HybridSigner::generate().unwrap()),
+        )
+        .err()
+        .expect("legacy guarantor enrollment must fail closed");
+        assert!(error.contains("explicit authenticated migration"));
+        let database = Database::open(&path).unwrap();
         assert_eq!(
             database
-                .query("SELECT kind,name FROM guarantors WHERE guarantor_id=X'0101010101010101010101010101010101010101010101010101010101010101'")
-                .unwrap()[0],
-            vec![Some("bank".into()), Some("Legacy bank".into())]
+                .query("SELECT kind,name,hex(public_key) FROM guarantors")
+                .unwrap(),
+            vec![vec![
+                Some("bank".into()),
+                Some("Legacy bank".into()),
+                Some(hex::encode_upper(legacy_signer.verifying_key().to_bytes()))
+            ]]
         );
-        let credit_provider = SigningKey::generate(&mut OsRng);
-        database
-            .execute(&format!(
-                "INSERT INTO guarantors(\
-                    guarantor_id,kind,name,public_key,risk_policy_digest,active,statement)\
-                 VALUES({},'credit_provider','Specialist credit provider',{},{},1,{})",
-                blob(&[4; 32]),
-                blob(&credit_provider.verifying_key().to_bytes()),
-                blob(&[5; 32]),
-                blob(&[6; 32]),
-            ))
-            .unwrap();
-        let central_bank = SigningKey::generate(&mut OsRng);
-        database
-            .execute(&format!(
-                "INSERT INTO guarantors(\
-                    guarantor_id,kind,name,public_key,risk_policy_digest,active,statement)\
-                 VALUES({},'central_bank','Central bank',{},{},1,{})",
-                blob(&[7; 32]),
-                blob(&central_bank.verifying_key().to_bytes()),
-                blob(&[8; 32]),
-                blob(&[9; 32]),
-            ))
-            .unwrap();
         assert_eq!(
-            database.query("SELECT count(*) FROM guarantors").unwrap()[0][0].as_deref(),
-            Some("3")
+            database.query("PRAGMA user_version").unwrap()[0][0].as_deref(),
+            Some("14")
         );
-        assert!(database
-            .query("SELECT sql FROM sqlite_master WHERE type='table' AND name='guarantors'")
-            .unwrap()[0][0]
-            .as_deref()
-            .is_some_and(|schema| schema.contains("credit_provider")));
-        assert_eq!(
-            database.query("PRAGMA foreign_keys").unwrap()[0][0].as_deref(),
-            Some("1")
-        );
+        assert!(!database
+            .query("PRAGMA table_info(guarantors)")
+            .unwrap()
+            .iter()
+            .any(|row| row[1].as_deref() == Some("pq_public_key")));
     }
 }

@@ -7,7 +7,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use curve25519_dalek::{ristretto::CompressedRistretto, scalar::Scalar};
-use ed25519_dalek::VerifyingKey;
 use qomm_defmi::application_reservation::{ApplicationReservationBinding, ApplicationReserveScope};
 use qomm_defmi::central_bank_liquidity::BojLiquidityBook;
 use qomm_defmi::cross_domain::{
@@ -45,6 +44,7 @@ pub struct CsdIssuerRecord {
     pub jurisdiction: String,
     pub operator_entity_commitment: [u8; 32],
     pub public_key: [u8; 32],
+    pub pq_public_key: Vec<u8>,
     pub permitted_asset_ids: Vec<[u8; 32]>,
     pub policy_digest: [u8; 32],
     pub valid_from: u64,
@@ -61,6 +61,7 @@ impl CsdIssuerRecord {
             jurisdiction: self.jurisdiction.clone(),
             operator_entity_commitment: self.operator_entity_commitment,
             public_key: self.public_key,
+            pq_public_key: self.pq_public_key.clone(),
             permitted_asset_ids: self.permitted_asset_ids.clone(),
             policy_digest: self.policy_digest,
             valid_from: self.valid_from,
@@ -84,8 +85,7 @@ pub struct NoteRecord {
     pub one_time: [u8; 32],
     pub value_commitment: [u8; 32],
     pub ephemeral: [u8; 32],
-    pub masked_value: [u8; 32],
-    pub masked_blinding: [u8; 32],
+    pub encrypted_opening: qomm_transport::standing_pool::NoteOpening,
     pub lock_id: [u8; 32],
 }
 
@@ -97,8 +97,7 @@ impl NoteRecord {
             one_time: self.one_time,
             value_commitment: self.value_commitment,
             ephemeral: self.ephemeral,
-            masked_value: self.masked_value,
-            masked_blinding: self.masked_blinding,
+            encrypted_opening: self.encrypted_opening.clone(),
             lock_id: self.lock_id,
         }
     }
@@ -173,9 +172,9 @@ pub struct StandingNotePoolRecord {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EncryptedOpeningShareRecord {
     pub party: u16,
-    pub ephemeral: [u8; 32],
-    pub masked_value: [u8; 32],
-    pub masked_blinding: [u8; 32],
+    pub recipient_public: Vec<u8>,
+    pub sealed: zkfmi_crypto::sealed::SealedMessage,
+    pub blinding_adjustment: [u8; 32],
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -205,9 +204,9 @@ impl OpeningEnvelopeRecord {
                             .party
                             .try_into()
                             .map_err(|_| "opening party exceeds u16".to_string())?,
-                        ephemeral: share.ephemeral.compress().to_bytes(),
-                        masked_value: share.masked_value.to_bytes(),
-                        masked_blinding: share.masked_blinding.to_bytes(),
+                        recipient_public: share.recipient_public.clone(),
+                        sealed: share.sealed.clone(),
+                        blinding_adjustment: share.blinding_adjustment.to_bytes(),
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?,
@@ -233,9 +232,12 @@ impl OpeningEnvelopeRecord {
                 .map(|share| {
                     Ok(EncryptedOpeningShare {
                         party: share.party.into(),
-                        ephemeral: point(share.ephemeral, "opening ephemeral key")?,
-                        masked_value: scalar(share.masked_value, "opening masked value")?,
-                        masked_blinding: scalar(share.masked_blinding, "opening masked blinding")?,
+                        recipient_public: share.recipient_public.clone(),
+                        sealed: share.sealed.clone(),
+                        blinding_adjustment: scalar(
+                            share.blinding_adjustment,
+                            "opening masked blinding",
+                        )?,
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?,
@@ -249,6 +251,7 @@ pub struct NoteClaimRecord {
     pub asset_id: [u8; 32],
     pub value_commitment: [u8; 32],
     pub recipient_commitment: [u8; 32],
+    pub authorization: qomm_defmi::note_chain::ClaimAuthorizationCommitment,
     pub source_hold_id: [u8; 32],
     pub kind: String,
     pub opening_envelope: OpeningEnvelopeRecord,
@@ -264,6 +267,7 @@ impl NoteClaimRecord {
             asset_id: self.asset_id,
             value_commitment: self.value_commitment,
             recipient_commitment: self.recipient_commitment,
+            authorization: self.authorization,
             source_hold_id: self.source_hold_id,
             kind: match self.kind.as_str() {
                 "delivery" => NoteClaimKind::Delivery,
@@ -290,6 +294,7 @@ pub struct GuarantorRecord {
     pub kind: String,
     pub name: String,
     pub public_key: [u8; 32],
+    pub pq_public_key: Vec<u8>,
     pub risk_policy_digest: [u8; 32],
     pub active: bool,
 }
@@ -571,6 +576,15 @@ impl State {
                 return Err("cross-domain committee is stored under the wrong key".into());
             }
         }
+        for record in self.guarantors.values() {
+            let key = ed25519_dalek::VerifyingKey::from_bytes(&record.public_key)
+                .map_err(|_| "invalid guarantor classical key".to_string())?;
+            if key.is_weak()
+                || record.pq_public_key.len() != zkfmi_crypto::suite::ML_DSA_65_PK_BYTES
+            {
+                return Err("guarantor state requires mandatory ML-DSA-65 enrollment; legacy snapshots require explicit migration".into());
+            }
+        }
         for (name, map) in [
             ("asset", self.assets.keys().collect::<Vec<_>>()),
             ("CSD issuer", self.csd_issuers.keys().collect::<Vec<_>>()),
@@ -735,6 +749,15 @@ impl State {
                 }
                 if let Some(opening) = &record.remaining_opening {
                     opening.domain()?;
+                    if self
+                        .nullifiers
+                        .get(&id_key(&opening.claim_context))
+                        .is_none_or(|nullifier| nullifier.statement != record.head_receipt())
+                    {
+                        return Err(
+                            "application remainder lost its authorized claim context".into()
+                        );
+                    }
                 }
             }
         }
@@ -801,6 +824,7 @@ impl State {
                 return Err("state contains a malformed standing note pool".into());
             }
         }
+        let mut claim_key_fingerprints = BTreeSet::new();
         for (claim_id, record) in &self.note_claims {
             let claim_id: [u8; 32] = hex::decode(claim_id)
                 .expect("validated note claim identifier")
@@ -814,6 +838,7 @@ impl State {
                 || !matches!(record.status.as_str(), "active" | "materialized")
                 || (record.status == "active" && record.materialization != ZERO)
                 || (record.status == "materialized" && record.materialization == ZERO)
+                || !claim_key_fingerprints.insert(record.authorization.key_fingerprint)
             {
                 return Err("state contains a malformed note claim".into());
             }
@@ -909,10 +934,9 @@ impl State {
                 || committee.node_keys.contains(&ZERO)
                 || committee.node_keys.iter().collect::<BTreeSet<_>>().len()
                     != committee.node_keys.len()
-                || committee
-                    .node_keys
-                    .iter()
-                    .any(|node| VerifyingKey::from_bytes(node).is_err())
+                || committee.node_keys.iter().any(|node| {
+                    qomm_transport::application_crypto::VerifyingKey::from_bytes(node).is_err()
+                })
             {
                 return Err("state contains a malformed admission committee".into());
             }
@@ -1092,6 +1116,7 @@ impl State {
                     record.jurisdiction,
                     hex::encode(record.operator_entity_commitment),
                     hex::encode(record.public_key),
+                    hex::encode(&record.pq_public_key),
                     record
                         .permitted_asset_ids
                         .iter()
@@ -1113,14 +1138,14 @@ impl State {
             hash.update(record.sequence.to_be_bytes());
         }
         for (note_id, record) in &self.notes {
+            hash.update(b"DEFMI:NOTE:SEALED-PAYLOAD:v3");
+            hash.update(record.encrypted_opening.binding_bytes());
             hash.update(hex::decode(note_id).expect("validated note identifier"));
             for field in [
                 record.asset_id,
                 record.one_time,
                 record.value_commitment,
                 record.ephemeral,
-                record.masked_value,
-                record.masked_blinding,
                 record.lock_id,
             ] {
                 hash.update(field);
@@ -1170,6 +1195,8 @@ impl State {
                 record.asset_id,
                 record.value_commitment,
                 record.recipient_commitment,
+                record.authorization.key_record_commitment,
+                record.authorization.key_fingerprint,
                 record.source_hold_id,
                 record.settlement_digest,
                 record.materialization,
@@ -1187,6 +1214,7 @@ impl State {
                     record.name,
                     hex::encode(record.public_key),
                     hex::encode(record.risk_policy_digest),
+                    hex::encode(&record.pq_public_key),
                     u8::from(record.active),
                 ]))
                 .expect("state guarantor row is serializable"),

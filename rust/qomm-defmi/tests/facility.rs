@@ -1,6 +1,6 @@
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{Signature, Signer, SigningKey};
+use ed25519_dalek::SigningKey;
 use qomm_defmi::facility::{
     build_threshold_dvp_consumption, build_threshold_dvp_consumption_from_snapshot,
     reserve_handle_for, AccountOpening, AdmissionBatchPlan, AdmissionCommitteePlan,
@@ -329,7 +329,7 @@ fn certified_admission_population(
     } = population;
     assert_eq!(claims.len(), tickets.len());
     let node_keys = (0..7)
-        .map(|_| SigningKey::generate(&mut OsRng))
+        .map(|_| qomm_transport::application_crypto::SigningKey::generate(&mut OsRng))
         .collect::<Vec<_>>();
     let node_batches = (0..7)
         .map(|node| h(&format!("{label}:node-batch:{node}")))
@@ -352,7 +352,9 @@ fn certified_admission_population(
                         claim_digest: *claim,
                         batch_digest: node_batches[node],
                         order_digest,
-                        signature: Signature::from_bytes(&[0; 64]),
+                        signature: qomm_transport::application_crypto::Signature::from_bytes(
+                            &[0; 64],
+                        ),
                     }
                     .sign(key)
                     .unwrap()
@@ -362,7 +364,7 @@ fn certified_admission_population(
         .collect::<Vec<_>>();
     let verifying = node_keys
         .iter()
-        .map(SigningKey::verifying_key)
+        .map(qomm_transport::application_crypto::SigningKey::verifying_key)
         .collect::<Vec<_>>();
     let certified = lanes
         .iter()
@@ -508,7 +510,7 @@ fn consensus_timestamps_fit_sqlites_signed_integer_domain() {
 
     let node_keys = (1_u8..=7)
         .map(|value| {
-            SigningKey::from_bytes(&[value; 32])
+            qomm_transport::application_crypto::SigningKey::from_bytes(&[value; 64])
                 .verifying_key()
                 .to_bytes()
         })
@@ -557,7 +559,7 @@ fn consensus_timestamps_fit_sqlites_signed_integer_domain() {
         valid_from: 1,
         valid_until: max,
         nonce: h("timestamp-grant-nonce"),
-        guarantor_signature: Signature::from_bytes(&[0; 64]),
+        guarantor_signature: Vec::new(),
     };
     grant.unsigned_body().unwrap();
     grant.valid_until = overflow;
@@ -608,7 +610,7 @@ fn consensus_timestamps_fit_sqlites_signed_integer_domain() {
         effective_at: max,
         reason_digest: h("timestamp-amend-reason"),
         relation_proof_digest: h("timestamp-amend-proof"),
-        guarantor_signature: Signature::from_bytes(&[0; 64]),
+        guarantor_signature: Vec::new(),
     };
     amendment.unsigned_body().unwrap();
     amendment.effective_at = overflow;
@@ -622,7 +624,7 @@ fn consensus_timestamps_fit_sqlites_signed_integer_domain() {
         before_sequence: 0,
         effective_at: max,
         reason_digest: h("timestamp-control-reason"),
-        guarantor_signature: Signature::from_bytes(&[0; 64]),
+        guarantor_signature: Vec::new(),
     };
     control.unsigned_body().unwrap();
     control.effective_at = overflow;
@@ -666,7 +668,7 @@ struct CreditFixture {
     cap_blinding: Scalar,
     collateral_blinding: Scalar,
     database_path: PathBuf,
-    receipt_key: SigningKey,
+    receipt_key: std::sync::Arc<zkfmi_crypto::hybrid::signature::HybridSigner>,
 }
 
 fn credit_fixture() -> CreditFixture {
@@ -678,7 +680,8 @@ fn credit_fixture_for(kind: GuarantorKind) -> CreditFixture {
     let nodes = keys();
     let authorizer = authorizer(&nodes);
     let database_path = directory.path().join("credit.sqlite3");
-    let receipt_key = SigningKey::generate(&mut OsRng);
+    let receipt_key =
+        std::sync::Arc::new(zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap());
     let facility =
         DefmiFacility::open(&database_path, authorizer.clone(), receipt_key.clone()).unwrap();
     let asset = register(
@@ -695,6 +698,9 @@ fn credit_fixture_for(kind: GuarantorKind) -> CreditFixture {
         kind,
         name: "Test guarantee provider".into(),
         public_key: guarantor.verifying_key().to_bytes(),
+        pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+            &zkfmi_crypto::test_support::entity_pq_signer(&guarantor.to_bytes()),
+        ),
         risk_policy_digest: h("risk-policy:v1"),
     };
     facility
@@ -728,9 +734,14 @@ fn credit_fixture_for(kind: GuarantorKind) -> CreditFixture {
         valid_from: 1,
         valid_until: 10_000,
         nonce: h("credit:grant-nonce"),
-        guarantor_signature: Signature::from_bytes(&[0; 64]),
+        guarantor_signature: Vec::new(),
     };
-    grant.guarantor_signature = guarantor.sign(&grant.guarantor_message().unwrap());
+    grant.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+        &guarantor,
+        &zkfmi_crypto::test_support::entity_pq_signer(&guarantor.to_bytes()),
+        &grant.guarantor_message().unwrap(),
+    )
+    .unwrap();
     facility
         .grant_credit_facility(
             &grant,
@@ -1082,7 +1093,7 @@ fn one_state_machine_settles_security_fx_fund_and_carbon() {
     let facility = DefmiFacility::open(
         directory.path().join("defmi.sqlite3"),
         authorizer.clone(),
-        SigningKey::generate(&mut OsRng),
+        std::sync::Arc::new(zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap()),
     )
     .unwrap();
     let jpy = register(&facility, &authorizer, &keys, "JPY", AssetKind::Cash, 0);
@@ -1128,6 +1139,16 @@ fn one_state_machine_settles_security_fx_fund_and_carbon() {
         )
         .unwrap();
     assert!(receipt.verify(&facility.receipt_public_key));
+    for index in [0, 64, 3372] {
+        let mut forged = receipt.clone();
+        forged.signature[index] ^= 1;
+        assert!(!forged.verify(&facility.receipt_public_key));
+    }
+    let mut stripped = receipt.clone();
+    stripped.signature.truncate(64);
+    assert!(!stripped.verify(&facility.receipt_public_key));
+    assert!(!receipt.verify(&facility.receipt_public_key[..32]));
+    assert!(facility.verify_receipt_chain().unwrap());
 
     let usd_a = opening(&facility, &authorizer, &keys, "usd-a", &usd, h("u1"));
     let usd_b = opening(&facility, &authorizer, &keys, "usd-b", &usd, h("u2"));
@@ -1213,7 +1234,7 @@ fn stale_later_leg_rolls_back_every_leg_and_nullifier() {
     let facility = DefmiFacility::open(
         directory.path().join("defmi.sqlite3"),
         authorizer.clone(),
-        SigningKey::generate(&mut OsRng),
+        std::sync::Arc::new(zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap()),
     )
     .unwrap();
     let jpy = register(&facility, &authorizer, &keys, "JPY", AssetKind::Cash, 0);
@@ -1248,7 +1269,7 @@ fn quorum_expiry_replay_nullifier_and_wrong_asset_fail_closed() {
     let facility = DefmiFacility::open(
         directory.path().join("defmi.sqlite3"),
         authorizer.clone(),
-        SigningKey::generate(&mut OsRng),
+        std::sync::Arc::new(zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap()),
     )
     .unwrap();
     let jpy = register(&facility, &authorizer, &keys, "JPY", AssetKind::Cash, 0);
@@ -1320,7 +1341,8 @@ fn persistence_backup_cost_meter_and_chain_survive_restart() {
     let directory = tempfile::tempdir().unwrap();
     let keys = keys();
     let authorizer = authorizer(&keys);
-    let receipt_key = SigningKey::generate(&mut OsRng);
+    let receipt_key =
+        std::sync::Arc::new(zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap());
     let path = directory.path().join("defmi.sqlite3");
     let facility = DefmiFacility::open(&path, authorizer.clone(), receipt_key.clone()).unwrap();
     let jpy = register(&facility, &authorizer, &keys, "JPY", AssetKind::Cash, 0);
@@ -1370,7 +1392,7 @@ fn asset_and_account_retries_are_idempotent_but_conflicts_fail() {
     let facility = DefmiFacility::open(
         directory.path().join("defmi.sqlite3"),
         authorizer.clone(),
-        SigningKey::generate(&mut OsRng),
+        std::sync::Arc::new(zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap()),
     )
     .unwrap();
     let asset = AssetDefinition {
@@ -1466,7 +1488,7 @@ fn quorum_is_bound_to_unique_keys_domain_and_before_root() {
     let facility = DefmiFacility::open(
         directory.path().join("defmi.sqlite3"),
         authorizer.clone(),
-        SigningKey::generate(&mut OsRng),
+        std::sync::Arc::new(zkfmi_crypto::hybrid::signature::HybridSigner::generate().unwrap()),
     )
     .unwrap();
     let pending = AssetDefinition {
@@ -1599,11 +1621,14 @@ fn one_guarantor_cannot_split_an_entity_cap_across_two_facility_ids() {
         valid_from: 1,
         valid_until: 10_000,
         nonce: h("credit:duplicate-scope-nonce"),
-        guarantor_signature: Signature::from_bytes(&[0; 64]),
+        guarantor_signature: Vec::new(),
     };
-    duplicate.guarantor_signature = fixture
-        .guarantor
-        .sign(&duplicate.guarantor_message().unwrap());
+    duplicate.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+        &fixture.guarantor,
+        &zkfmi_crypto::test_support::entity_pq_signer(&fixture.guarantor.to_bytes()),
+        &duplicate.guarantor_message().unwrap(),
+    )
+    .unwrap();
     let approval = approve(
         &fixture.facility,
         &fixture.authorizer,
@@ -1892,7 +1917,7 @@ fn reducing_a_facility_below_existing_usage_freezes_without_erasing_exposure() {
         effective_at: 101,
         reason_digest: h("credit:amend:reduce:reason"),
         relation_proof_digest: ZERO,
-        guarantor_signature: Signature::from_bytes(&[0; 64]),
+        guarantor_signature: Vec::new(),
     };
     let reduction_proof = CreditFacilityAmendmentProof::prove(
         &mut reduction,
@@ -1908,9 +1933,12 @@ fn reducing_a_facility_below_existing_usage_freezes_without_erasing_exposure() {
         &mut OsRng,
     )
     .unwrap();
-    reduction.guarantor_signature = fixture
-        .guarantor
-        .sign(&reduction.guarantor_message().unwrap());
+    reduction.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+        &fixture.guarantor,
+        &zkfmi_crypto::test_support::entity_pq_signer(&fixture.guarantor.to_bytes()),
+        &reduction.guarantor_message().unwrap(),
+    )
+    .unwrap();
     let reduced = fixture
         .facility
         .amend_credit_facility(
@@ -1942,11 +1970,14 @@ fn reducing_a_facility_below_existing_usage_freezes_without_erasing_exposure() {
         before_sequence: reduced.sequence,
         effective_at: 102,
         reason_digest: h("credit:activate:premature:reason"),
-        guarantor_signature: Signature::from_bytes(&[0; 64]),
+        guarantor_signature: Vec::new(),
     };
-    premature_activation.guarantor_signature = fixture
-        .guarantor
-        .sign(&premature_activation.guarantor_message().unwrap());
+    premature_activation.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+        &fixture.guarantor,
+        &zkfmi_crypto::test_support::entity_pq_signer(&fixture.guarantor.to_bytes()),
+        &premature_activation.guarantor_message().unwrap(),
+    )
+    .unwrap();
     assert!(fixture
         .facility
         .control_credit_facility(
@@ -2038,7 +2069,7 @@ fn reducing_a_facility_below_existing_usage_freezes_without_erasing_exposure() {
         effective_at: 1_002,
         reason_digest: h("credit:amend:rehabilitate:reason"),
         relation_proof_digest: ZERO,
-        guarantor_signature: Signature::from_bytes(&[0; 64]),
+        guarantor_signature: Vec::new(),
     };
     let rehabilitation_proof = CreditFacilityAmendmentProof::prove(
         &mut rehabilitation,
@@ -2054,9 +2085,12 @@ fn reducing_a_facility_below_existing_usage_freezes_without_erasing_exposure() {
         &mut OsRng,
     )
     .unwrap();
-    rehabilitation.guarantor_signature = fixture
-        .guarantor
-        .sign(&rehabilitation.guarantor_message().unwrap());
+    rehabilitation.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+        &fixture.guarantor,
+        &zkfmi_crypto::test_support::entity_pq_signer(&fixture.guarantor.to_bytes()),
+        &rehabilitation.guarantor_message().unwrap(),
+    )
+    .unwrap();
     let rehabilitated = fixture
         .facility
         .amend_credit_facility(
@@ -2082,11 +2116,14 @@ fn reducing_a_facility_below_existing_usage_freezes_without_erasing_exposure() {
         before_sequence: rehabilitated.sequence,
         effective_at: 1_003,
         reason_digest: h("credit:activate:after-rehabilitation:reason"),
-        guarantor_signature: Signature::from_bytes(&[0; 64]),
+        guarantor_signature: Vec::new(),
     };
-    activate.guarantor_signature = fixture
-        .guarantor
-        .sign(&activate.guarantor_message().unwrap());
+    activate.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+        &fixture.guarantor,
+        &zkfmi_crypto::test_support::entity_pq_signer(&fixture.guarantor.to_bytes()),
+        &activate.guarantor_message().unwrap(),
+    )
+    .unwrap();
     let active = fixture
         .facility
         .control_credit_facility(
@@ -2147,9 +2184,14 @@ fn frozen_facility_refuses_new_rfqs_but_existing_hold_can_expire() {
         before_sequence: held.sequence,
         effective_at: 101,
         reason_digest: h("credit:freeze-reason"),
-        guarantor_signature: Signature::from_bytes(&[0; 64]),
+        guarantor_signature: Vec::new(),
     };
-    freeze.guarantor_signature = fixture.guarantor.sign(&freeze.guarantor_message().unwrap());
+    freeze.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+        &fixture.guarantor,
+        &zkfmi_crypto::test_support::entity_pq_signer(&fixture.guarantor.to_bytes()),
+        &freeze.guarantor_message().unwrap(),
+    )
+    .unwrap();
     let frozen = fixture
         .facility
         .control_credit_facility(
@@ -2367,9 +2409,14 @@ fn expired_product_reservation_restores_asset_and_credit_atomically_without_owne
         valid_from: 1,
         valid_until: 10_000,
         nonce: h("credit:release-product-grant-nonce"),
-        guarantor_signature: Signature::from_bytes(&[0; 64]),
+        guarantor_signature: Vec::new(),
     };
-    grant.guarantor_signature = fixture.guarantor.sign(&grant.guarantor_message().unwrap());
+    grant.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+        &fixture.guarantor,
+        &zkfmi_crypto::test_support::entity_pq_signer(&fixture.guarantor.to_bytes()),
+        &grant.guarantor_message().unwrap(),
+    )
+    .unwrap();
     fixture
         .facility
         .grant_credit_facility(
@@ -2433,7 +2480,7 @@ fn expired_product_reservation_restores_asset_and_credit_atomically_without_owne
         40,
         reserve_openings.amount,
     );
-    let maker_key = SigningKey::generate(&mut OsRng);
+    let maker_key = qomm_transport::application_crypto::SigningKey::generate(&mut OsRng);
     let mandate = MakerPolicyMandate {
         venue_id,
         defmi_id,
@@ -2450,7 +2497,7 @@ fn expired_product_reservation_restores_asset_and_credit_atomically_without_owne
         valid_until: 1_000,
         auto_execute: true,
         maker_public: maker_key.verifying_key().to_bytes(),
-        signature: Signature::from_bytes(&[0; 64]),
+        signature: qomm_transport::application_crypto::Signature::from_bytes(&[0; 64]),
     }
     .sign(&maker_key)
     .unwrap();
@@ -2850,11 +2897,14 @@ fn product_settlement_for(kind: GuarantorKind) {
         valid_from: 1,
         valid_until: 10_000,
         nonce: h("credit:product-maker-grant-nonce"),
-        guarantor_signature: Signature::from_bytes(&[0; 64]),
+        guarantor_signature: Vec::new(),
     };
-    maker_grant.guarantor_signature = fixture
-        .guarantor
-        .sign(&maker_grant.guarantor_message().unwrap());
+    maker_grant.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+        &fixture.guarantor,
+        &zkfmi_crypto::test_support::entity_pq_signer(&fixture.guarantor.to_bytes()),
+        &maker_grant.guarantor_message().unwrap(),
+    )
+    .unwrap();
     fixture
         .facility
         .grant_credit_facility(
@@ -2888,11 +2938,14 @@ fn product_settlement_for(kind: GuarantorKind) {
         valid_from: 1,
         valid_until: 10_000,
         nonce: h("credit:product-taker-grant-nonce"),
-        guarantor_signature: Signature::from_bytes(&[0; 64]),
+        guarantor_signature: Vec::new(),
     };
-    taker_grant.guarantor_signature = fixture
-        .guarantor
-        .sign(&taker_grant.guarantor_message().unwrap());
+    taker_grant.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+        &fixture.guarantor,
+        &zkfmi_crypto::test_support::entity_pq_signer(&fixture.guarantor.to_bytes()),
+        &taker_grant.guarantor_message().unwrap(),
+    )
+    .unwrap();
     fixture
         .facility
         .grant_credit_facility(
@@ -3010,7 +3063,7 @@ fn product_settlement_for(kind: GuarantorKind) {
     let taker_reserve_payment =
         taker_reserve_partial.sealed(frost_sign(&shares, &public, &taker_reserve_payment_digest));
 
-    let maker_signing_key = SigningKey::generate(&mut OsRng);
+    let maker_signing_key = qomm_transport::application_crypto::SigningKey::generate(&mut OsRng);
     let maker_hold_id = h("product:hold:maker");
     let maker_mandate = MakerPolicyMandate {
         venue_id,
@@ -3031,13 +3084,13 @@ fn product_settlement_for(kind: GuarantorKind) {
         valid_until: 1_000,
         auto_execute: true,
         maker_public: maker_signing_key.verifying_key().to_bytes(),
-        signature: Signature::from_bytes(&[0; 64]),
+        signature: qomm_transport::application_crypto::Signature::from_bytes(&[0; 64]),
     }
     .sign(&maker_signing_key)
     .unwrap();
     let maker_mandate_digest = maker_mandate.digest().unwrap();
 
-    let taker_signing_key = SigningKey::generate(&mut OsRng);
+    let taker_signing_key = qomm_transport::application_crypto::SigningKey::generate(&mut OsRng);
     let taker_hold_id = h("product:hold:taker");
     let taker_mandate = TakerExecutionMandate {
         venue_id,
@@ -3064,7 +3117,7 @@ fn product_settlement_for(kind: GuarantorKind) {
         allow_partial: false,
         auto_settle: true,
         taker_public: taker_signing_key.verifying_key().to_bytes(),
-        signature: Signature::from_bytes(&[0; 64]),
+        signature: qomm_transport::application_crypto::Signature::from_bytes(&[0; 64]),
     }
     .sign(&taker_signing_key)
     .unwrap();
@@ -4144,4 +4197,62 @@ fn admission_batches_force_every_real_or_cover_lane_through_the_signed_order() {
         )
         .unwrap();
     assert_eq!(second_result.consumed, 2);
+}
+
+#[test]
+fn guarantor_control_requires_both_components_and_rejects_wrong_purpose_without_mutation() {
+    let fixture = credit_fixture();
+    let mut control = CreditFacilityControl {
+        operation_id: h("pqc:guarantor:control"),
+        facility_id: fixture.facility_id,
+        action: CreditControlAction::Freeze,
+        before_sequence: 0,
+        effective_at: 101,
+        reason_digest: h("pqc:guarantor:reason"),
+        guarantor_signature: Vec::new(),
+    };
+    let body = control.guarantor_message().unwrap();
+    let pq = zkfmi_crypto::test_support::entity_pq_signer(&fixture.guarantor.to_bytes());
+    control.guarantor_signature =
+        qomm_defmi::facility::sign_guarantor_message(&fixture.guarantor, &pq, &body).unwrap();
+    let approval = approve(
+        &fixture.facility,
+        &fixture.authorizer,
+        &fixture.nodes,
+        control.statement().unwrap(),
+        3,
+    );
+    let before = fixture.facility.state_root().unwrap();
+    for index in [0, 64, control.guarantor_signature.len()] {
+        let mut bad = control.clone();
+        if index == bad.guarantor_signature.len() {
+            bad.guarantor_signature.truncate(64);
+        } else {
+            bad.guarantor_signature[index] ^= 1;
+        }
+        assert!(fixture
+            .facility
+            .control_credit_facility(&bad, &approval, 101)
+            .is_err());
+        assert_eq!(fixture.facility.state_root().unwrap(), before);
+    }
+    let mut wrong = control.clone();
+    wrong.guarantor_signature.truncate(64);
+    wrong.guarantor_signature.extend(
+        zkfmi_crypto::traits::Signer::sign(&pq, zkfmi_crypto::key::KeyPurpose::Governance, &body)
+            .unwrap(),
+    );
+    assert!(fixture
+        .facility
+        .control_credit_facility(&wrong, &approval, 101)
+        .is_err());
+    assert_eq!(fixture.facility.state_root().unwrap(), before);
+    assert_eq!(
+        fixture
+            .facility
+            .control_credit_facility(&control, &approval, 101)
+            .unwrap()
+            .status,
+        CreditFacilityStatus::Frozen
+    );
 }

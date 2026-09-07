@@ -8,7 +8,6 @@
 //! them.
 
 use curve25519_dalek::ristretto::CompressedRistretto;
-use ed25519_dalek::VerifyingKey;
 use qomm_proofs::kyb::{KybPresentation, SignedCohortRegistry};
 use qomm_proofs::price_limit::{
     verify as verify_price_limit, PriceLimitDirection, PriceLimitProof,
@@ -52,7 +51,7 @@ pub fn escrow_transfer_context(hold_id: &[u8; 32]) -> Vec<u8> {
 pub struct IdentityEvidence<'a> {
     pub presentation: &'a KybPresentation,
     pub registry: &'a SignedCohortRegistry,
-    pub trusted_issuer: &'a VerifyingKey,
+    pub trusted_issuer: &'a qomm_proofs::kyb::KybIssuerKey,
     pub scope: &'a [u8],
     pub context: &'a [u8],
     pub required_cohort: &'a str,

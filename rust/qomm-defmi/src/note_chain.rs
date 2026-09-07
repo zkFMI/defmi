@@ -9,7 +9,7 @@
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::Identity;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand_core::{CryptoRng, RngCore};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -36,8 +36,8 @@ use qomm_zkpi::{
     typed::{OperationKind, TradeDirection, TypedInstruction},
 };
 
-const NOTE_OUTPUT_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-OUTPUT:v1";
-const NOTE_ISSUE_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-ISSUE:v1";
+const NOTE_OUTPUT_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-OUTPUT:v2";
+const NOTE_ISSUE_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-ISSUE:v2";
 const NOTE_RING_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-RING:v1";
 const NOTE_SETTLEMENT_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-SETTLEMENT:v1";
 const NOTE_CLAIM_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-CLAIM:v1";
@@ -54,9 +54,9 @@ const STANDING_POOL_PRODUCT_SETTLEMENT_DOMAIN: &[u8] =
     b"QOMM:DEFMI:STANDING-POOL-PRODUCT-SETTLEMENT:v1";
 const PRODUCT_SETTLEMENT_BATCH_DOMAIN: &[u8] = b"QOMM:DEFMI:PRODUCT-SETTLEMENT-BATCH:v1";
 const NOTE_CLAIM_OWNERSHIP_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-CLAIM-OWNERSHIP:v1";
-const CSD_ISSUER_DOMAIN: &[u8] = b"QOMM:DEFMI:CSD-ISSUER:v1";
+const CSD_ISSUER_DOMAIN: &[u8] = b"QOMM:DEFMI:CSD-ISSUER:v2";
 const CSD_ISSUER_CONTROL_DOMAIN: &[u8] = b"QOMM:DEFMI:CSD-ISSUER-CONTROL:v1";
-const CSD_NOTE_AUTHORIZATION_DOMAIN: &[u8] = b"QOMM:DEFMI:CSD-NOTE-AUTHORIZATION:v1";
+const CSD_NOTE_AUTHORIZATION_DOMAIN: &[u8] = b"QOMM:DEFMI:CSD-NOTE-AUTHORIZATION:v2";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CsdIssuerDefinition {
@@ -65,6 +65,8 @@ pub struct CsdIssuerDefinition {
     pub jurisdiction: String,
     pub operator_entity_commitment: [u8; 32],
     pub public_key: [u8; 32],
+    /// Mandatory, independently provisioned ML-DSA-65 authorization key.
+    pub pq_public_key: Vec<u8>,
     pub permitted_asset_ids: Vec<[u8; 32]>,
     pub policy_digest: [u8; 32],
     pub valid_from: u64,
@@ -103,6 +105,9 @@ impl CsdIssuerDefinition {
         }
         VerifyingKey::from_bytes(&self.public_key)
             .map_err(|_| "CSD issuer public key is malformed".to_string())?;
+        if self.pq_public_key.len() != 1952 || self.pq_public_key.iter().all(|byte| *byte == 0) {
+            return Err("CSD issuer requires an ML-DSA-65 public key".into());
+        }
         if self.permitted_asset_ids.contains(&ZERO)
             || self
                 .permitted_asset_ids
@@ -117,6 +122,8 @@ impl CsdIssuerDefinition {
             "jurisdiction": self.jurisdiction,
             "operator_entity_commitment": hex::encode(self.operator_entity_commitment),
             "public_key": hex::encode(self.public_key),
+            "pq_public_key": hex::encode(&self.pq_public_key),
+            "authorization_suite": "ed25519-and-mldsa65-attestation-v1",
             "permitted_asset_ids": self.permitted_asset_ids.iter().map(hex::encode).collect::<Vec<_>>(),
             "policy_digest": hex::encode(self.policy_digest),
             "valid_from": self.valid_from,
@@ -206,8 +213,7 @@ pub struct NoteOutput {
     pub one_time: [u8; 32],
     pub value_commitment: [u8; 32],
     pub ephemeral: [u8; 32],
-    pub masked_value: [u8; 32],
-    pub masked_blinding: [u8; 32],
+    pub encrypted_opening: qomm_transport::standing_pool::NoteOpening,
     pub lock_id: [u8; 32],
 }
 
@@ -222,8 +228,7 @@ impl NoteOutput {
             one_time: note.one_time.compress().to_bytes(),
             value_commitment: note.value_commitment.compress().to_bytes(),
             ephemeral: note.ephemeral.compress().to_bytes(),
-            masked_value: note.masked_value.to_bytes(),
-            masked_blinding: note.masked_blinding.to_bytes(),
+            encrypted_opening: note.encrypted_opening.clone(),
             lock_id,
         };
         output.note_id = output.derived_id()?;
@@ -237,8 +242,7 @@ impl NoteOutput {
             "one_time": hex::encode(self.one_time),
             "value_commitment": hex::encode(self.value_commitment),
             "ephemeral": hex::encode(self.ephemeral),
-            "masked_value": hex::encode(self.masked_value),
-            "masked_blinding": hex::encode(self.masked_blinding),
+            "encrypted_opening": self.encrypted_opening,
             "lock_id": hex::encode(self.lock_id),
         })
     }
@@ -264,8 +268,7 @@ impl NoteOutput {
             "one_time",
             "value_commitment",
             "ephemeral",
-            "masked_value",
-            "masked_blinding",
+            "encrypted_opening",
             "lock_id",
         ];
         if object.len() != expected.len()
@@ -290,8 +293,13 @@ impl NoteOutput {
             one_time: field("one_time")?,
             value_commitment: field("value_commitment")?,
             ephemeral: field("ephemeral")?,
-            masked_value: field("masked_value")?,
-            masked_blinding: field("masked_blinding")?,
+            encrypted_opening: serde_json::from_value(
+                object
+                    .get("encrypted_opening")
+                    .cloned()
+                    .ok_or("missing note opening")?,
+            )
+            .map_err(|e| e.to_string())?,
             lock_id: field("lock_id")?,
         };
         output.validate()?;
@@ -314,6 +322,7 @@ impl NoteOutput {
         {
             return Err("note output has an empty public field".into());
         }
+        self.encrypted_opening.validate(&self.lock_id)?;
         if self.derived_id()? != self.note_id {
             return Err("note identifier differs from its contents".into());
         }
@@ -327,16 +336,11 @@ impl NoteOutput {
                 .decompress()
                 .ok_or_else(|| format!("canonical note {name} is not a Ristretto point"))
         };
-        let scalar = |encoded: [u8; 32], name: &str| {
-            Option::<Scalar>::from(Scalar::from_canonical_bytes(encoded))
-                .ok_or_else(|| format!("canonical note {name} is not a scalar"))
-        };
         Ok(Note {
             one_time: point(self.one_time, "one-time key")?,
             value_commitment: point(self.value_commitment, "value commitment")?,
             ephemeral: point(self.ephemeral, "ephemeral key")?,
-            masked_value: scalar(self.masked_value, "masked value")?,
-            masked_blinding: scalar(self.masked_blinding, "masked blinding")?,
+            encrypted_opening: self.encrypted_opening.clone(),
         })
     }
 }
@@ -350,6 +354,7 @@ pub struct NoteIssuance {
     pub output: NoteOutput,
     pub proof_digest: [u8; 32],
     pub issuer_signature: Signature,
+    pub issuer_pq_signature: Vec<u8>,
 }
 
 impl NoteIssuance {
@@ -362,6 +367,7 @@ impl NoteIssuance {
             "issuance_nonce": nonzero(&self.issuance_nonce, "issuance_nonce")?,
             "issuer_id": nonzero(&self.issuer_id, "issuer_id")?,
             "issued_at": self.issued_at,
+            "authorization_suite": "ed25519-and-mldsa65-attestation-v1",
             "output": self.output.body()?,
             "proof_digest": nonzero(&self.proof_digest, "proof_digest")?,
         }))
@@ -371,12 +377,25 @@ impl NoteIssuance {
         digest(CSD_NOTE_AUTHORIZATION_DOMAIN, &self.authorization_body()?)
     }
 
-    pub fn sign_issuer(mut self, key: &SigningKey) -> Result<Self, String> {
-        self.issuer_signature = key.sign(&self.issuer_message()?);
+    pub fn sign_issuer(
+        mut self,
+        key: &SigningKey,
+        pq: &dyn zkfmi_crypto::traits::Signer,
+    ) -> Result<Self, String> {
+        if pq.suite() != zkfmi_crypto::suite::Suite::new(zkfmi_crypto::suite::SuiteId::MlDsa65) {
+            return Err("CSD signer must use ML-DSA-65".into());
+        }
+        let message = self.issuer_message()?;
+        self.issuer_signature = key.sign(&message);
+        self.issuer_pq_signature = pq
+            .sign(zkfmi_crypto::key::KeyPurpose::Attestation, &message)
+            .map_err(|error| error.to_string())?;
         Ok(self)
     }
 
     pub fn verify_issuer(&self, issuer: &CsdIssuerDefinition, now: u64) -> Result<(), String> {
+        use zkfmi_crypto::traits::Verifier as _;
+        issuer.body()?;
         if self.issuer_id != issuer.issuer_id
             || !issuer.permits(self.output.asset_id, now)
             || !issuer.permits(self.output.asset_id, self.issued_at)
@@ -387,11 +406,22 @@ impl NoteIssuance {
         }
         VerifyingKey::from_bytes(&issuer.public_key)
             .map_err(|_| "CSD issuer public key is malformed".to_string())?
-            .verify(&self.issuer_message()?, &self.issuer_signature)
-            .map_err(|_| "CSD issuer signature is invalid".to_string())
+            .verify_strict(&self.issuer_message()?, &self.issuer_signature)
+            .map_err(|_| "CSD issuer signature is invalid".to_string())?;
+        zkfmi_crypto::backend::MlDsa65Verifier
+            .verify(
+                zkfmi_crypto::key::KeyPurpose::Attestation,
+                &issuer.pq_public_key,
+                &self.issuer_message()?,
+                &self.issuer_pq_signature,
+            )
+            .map_err(|_| "CSD issuer PQ signature is invalid".to_string())
     }
 
     pub fn body(&self) -> Result<Value, String> {
+        if self.issuer_pq_signature.len() != 3309 {
+            return Err("CSD issuance requires an ML-DSA-65 signature".into());
+        }
         let mut body = self
             .authorization_body()?
             .as_object()
@@ -400,6 +430,10 @@ impl NoteIssuance {
         body.insert(
             "issuer_signature".into(),
             Value::String(hex::encode(self.issuer_signature.to_bytes())),
+        );
+        body.insert(
+            "issuer_pq_signature".into(),
+            Value::String(hex::encode(&self.issuer_pq_signature)),
         );
         Ok(Value::Object(body))
     }
@@ -658,6 +692,23 @@ impl NoteClaimKind {
     }
 }
 
+/// Public commitment to a one-time recipient authorization key. The full
+/// hybrid key is disclosed only when the claim is redeemed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClaimAuthorizationCommitment {
+    pub key_record_commitment: [u8; 32],
+    pub key_fingerprint: [u8; 32],
+}
+
+impl ClaimAuthorizationCommitment {
+    pub fn validate(&self) -> Result<(), String> {
+        nonzero(&self.key_record_commitment, "claim key-record commitment")?;
+        nonzero(&self.key_fingerprint, "claim key fingerprint")?;
+        Ok(())
+    }
+}
+
 /// An entitlement created by final DvP. The beneficiary may turn it into a
 /// wallet note later, but that later withdrawal-like action is not a second
 /// trade consent and cannot reverse settlement.
@@ -667,6 +718,7 @@ pub struct NoteClaim {
     pub asset_id: [u8; 32],
     pub value_commitment: [u8; 32],
     pub recipient_commitment: [u8; 32],
+    pub authorization: ClaimAuthorizationCommitment,
     pub source_hold_id: [u8; 32],
     pub kind: NoteClaimKind,
     pub opening_envelope: OpeningEnvelope,
@@ -675,10 +727,12 @@ pub struct NoteClaim {
 impl NoteClaim {
     fn content_body(&self) -> Result<Value, String> {
         self.opening_envelope.validate()?;
+        self.authorization.validate()?;
         Ok(json!({
             "asset_id": hex::encode(self.asset_id),
             "value_commitment": hex::encode(self.value_commitment),
             "recipient_commitment": hex::encode(self.recipient_commitment),
+            "authorization": self.authorization,
             "source_hold_id": hex::encode(self.source_hold_id),
             "kind": self.kind.as_str(),
             "opening_envelope": {
@@ -687,9 +741,9 @@ impl NoteClaim {
                 "recipient_view": hex::encode(self.opening_envelope.recipient_view.compress().to_bytes()),
                 "shares": self.opening_envelope.shares.iter().map(|share| json!({
                     "party": share.party,
-                    "ephemeral": hex::encode(share.ephemeral.compress().to_bytes()),
-                    "masked_value": hex::encode(share.masked_value.to_bytes()),
-                    "masked_blinding": hex::encode(share.masked_blinding.to_bytes()),
+                    "recipient_public": share.recipient_public,
+                    "sealed": share.sealed,
+                    "blinding_adjustment": hex::encode(share.blinding_adjustment.to_bytes()),
                 })).collect::<Vec<_>>(),
             },
         }))
@@ -895,6 +949,7 @@ fn claim_ownership_challenge(
     hash.update(recipient_handle.compress().as_bytes());
     hash.update(destination.view.compress().as_bytes());
     hash.update(destination.spend.compress().as_bytes());
+    hash.update(destination.opening_public);
     hash.update(output.note_id);
     hash.update(nonce.compress().as_bytes());
     Scalar::from_bytes_mod_order_wide(&hash.finalize().into())
@@ -960,6 +1015,7 @@ impl ClaimOwnershipProof {
         hash.update(recipient_handle.compress().as_bytes());
         hash.update(destination.view.compress().as_bytes());
         hash.update(destination.spend.compress().as_bytes());
+        hash.update(destination.opening_public);
         hash.update(output.note_id);
         hash.update(self.nonce.compress().as_bytes());
         hash.update(self.response.to_bytes());
@@ -1021,6 +1077,7 @@ pub fn materialize_claim<R: RngCore + CryptoRng>(
     amount_bits: usize,
     rfq_nullifier: [u8; 32],
     recipient_secret: &Scalar,
+    recipient_key: &zkfmi_crypto::hybrid::kem::HybridKemKey,
     destination: &Address,
     quorum: &[usize],
     operation_id: [u8; 32],
@@ -1034,7 +1091,7 @@ pub fn materialize_claim<R: RngCore + CryptoRng>(
     let (amount, blinding) =
         claim
             .opening_envelope
-            .decrypt_u64(recipient_secret, quorum, amount_bits)?;
+            .decrypt_u64(recipient_secret, recipient_key, quorum, amount_bits)?;
     let commitment = CompressedRistretto(claim.value_commitment)
         .decompress()
         .ok_or_else(|| "claim value commitment is not canonical".to_string())?;
@@ -1042,7 +1099,7 @@ pub fn materialize_claim<R: RngCore + CryptoRng>(
         return Err("decrypted claim opening does not match its final commitment".into());
     }
     let ledger = NoteLedger::new(key.clone(), amount_bits);
-    let note = ledger.build_note(destination, amount, commitment, &blinding, &mut *rng);
+    let note = ledger.build_note(destination, amount, commitment, &blinding, &mut *rng)?;
     let output = NoteOutput::from_note(&note, claim.asset_id, ZERO)?;
     let proof = ClaimOwnershipProof::prove(
         claim,
@@ -1280,8 +1337,7 @@ impl StandingNotePoolAllocation {
                 one_time: self.escrow_note.one_time,
                 value_commitment: self.escrow_note.value_commitment,
                 ephemeral: self.escrow_note.ephemeral,
-                masked_value: self.escrow_note.masked_value,
-                masked_blinding: self.escrow_note.masked_blinding,
+                encrypted_opening: self.escrow_note.encrypted_opening.clone(),
                 lock_id: self.escrow_note.lock_id,
             },
             remainder_note: StandingPoolNote {
@@ -1290,8 +1346,7 @@ impl StandingNotePoolAllocation {
                 one_time: self.remainder_note.one_time,
                 value_commitment: self.remainder_note.value_commitment,
                 ephemeral: self.remainder_note.ephemeral,
-                masked_value: self.remainder_note.masked_value,
-                masked_blinding: self.remainder_note.masked_blinding,
+                encrypted_opening: self.remainder_note.encrypted_opening.clone(),
                 lock_id: self.remainder_note.lock_id,
             },
             proof_job_id: self.proof_job_id,
@@ -1839,11 +1894,27 @@ pub struct DelegatedClaimOpenings {
     pub securities_refund: OpeningEnvelope,
     pub cash_delivery: OpeningEnvelope,
     pub cash_refund: OpeningEnvelope,
+    pub authorizations: [ClaimAuthorizationCommitment; 4],
 }
 
 impl DelegatedClaimOpenings {
     pub fn validate(&self) -> Result<(), String> {
         nonzero(&self.proof_job_id, "proof_job_id")?;
+        for authorization in &self.authorizations {
+            authorization.validate()?;
+        }
+        if self
+            .authorizations
+            .iter()
+            .enumerate()
+            .any(|(index, authorization)| {
+                self.authorizations[..index]
+                    .iter()
+                    .any(|prior| prior.key_fingerprint == authorization.key_fingerprint)
+            })
+        {
+            return Err("delegated claim authorization keys must be one-time".into());
+        }
         for (leg, envelope) in [
             ("securities_delivery", &self.securities_delivery),
             ("securities_refund", &self.securities_refund),
@@ -1879,6 +1950,7 @@ struct ProjectedClaim<'a> {
     value_commitment: [u8; 32],
     recipient_handle: [u8; 32],
     rfq_nullifier: [u8; 32],
+    authorization: ClaimAuthorizationCommitment,
     kind: NoteClaimKind,
     proof_job_id: [u8; 32],
     opening_leg: &'a str,
@@ -1892,6 +1964,7 @@ fn projected_claim(input: ProjectedClaim<'_>) -> Result<NoteClaim, String> {
         value_commitment,
         recipient_handle,
         rfq_nullifier,
+        authorization,
         kind,
         proof_job_id,
         opening_leg,
@@ -1917,6 +1990,7 @@ fn projected_claim(input: ProjectedClaim<'_>) -> Result<NoteClaim, String> {
             hold_id,
             kind,
         )?,
+        authorization,
         source_hold_id: hold_id,
         kind,
         opening_envelope,
@@ -1992,6 +2066,7 @@ impl VerifiedDelegatedNoteSettlementProjection {
             };
         let dvp_proof_digest = package.digest();
         let proof_job_id = openings.proof_job_id;
+        let authorizations = openings.authorizations;
         let spend = |leg: DelegatedNoteLegProjection,
                      delivery_value: [u8; 32],
                      refund_value: [u8; 32],
@@ -2000,7 +2075,9 @@ impl VerifiedDelegatedNoteSettlementProjection {
                      delivery_leg: &str,
                      refund_leg: &str,
                      delivery_opening: OpeningEnvelope,
-                     refund_opening: OpeningEnvelope|
+                     refund_opening: OpeningEnvelope,
+                     delivery_authorization: ClaimAuthorizationCommitment,
+                     refund_authorization: ClaimAuthorizationCommitment|
          -> Result<EscrowClaimSpend, String> {
             let value = EscrowClaimSpend {
                 asset_id: leg.asset_id,
@@ -2015,6 +2092,7 @@ impl VerifiedDelegatedNoteSettlementProjection {
                         value_commitment: delivery_value,
                         recipient_handle: delivery_recipient,
                         rfq_nullifier: typed.context.rfq_nullifier,
+                        authorization: delivery_authorization,
                         kind: NoteClaimKind::Delivery,
                         proof_job_id,
                         opening_leg: delivery_leg,
@@ -2026,6 +2104,7 @@ impl VerifiedDelegatedNoteSettlementProjection {
                         value_commitment: refund_value,
                         recipient_handle: refund_recipient,
                         rfq_nullifier: typed.context.rfq_nullifier,
+                        authorization: refund_authorization,
                         kind: NoteClaimKind::Refund,
                         proof_job_id,
                         opening_leg: refund_leg,
@@ -2054,6 +2133,8 @@ impl VerifiedDelegatedNoteSettlementProjection {
                     "securities_refund",
                     openings.securities_delivery,
                     openings.securities_refund,
+                    authorizations[0],
+                    authorizations[1],
                 )?,
                 spend(
                     cash,
@@ -2065,6 +2146,8 @@ impl VerifiedDelegatedNoteSettlementProjection {
                     "cash_refund",
                     openings.cash_delivery,
                     openings.cash_refund,
+                    authorizations[2],
+                    authorizations[3],
                 )?,
             ],
         };

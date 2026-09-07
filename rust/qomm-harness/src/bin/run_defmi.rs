@@ -3,7 +3,6 @@
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
 use merlin::Transcript;
 use qomm_defmi::assets::{AssetRegistry, BlindedTag};
 use qomm_defmi::credit::{CreditCtx, Tranche, Waterfall};
@@ -730,13 +729,15 @@ fn note_spends(
         };
         let value = 1_000 + i as u64;
         let blinding = Scalar::random(rng);
-        let note = ledger.build_note(
-            &owner,
-            value,
-            asset_key.commit_u64(value, &blinding),
-            &blinding,
-            rng,
-        );
+        let note = ledger
+            .build_note(
+                &owner,
+                value,
+                asset_key.commit_u64(value, &blinding),
+                &blinding,
+                rng,
+            )
+            .expect("valid fixture note encryption");
         let index = ledger.add(note);
         if i % 8 == 0 {
             mine.push(index);
@@ -784,21 +785,25 @@ fn note_spends(
         }));
     }
     let first_blinding = Scalar::random(rng);
-    let first = ledger.build_note(
-        &bob.address,
-        100,
-        asset_key.commit_u64(100, &first_blinding),
-        &first_blinding,
-        rng,
-    );
+    let first = ledger
+        .build_note(
+            &bob.address,
+            100,
+            asset_key.commit_u64(100, &first_blinding),
+            &first_blinding,
+            rng,
+        )
+        .expect("valid fixture note encryption");
     let second_blinding = Scalar::random(rng);
-    let second = ledger.build_note(
-        &bob.address,
-        100,
-        asset_key.commit_u64(100, &second_blinding),
-        &second_blinding,
-        rng,
-    );
+    let second = ledger
+        .build_note(
+            &bob.address,
+            100,
+            asset_key.commit_u64(100, &second_blinding),
+            &second_blinding,
+            rng,
+        )
+        .expect("valid fixture note encryption");
     let outputs_unlinkable = ledger.commitment_of(&first) != ledger.commitment_of(&second)
         && first.ephemeral != second.ephemeral;
     Ok(json!({
@@ -828,13 +833,15 @@ fn note_rail(
             Wallet::new(rng).address
         };
         let blinding = Scalar::random(rng);
-        let note = ledger.build_note(
-            &address,
-            value,
-            asset_key.commit_u64(value, &blinding),
-            &blinding,
-            rng,
-        );
+        let note = ledger
+            .build_note(
+                &address,
+                value,
+                asset_key.commit_u64(value, &blinding),
+                &blinding,
+                rng,
+            )
+            .expect("valid fixture note encryption");
         ledger.add(note);
     }
     ledger
@@ -903,9 +910,16 @@ fn note_settlements(ring_sizes: &[usize], repeats: usize, rng: &mut OsRng) -> Ha
             )?;
             builds.push(started.elapsed().as_secs_f64() * 1e3);
             let venue = committee.venue(key.clone());
-            let mut defmi = NoteDefmi::new(key, securities, cash, venue, SigningKey::generate(rng));
+            let mut defmi = NoteDefmi::new(
+                key,
+                securities,
+                cash,
+                venue,
+                zkfmi_crypto::hybrid::signature::HybridSigner::generate()
+                    .map_err(|error| error.to_string())?,
+            );
             let started = Instant::now();
-            let receipt = defmi.settle(package, 1_000, NOTE_CONTEXT, rng);
+            let receipt = defmi.settle(package, 1_000, NOTE_CONTEXT, rng)?;
             settles.push(started.elapsed().as_secs_f64() * 1e3);
             if !receipt.settled {
                 return Err(format!("note settlement was rejected: {}", receipt.reason).into());
@@ -977,7 +991,8 @@ fn one_cycle(
         holders.insert(handle, holder);
     }
     let committee = Committee::new(key.clone(), rng)?;
-    let batch_key = SigningKey::from_bytes(&[7u8; 32]);
+    let batch_key = zkfmi_crypto::hybrid::signature::HybridSigner::generate()
+        .map_err(|error| error.to_string())?;
     let mut cycle = Cycle::new(
         key.clone(),
         format!("harness-{seed}").into_bytes(),
@@ -986,7 +1001,7 @@ fn one_cycle(
         cash_book,
         committee.venue(key.clone()),
         attest,
-        attest.then_some(batch_key.verifying_key()),
+        attest.then_some(zkfmi_crypto::traits::Signer::public_key(&batch_key)),
     )?;
     let handles: Vec<Vec<u8>> = holders.keys().cloned().collect();
     let mut state = seed.wrapping_add(1);
@@ -1132,7 +1147,9 @@ fn one_cycle(
         }
     }
     let close_build = started.elapsed().as_secs_f64() * 1e3;
-    let attestation = attest.then(|| BatchAttestation::sign(&batch_key, cycle.batch_digest()));
+    let attestation = attest
+        .then(|| BatchAttestation::sign(&batch_key, cycle.batch_digest()))
+        .transpose()?;
     let started = Instant::now();
     cycle.close(&securities_coverage, &cash_coverage, attestation.as_ref())?;
     let close_verify = started.elapsed().as_secs_f64() * 1e3;

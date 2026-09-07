@@ -18,13 +18,19 @@ use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::Identity;
-use ed25519_dalek::{Signature, VerifyingKey};
 use merlin::Transcript;
+pub use qomm_transport::standing_pool::NoteOpening;
 use qomm_zk::pedersen::Pedersen;
 use qomm_zk::sigma::{prove_zero_opening, verify_zero_opening, OpeningProof};
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha512};
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
+use zkfmi_crypto::{
+    hybrid::kem::HybridKemKey,
+    sealed::{SealedMessage, SealingPurpose, RECIPIENT_PUBLIC_BYTES},
+    traits::KemDecapsulator,
+};
+use zkfmi_crypto::{hybrid::signature::HybridVerifier, key::KeyPurpose, traits::Verifier};
 
 fn scalar_from(label: &[u8], parts: &[&[u8]]) -> Scalar {
     let mut hasher = Sha512::new();
@@ -41,6 +47,8 @@ fn scalar_from(label: &[u8], parts: &[&[u8]]) -> Scalar {
 pub struct Address {
     pub view: RistrettoPoint,
     pub spend: RistrettoPoint,
+    /// Independently generated hybrid recipient key; never derived from a curve scalar.
+    pub opening_public: [u8; RECIPIENT_PUBLIC_BYTES],
 }
 
 /// The two secrets behind an address, split because they do different jobs: the
@@ -49,6 +57,7 @@ pub struct Address {
 pub struct Wallet {
     view: Scalar,
     spend: Scalar,
+    opening_key: Arc<HybridKemKey>,
     pub address: Address,
 }
 
@@ -56,35 +65,45 @@ impl Wallet {
     pub fn new<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
         let view = Scalar::random(rng);
         let spend = Scalar::random(rng);
+        let mut seed = zeroize::Zeroizing::new([0; 96]);
+        rng.fill_bytes(seed.as_mut());
+        Self::from_parts(view, spend, HybridKemKey::from_seed(&seed))
+    }
+
+    /// Restore every independent secret. A missing recipient key is never
+    /// replaced by one derived from the view or spend scalar.
+    pub fn from_parts(
+        view: Scalar,
+        spend: Scalar,
+        opening_key: impl Into<Arc<HybridKemKey>>,
+    ) -> Self {
+        let opening_key = opening_key.into();
+        let opening_public = opening_key
+            .public_key()
+            .try_into()
+            .expect("fixed hybrid public key");
         Wallet {
             view,
             spend,
+            opening_key,
             address: Address {
                 view: G * view,
                 spend: G * spend,
+                opening_public,
             },
         }
     }
 
-    /// A wallet from scalars somebody else derived.
-    ///
-    /// `viewing.rs` derives a pair per scope from one seed, so that handing an
-    /// auditor one scope's view key hands it that scope and nothing else. The
-    /// wallet is otherwise ordinary: this is what spends.
-    pub fn from_parts(view: Scalar, spend: Scalar) -> Self {
-        Wallet {
-            view,
-            spend,
-            address: Address {
-                view: G * view,
-                spend: G * spend,
-            },
-        }
+    pub fn opening_key(&self) -> &HybridKemKey {
+        &self.opening_key
     }
 
     /// The half that finds notes and cannot move them.
     pub fn view_key(&self) -> ViewKey {
-        ViewKey { scalar: self.view }
+        ViewKey {
+            scalar: self.view,
+            opening_key: Arc::clone(&self.opening_key),
+        }
     }
     fn shared(&self, ephemeral: &RistrettoPoint) -> Scalar {
         scalar_from(b"shared", &[(ephemeral * self.view).compress().as_bytes()])
@@ -101,11 +120,22 @@ impl Wallet {
 #[derive(Clone)]
 pub struct ViewKey {
     pub(crate) scalar: Scalar,
+    opening_key: Arc<HybridKemKey>,
 }
 
 impl ViewKey {
-    pub fn new(scalar: Scalar) -> Self {
-        ViewKey { scalar }
+    pub fn new(scalar: Scalar, opening_key: HybridKemKey) -> Self {
+        ViewKey {
+            scalar,
+            opening_key: Arc::new(opening_key),
+        }
+    }
+
+    pub fn opening_public(&self) -> [u8; RECIPIENT_PUBLIC_BYTES] {
+        self.opening_key
+            .public_key()
+            .try_into()
+            .expect("fixed hybrid public key")
     }
 
     pub fn address_view(&self) -> RistrettoPoint {
@@ -128,8 +158,7 @@ pub struct Note {
     pub one_time: RistrettoPoint,
     pub value_commitment: RistrettoPoint,
     pub ephemeral: RistrettoPoint,
-    pub masked_value: Scalar,
-    pub masked_blinding: Scalar,
+    pub encrypted_opening: NoteOpening,
 }
 
 #[derive(Clone, Copy)]
@@ -399,14 +428,33 @@ impl SpendProof {
 /// the one-time destination key or its encrypted opening.
 fn note_binding(note: &Note) -> [u8; 32] {
     sha2::Sha256::new()
-        .chain_update(b"DEFMI:NOTE:BODY:v2")
+        .chain_update(b"DEFMI:NOTE:BODY:v3")
         .chain_update(note.one_time.compress().as_bytes())
         .chain_update(note.value_commitment.compress().as_bytes())
         .chain_update(note.ephemeral.compress().as_bytes())
-        .chain_update(note.masked_value.to_bytes())
-        .chain_update(note.masked_blinding.to_bytes())
+        .chain_update(note.encrypted_opening.binding_bytes())
         .finalize()
         .into()
+}
+
+fn opening_context(
+    one_time: &RistrettoPoint,
+    commitment: &RistrettoPoint,
+    ephemeral: &RistrettoPoint,
+) -> [u8; 32] {
+    sha2::Sha256::new()
+        .chain_update(b"DEFMI:NOTE:OPENING:v3")
+        .chain_update(one_time.compress().as_bytes())
+        .chain_update(commitment.compress().as_bytes())
+        .chain_update(ephemeral.compress().as_bytes())
+        .finalize()
+        .into()
+}
+
+/// Ownership relation used by an existing publicly specified covenant. This
+/// computes no payload opening and supplies no post-quantum anonymity guarantee.
+pub fn note_serial(view: &Scalar, spend: &Scalar, ephemeral: &RistrettoPoint) -> Scalar {
+    scalar_from(b"shared", &[(ephemeral * view).compress().as_bytes()]) + spend
 }
 
 pub struct NoteLedger {
@@ -418,7 +466,7 @@ pub struct NoteLedger {
     /// The state root, kept rather than recomputed. See `snapshot`.
     rolling: sha2::Sha256,
     /// Who may create notes. `None` accepts any `add` and says so.
-    issuer: Option<VerifyingKey>,
+    issuer: Option<Vec<u8>>,
     issued: std::collections::BTreeSet<Vec<u8>>,
 }
 
@@ -448,14 +496,6 @@ impl NoteLedger {
         }
     }
 
-    fn masks(&self, shared: &Scalar) -> (Scalar, Scalar) {
-        let encoded = shared.to_bytes();
-        (
-            scalar_from(b"mask:value", &[&encoded]),
-            scalar_from(b"mask:blinding", &[&encoded]),
-        )
-    }
-
     fn one_time_point(&self, address: &Address, shared: &Scalar) -> RistrettoPoint {
         G * shared + address.spend
     }
@@ -471,21 +511,31 @@ impl NoteLedger {
         value_commitment: RistrettoPoint,
         effective_blinding: &Scalar,
         rng: &mut R,
-    ) -> Note {
+    ) -> Result<Note, &'static str> {
         let ephemeral_secret = Scalar::random(rng);
         let ephemeral = G * ephemeral_secret;
         let shared = scalar_from(
             b"shared",
             &[(address.view * ephemeral_secret).compress().as_bytes()],
         );
-        let (mv, mb) = self.masks(&shared);
-        Note {
-            one_time: self.one_time_point(address, &shared),
+        let one_time = self.one_time_point(address, &shared);
+        let context = opening_context(&one_time, &value_commitment, &ephemeral);
+        let mut payload = zeroize::Zeroizing::new([0; 40]);
+        payload[..8].copy_from_slice(&value.to_be_bytes());
+        payload[8..].copy_from_slice(effective_blinding.as_bytes());
+        let encrypted_opening = SealedMessage::seal(
+            &address.opening_public,
+            SealingPurpose::NoteOpening,
+            &context,
+            payload.as_ref(),
+        )
+        .map_err(|_| "note recipient encryption failed")?;
+        Ok(Note {
+            one_time,
             value_commitment,
             ephemeral,
-            masked_value: Scalar::from(value) + mv,
-            masked_blinding: effective_blinding + mb,
-        }
+            encrypted_opening: NoteOpening::Recipient(encrypted_opening),
+        })
     }
 
     pub fn commitment_of(&self, note: &Note) -> RistrettoPoint {
@@ -525,82 +575,81 @@ impl NoteLedger {
         &mut self,
         note: Note,
         nonce: &[u8],
-        authorisation: &Signature,
+        authorisation: &[u8],
     ) -> Result<usize, &'static str> {
         let issuer = self.issuer.as_ref().ok_or("this ledger has no issuer")?;
         let body = note_issuance_body(&self.commitment_of(&note), nonce);
         if self.issued.contains(&body) {
             return Err("that issuance authorisation was already used");
         }
-        issuer
-            .verify_strict(&body, authorisation)
+        HybridVerifier
+            .verify(KeyPurpose::Attestation, issuer, &body, authorisation)
             .map_err(|_| "the note is not signed by the issuer")?;
         self.issued.insert(body);
         Ok(self.append(note))
     }
 
     /// A ledger where notes can only come from one place.
-    pub fn under_issuer(mut self, issuer: VerifyingKey) -> Self {
+    pub fn under_issuer(mut self, issuer: Vec<u8>) -> Self {
         self.issuer = Some(issuer);
         self
     }
 
-    /// One scalar multiplication per note; no trial decryption of amounts.
+    /// Check the one-time destination before attempting authenticated decryption.
     pub fn scan(&self, wallet: &Wallet, asset_key: &Pedersen) -> Vec<(usize, Opening)> {
-        let mut found = Vec::new();
-        for (index, note) in self.notes.iter().enumerate() {
-            let shared = wallet.shared(&note.ephemeral);
-            let (mv, mb) = self.masks(&shared);
-            let value_scalar = note.masked_value - mv;
-            let blinding = note.masked_blinding - mb;
-            // recover the value only if it is a small integer
-            let Some(value) = small_scalar(&value_scalar, self.bits) else {
-                continue;
-            };
-            if self.one_time_point(&wallet.address, &shared) == note.one_time
-                && asset_key.commit_u64(value, &blinding) == note.value_commitment
-            {
-                found.push((
+        self.scan_view(&wallet.view_key(), &wallet.address, asset_key)
+            .into_iter()
+            .map(|(index, value, blinding)| {
+                (
                     index,
                     Opening {
                         value,
                         blinding,
-                        serial: wallet.serial(&note.ephemeral),
+                        serial: wallet.serial(&self.notes[index].ephemeral),
                     },
-                ));
-            }
-        }
-        found
+                )
+            })
+            .collect()
     }
 
-    /// Every note addressed to `address` that this view key can open, and the
-    /// amounts --- but no serial numbers, because a serial needs the spend key.
-    ///
-    /// One scalar multiplication a note, the same as a wallet scanning for
-    /// itself. What differs is the tuple that comes back: there is nowhere to
-    /// put a serial, so an auditor cannot be handed one by accident.
+    /// Incoming amounts and blindings only. The independent KEM key is part of
+    /// the scoped viewing capability; a recovered curve secret alone cannot open it.
     pub fn scan_view(
         &self,
         view: &ViewKey,
         address: &Address,
         asset_key: &Pedersen,
     ) -> Vec<(usize, u64, Scalar)> {
-        let mut found = Vec::new();
-        for (index, note) in self.notes.iter().enumerate() {
-            let shared = view.shared(&note.ephemeral);
-            let (mv, mb) = self.masks(&shared);
-            let value_scalar = note.masked_value - mv;
-            let blinding = note.masked_blinding - mb;
-            let Some(value) = small_scalar(&value_scalar, self.bits) else {
-                continue;
-            };
-            if self.one_time_point(address, &shared) == note.one_time
-                && asset_key.commit_u64(value, &blinding) == note.value_commitment
-            {
-                found.push((index, value, blinding));
-            }
+        if view.address_view() != address.view || view.opening_public() != address.opening_public {
+            return Vec::new();
         }
-        found
+        self.notes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, note)| {
+                let shared = view.shared(&note.ephemeral);
+                if self.one_time_point(address, &shared) != note.one_time {
+                    return None;
+                }
+                let context =
+                    opening_context(&note.one_time, &note.value_commitment, &note.ephemeral);
+                let NoteOpening::Recipient(envelope) = &note.encrypted_opening else {
+                    return None;
+                };
+                let payload = envelope
+                    .open(&view.opening_key, SealingPurpose::NoteOpening, &context, 40)
+                    .ok()?;
+                let value = u64::from_be_bytes(payload[..8].try_into().ok()?);
+                if self.bits < 64 && value >= (1_u64 << self.bits) {
+                    return None;
+                }
+                let blinding = Option::<Scalar>::from(Scalar::from_canonical_bytes(
+                    payload[8..].try_into().ok()?,
+                ))?;
+                (asset_key.commit_u64(value, &blinding) == note.value_commitment)
+                    .then_some((index, value, blinding))
+            })
+            .collect()
     }
 
     fn membership_context(
@@ -807,7 +856,7 @@ impl NoteLedger {
                 commitment,
                 &(gamma * Scalar::from(*value) + blinding),
                 rng,
-            ));
+            )?);
             commitments.push(commitment);
         }
         let residual = pseudo - commitments.iter().sum::<RistrettoPoint>();
@@ -962,6 +1011,29 @@ impl NoteLedger {
         Ok(())
     }
 
+    /// Compute the exact post-spend root without changing either rail, so a
+    /// fallible receipt signer runs before irreversible in-memory admission.
+    pub(crate) fn spend_snapshot(
+        &self,
+        proof: &SpendProof,
+        notes: &[Note],
+    ) -> Result<[u8; 32], &'static str> {
+        if !proof.matches_output_notes(notes) {
+            return Err("delivered notes differ from signed destinations");
+        }
+        let serial = proof.serial_point.compress().to_bytes();
+        if self.spent.contains(&serial) {
+            return Err("serial already spent");
+        }
+        let mut rolling = self.rolling.clone();
+        rolling.update(b"s");
+        rolling.update(serial);
+        for note in notes {
+            rolling.update(self.commitment_of(note).compress().as_bytes());
+        }
+        Ok(rolling.finalize().into())
+    }
+
     /// The state root, in constant time.
     ///
     /// This used to walk the whole ledger --- compressing every note that had
@@ -994,21 +1066,6 @@ impl NoteLedger {
     pub fn snapshot(&self) -> [u8; 32] {
         self.rolling.clone().finalize().into()
     }
-}
-
-/// Recover a small integer from a scalar, or nothing.
-fn small_scalar(scalar: &Scalar, bits: usize) -> Option<u64> {
-    let bytes = scalar.to_bytes();
-    if bytes[8..].iter().any(|b| *b != 0) {
-        return None;
-    }
-    let mut value = [0u8; 8];
-    value.copy_from_slice(&bytes[..8]);
-    let value = u64::from_le_bytes(value);
-    if bits < 64 && value >= (1u64 << bits) {
-        return None;
-    }
-    Some(value)
 }
 
 /// Decoys drawn from the newest `window` notes, with the real note inside.

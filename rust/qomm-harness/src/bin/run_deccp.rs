@@ -1,5 +1,4 @@
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
 use qomm_defmi::ccp::{
     for_provider, net_positions, sign_obligation, ClearingProvider, ClearingRegistry, Obligation,
 };
@@ -15,6 +14,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Instant;
+use zkfmi_crypto::{hybrid::signature::HybridSigner, traits::Signer};
 
 struct Options {
     trades: Vec<usize>,
@@ -137,17 +137,17 @@ fn clearing_arm(
         return Err("clearing measurement needs at least two participants and one trade".into());
     }
     let mut values = DeterministicRng::new(seed);
-    let house = ClearingProvider::new("DeCCP-A", b"house-a", SigningKey::generate(&mut *rng));
+    let house = ClearingProvider::new("DeCCP-A", b"house-a", HybridSigner::generate().unwrap());
     let members = (0..participants)
         .map(|index| format!("p{index}").into_bytes())
         .collect::<Vec<_>>();
     let signing = members
         .iter()
-        .map(|member| (member.clone(), SigningKey::generate(&mut *rng)))
+        .map(|member| (member.clone(), HybridSigner::generate().unwrap()))
         .collect::<BTreeMap<_, _>>();
     let parties = signing
         .iter()
-        .map(|(member, key)| (member.clone(), key.verifying_key()))
+        .map(|(member, key)| (member.clone(), key.public_key()))
         .collect::<BTreeMap<_, _>>();
     let mut edges = Vec::new();
     for _ in 0..trades {
@@ -161,18 +161,14 @@ fn clearing_arm(
             asset: "an instrument".into(),
             commitment: key.commit_u64(amount, &Scalar::random(&mut *rng)),
         };
-        edges.push(sign_obligation(
-            &obligation,
-            &signing[&payer],
-            &signing[&payee],
-        ));
+        edges.push(sign_obligation(&obligation, &signing[&payer], &signing[&payee]).unwrap());
     }
 
     let started = Instant::now();
     let novation = house.novate(&edges)?;
     let novate_ms = started.elapsed().as_secs_f64() * 1e3;
     let started = Instant::now();
-    let attestation = house.attest(&novation, b"cycle-1");
+    let attestation = house.attest(&novation, b"cycle-1").unwrap();
     let attest_ms = started.elapsed().as_secs_f64() * 1e3;
 
     let credit = CreditCtx::new(key.clone(), 64);

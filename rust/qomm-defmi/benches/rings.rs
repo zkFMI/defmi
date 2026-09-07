@@ -44,7 +44,6 @@
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
 use qomm_defmi::assets::AssetRegistry;
 use qomm_defmi::note_settlement::*;
 use qomm_defmi::notes::{ring_for, ring_recent, NoteLedger, Wallet};
@@ -55,6 +54,7 @@ use rand::rngs::OsRng;
 use sha2::Digest;
 use std::collections::BTreeMap;
 use std::time::Instant;
+use zkfmi_crypto::hybrid::signature::HybridSigner;
 
 const BITS: usize = 32;
 const QTY: u64 = 100;
@@ -111,13 +111,15 @@ fn rail(
             NOTE_VALUE + i as u64 + 1
         };
         let blinding = Scalar::random(rng);
-        let note = ledger.build_note(
-            &address,
-            held,
-            asset_key.commit_u64(held, &blinding),
-            &blinding,
-            rng,
-        );
+        let note = ledger
+            .build_note(
+                &address,
+                held,
+                asset_key.commit_u64(held, &blinding),
+                &blinding,
+                rng,
+            )
+            .expect("valid fixture note encryption");
         ledger.add(note);
     }
     ledger
@@ -143,7 +145,7 @@ fn world(depth: usize, rng: &mut OsRng) -> World {
             securities,
             cash,
             venue,
-            SigningKey::generate(rng),
+            HybridSigner::generate().unwrap(),
         ),
         key,
         registry,
@@ -274,7 +276,7 @@ fn settle_once(
     .ok()?;
 
     let start = Instant::now();
-    let receipt = w.defmi.settle(package, 1_000, CONTEXT, rng);
+    let receipt = w.defmi.settle(package, 1_000, CONTEXT, rng).unwrap();
     let verify_ms = start.elapsed().as_secs_f64() * 1e3;
     if !receipt.settled {
         return None;
@@ -334,13 +336,15 @@ fn churn(w: &mut World, settlements: usize, rng: &mut OsRng) {
                 let address = Wallet::new(rng).address;
                 let blinding = Scalar::random(rng);
                 let held = NOTE_VALUE;
-                let note = ledger.build_note(
-                    &address,
-                    held,
-                    asset_key.commit_u64(held, &blinding),
-                    &blinding,
-                    rng,
-                );
+                let note = ledger
+                    .build_note(
+                        &address,
+                        held,
+                        asset_key.commit_u64(held, &blinding),
+                        &blinding,
+                        rng,
+                    )
+                    .expect("valid fixture note encryption");
                 ledger.add(note);
             }
         }

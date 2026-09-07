@@ -19,10 +19,10 @@
 //! address = (G * view_s, G * spend_s)          both halves are public
 //! ```
 //!
-//! Nothing here is new cryptography, deliberately: the note construction is
-//! unchanged, the scan is unchanged, and what changes is which address a payer
-//! is told to use. Which means it also works with a counterparty that has
-//! already implemented the old thing.
+//! Each scope also derives a hybrid KEM key from the secret master seed with
+//! independent domain separation. That key is not derived from the curve view
+//! scalar. The complete viewing capability is required to open v3 note payloads;
+//! classical-only addresses and grants are incompatible.
 //!
 //! # Three things it does not do
 //!
@@ -61,7 +61,6 @@
 //! stops them. That is an operational control wearing a cryptographic coat, and
 //! it is worth knowing which it is.
 
-use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -71,12 +70,36 @@ use sha2::{Digest, Sha512};
 
 use crate::notes::{Address, NoteLedger, ViewKey, Wallet};
 
-pub const VIEW_DOMAIN: &[u8] = b"qomm:defmi:view:v1";
+pub const VIEW_DOMAIN: &[u8] = b"qomm:defmi:view:v2";
+
+fn opening_key(seed: &[u8; 32], scope: &str) -> zkfmi_crypto::hybrid::kem::HybridKemKey {
+    use sha2::Sha256;
+    let mut material = zeroize::Zeroizing::new([0; 96]);
+    let x: zeroize::Zeroizing<[u8; 32]> = zeroize::Zeroizing::new(
+        Sha256::new()
+            .chain_update(b"DEFMI:SCOPED:X25519:v1")
+            .chain_update(seed)
+            .chain_update(scope.as_bytes())
+            .finalize()
+            .into(),
+    );
+    let pq: zeroize::Zeroizing<[u8; 64]> = zeroize::Zeroizing::new(
+        Sha512::new()
+            .chain_update(b"DEFMI:SCOPED:ML-KEM-768:v1")
+            .chain_update(seed)
+            .chain_update(scope.as_bytes())
+            .finalize()
+            .into(),
+    );
+    material[..32].copy_from_slice(&x[..]);
+    material[32..].copy_from_slice(&pq[..]);
+    zkfmi_crypto::hybrid::kem::HybridKemKey::from_seed(&material)
+}
 
 /// One scope's scalar. One way, so a scope reveals neither seed nor sibling.
 pub fn derive(seed: &[u8], role: &[u8], scope: &str) -> Scalar {
     let mut hasher = Sha512::new();
-    hasher.update(VIEW_DOMAIN);
+    hasher.update(b"qomm:defmi:view:v1");
     hasher.update(b":");
     hasher.update(role);
     hasher.update(b":");
@@ -113,6 +136,7 @@ impl ViewingGrant {
         }
         hasher.update(self.address.view.compress().as_bytes());
         hasher.update(self.address.spend.compress().as_bytes());
+        hasher.update(self.address.opening_public);
         hasher.update(self.issued_at.to_be_bytes());
         hasher.update(self.expires_at.to_be_bytes());
         hasher.finalize().into()
@@ -160,6 +184,7 @@ impl ScopedWallet {
         Wallet::from_parts(
             derive(&self.view_seed, b"view", scope),
             derive(&self.spend_seed, b"spend", scope),
+            opening_key(&self.view_seed, scope),
         )
     }
 
@@ -191,16 +216,12 @@ impl ScopedWallet {
         issued_at: u64,
         expires_at: u64,
     ) -> ViewingGrant {
-        let view = derive(&self.view_seed, b"view", scope);
-        let spend = derive(&self.spend_seed, b"spend", scope);
+        let wallet = self.wallet(scope);
         let mut grant = ViewingGrant {
             scope: scope.to_string(),
             grantee: grantee.to_string(),
-            address: Address {
-                view: G * view,
-                spend: G * spend,
-            },
-            view_key: ViewKey::new(view),
+            address: wallet.address,
+            view_key: wallet.view_key(),
             issued_at,
             expires_at,
             signature: None,
@@ -229,7 +250,9 @@ pub fn check_grant(
     owner
         .verify(&grant.body(), signature)
         .map_err(|_| "not signed by that wallet")?;
-    if grant.view_key.address_view() != grant.address.view {
+    if grant.view_key.address_view() != grant.address.view
+        || grant.view_key.opening_public() != grant.address.opening_public
+    {
         return Err("the key does not open the address it names");
     }
     if now < grant.issued_at {

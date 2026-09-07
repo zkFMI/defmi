@@ -112,12 +112,13 @@ impl KeyPurpose {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PurposeKey {
     pub public_key: [u8; 32],
+    pub pq_public_key: Vec<u8>,
     pub epoch: u64,
 }
 
 impl PurposeKey {
     fn validate(&self) -> Result<(), ParticipantError> {
-        if self.epoch == 0 {
+        if self.epoch == 0 || self.pq_public_key.len() != zkfmi_crypto::suite::ML_DSA_65_PK_BYTES {
             return Err(ParticipantError::InvalidKey);
         }
         verifying_key(&self.public_key).map(|_| ())
@@ -172,6 +173,12 @@ impl ParticipantKeys {
             .collect::<BTreeSet<_>>()
             .len()
             != keys.len()
+            || keys
+                .iter()
+                .map(|key| &key.pq_public_key)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != keys.len()
         {
             return Err(ParticipantError::InvalidKey);
         }
@@ -328,6 +335,64 @@ pub struct EntityApproval {
 }
 
 impl EntityApproval {
+    pub fn sign(
+        participant_id: Identifier,
+        domain_id: &Identifier,
+        purpose: KeyPurpose,
+        epoch: u64,
+        statement: Commitment,
+        classical: &ed25519_dalek::SigningKey,
+        pq: &zkfmi_crypto::backend::MlDsa65Signer,
+    ) -> Result<Self, ParticipantError> {
+        let body = Self::signing_body(domain_id, purpose, epoch, &statement);
+        let mut signature = ed25519_dalek::Signer::sign(classical, &body)
+            .to_bytes()
+            .to_vec();
+        signature.extend(
+            zkfmi_crypto::traits::Signer::sign(
+                pq,
+                zkfmi_crypto::key::KeyPurpose::Attestation,
+                &body,
+            )
+            .map_err(|_| ParticipantError::InvalidEntityApproval)?,
+        );
+        Ok(Self {
+            participant_id,
+            key_purpose: purpose,
+            key_epoch: epoch,
+            statement,
+            signature,
+        })
+    }
+
+    pub fn verify_signature(
+        &self,
+        domain_id: &Identifier,
+        key: &PurposeKey,
+    ) -> Result<(), ParticipantError> {
+        key.validate()?;
+        if self.key_epoch != key.epoch
+            || self.signature.len() != 64 + zkfmi_crypto::suite::ML_DSA_65_SIG_BYTES
+        {
+            return Err(ParticipantError::InvalidEntityApproval);
+        }
+        let body = Self::signing_body(domain_id, self.key_purpose, self.key_epoch, &self.statement);
+        let classical: [u8; 64] = self.signature[..64]
+            .try_into()
+            .map_err(|_| ParticipantError::InvalidEntityApproval)?;
+        verifying_key(&key.public_key)?
+            .verify(&body, &Signature::from_bytes(&classical))
+            .map_err(|_| ParticipantError::InvalidEntityApproval)?;
+        zkfmi_crypto::traits::Verifier::verify(
+            &zkfmi_crypto::backend::MlDsa65Verifier,
+            zkfmi_crypto::key::KeyPurpose::Attestation,
+            &key.pq_public_key,
+            &body,
+            &self.signature[64..],
+        )
+        .map_err(|_| ParticipantError::InvalidEntityApproval)
+    }
+
     pub fn signing_body(
         domain_id: &Identifier,
         purpose: KeyPurpose,
@@ -932,10 +997,14 @@ impl ParticipantRegistry {
         let current = participant.keys.key(request.purpose);
         if request.new_key.epoch != current.epoch + 1
             || request.new_key.public_key == current.public_key
+            || request.new_key.pq_public_key == current.pq_public_key
         {
             return Err(ParticipantError::InvalidKey);
         }
-        *participant.keys.key_mut(request.purpose) = request.new_key;
+        let mut rotated = participant.keys.clone();
+        *rotated.key_mut(request.purpose) = request.new_key;
+        rotated.validate()?;
+        participant.keys = rotated;
         participant.sequence = participant
             .sequence
             .checked_add(1)
@@ -1445,27 +1514,11 @@ impl ParticipantRegistry {
             || approval.key_purpose != purpose
             || approval.key_epoch != key.epoch
             || approval.statement != *statement
-            || approval.signature.len() != 64
+            || approval.signature.len() != 64 + zkfmi_crypto::suite::ML_DSA_65_SIG_BYTES
         {
             return Err(ParticipantError::InvalidEntityApproval);
         }
-        let signature_bytes: [u8; 64] = approval
-            .signature
-            .as_slice()
-            .try_into()
-            .map_err(|_| ParticipantError::InvalidEntityApproval)?;
-        let signature = Signature::from_bytes(&signature_bytes);
-        verifying_key(&key.public_key)?
-            .verify(
-                &EntityApproval::signing_body(
-                    &configuration.domain_id,
-                    purpose,
-                    key.epoch,
-                    statement,
-                ),
-                &signature,
-            )
-            .map_err(|_| ParticipantError::InvalidEntityApproval)
+        approval.verify_signature(&configuration.domain_id, key)
     }
 
     fn bump_participant_sequence(
@@ -1560,7 +1613,7 @@ pub enum ParticipantError {
 
 #[cfg(test)]
 mod tests {
-    use ed25519_dalek::{Signer, SigningKey};
+    use ed25519_dalek::SigningKey;
 
     use super::*;
 
@@ -1575,6 +1628,9 @@ mod tests {
     fn key(value: u8) -> PurposeKey {
         PurposeKey {
             public_key: signing_key(value).verifying_key().to_bytes(),
+            pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+                &zkfmi_crypto::test_support::entity_pq_signer(&signing_key(value).to_bytes()),
+            ),
             epoch: 1,
         }
     }
@@ -1616,18 +1672,16 @@ mod tests {
         let participant = registry.participant(&id(participant_id)).unwrap();
         let epoch = participant.keys.key(purpose).epoch;
         let domain = registry.configuration.as_ref().unwrap().domain_id;
-        EntityApproval {
-            participant_id: id(participant_id),
-            key_purpose: purpose,
-            key_epoch: epoch,
+        EntityApproval::sign(
+            id(participant_id),
+            &domain,
+            purpose,
+            epoch,
             statement,
-            signature: signer
-                .sign(&EntityApproval::signing_body(
-                    &domain, purpose, epoch, &statement,
-                ))
-                .to_bytes()
-                .to_vec(),
-        }
+            signer,
+            &zkfmi_crypto::test_support::entity_pq_signer(&signer.to_bytes()),
+        )
+        .unwrap()
     }
 
     fn configured() -> ParticipantRegistry {
@@ -1947,6 +2001,9 @@ mod tests {
             purpose: KeyPurpose::Quote,
             new_key: PurposeKey {
                 public_key: signing_key(90).verifying_key().to_bytes(),
+                pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+                    &zkfmi_crypto::test_support::entity_pq_signer(&signing_key(90).to_bytes()),
+                ),
                 epoch: 2,
             },
         };
@@ -1981,6 +2038,11 @@ mod tests {
                         purpose: KeyPurpose::Quote,
                         new_key: PurposeKey {
                             public_key: signing_key(91).verifying_key().to_bytes(),
+                            pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+                                &zkfmi_crypto::test_support::entity_pq_signer(
+                                    &signing_key(91).to_bytes()
+                                )
+                            ),
                             epoch: 3,
                         },
                     },
@@ -1989,5 +2051,37 @@ mod tests {
                 .unwrap_err(),
             ParticipantError::InvalidEntityApproval
         );
+    }
+
+    #[test]
+    fn entity_approval_requires_both_components_and_the_enrolled_purpose() {
+        let signer = signing_key(31);
+        let enrolled = key(31);
+        let approval = EntityApproval::sign(
+            id(20),
+            &id(1),
+            KeyPurpose::Admin,
+            1,
+            id(2),
+            &signer,
+            &zkfmi_crypto::test_support::entity_pq_signer(&signer.to_bytes()),
+        )
+        .unwrap();
+        approval.verify_signature(&id(1), &enrolled).unwrap();
+        for index in [0, 64] {
+            let mut changed = approval.clone();
+            changed.signature[index] ^= 1;
+            assert!(changed.verify_signature(&id(1), &enrolled).is_err());
+        }
+        let mut stripped = approval.clone();
+        stripped.signature.truncate(64);
+        assert!(stripped.verify_signature(&id(1), &enrolled).is_err());
+        let mut changed = approval.clone();
+        changed.key_purpose = KeyPurpose::Emergency;
+        assert!(changed.verify_signature(&id(1), &enrolled).is_err());
+        assert!(approval.verify_signature(&id(2), &enrolled).is_err());
+        let mut replacement = enrolled;
+        replacement.pq_public_key = key(32).pq_public_key;
+        assert!(approval.verify_signature(&id(1), &replacement).is_err());
     }
 }

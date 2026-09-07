@@ -50,9 +50,9 @@ use std::collections::BTreeMap;
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use qomm_zk::pedersen::Pedersen;
 use rand_core::{CryptoRng, RngCore};
+use zkfmi_crypto::{hybrid::signature::HybridSigner, key::KeyPurpose, traits::Signer};
 
 use crate::reconcile::{
     check, check_positions, locate_break, prove, Attestation, BreakSearch, Reconciliation,
@@ -92,7 +92,7 @@ impl Statement {
         self.checked_total().unwrap_or(u64::MAX)
     }
 
-    pub fn attestation(&self, signature: Option<Signature>) -> Attestation {
+    pub fn attestation(&self, signature: Option<Vec<u8>>) -> Attestation {
         Attestation {
             register: self.register.clone(),
             account: self.account.clone(),
@@ -103,10 +103,12 @@ impl Statement {
         }
     }
 
-    pub fn signed_by(&self, key: &SigningKey) -> Attestation {
+    pub fn signed_by(&self, key: &HybridSigner) -> Result<Attestation, &'static str> {
         let bare = self.attestation(None);
-        let signature = key.sign(&bare.body());
-        self.attestation(Some(signature))
+        let signature = key
+            .sign(KeyPurpose::Attestation, &bare.body())
+            .map_err(|_| "hybrid registrar signing failed")?;
+        Ok(self.attestation(Some(signature)))
     }
 
     pub fn quantities(&self) -> Vec<u64> {
@@ -280,7 +282,7 @@ pub trait Register {
         Some(&self.statement().positions)
     }
 
-    fn signature(&self) -> Option<&Signature> {
+    fn signature(&self) -> Option<&Vec<u8>> {
         None
     }
 }
@@ -288,7 +290,7 @@ pub trait Register {
 /// A register that sent a file.
 pub struct FileRegister {
     pub statement: Statement,
-    pub signature: Option<Signature>,
+    pub signature: Option<Vec<u8>>,
 }
 
 impl FileRegister {
@@ -304,7 +306,7 @@ impl Register for FileRegister {
     fn statement(&self) -> &Statement {
         &self.statement
     }
-    fn signature(&self) -> Option<&Signature> {
+    fn signature(&self) -> Option<&Vec<u8>> {
         self.signature.as_ref()
     }
 }
@@ -399,7 +401,7 @@ pub fn run<R: RngCore + CryptoRng>(
     register: &dyn Register,
     commitments: &[RistrettoPoint],
     blindings: &[Scalar],
-    registrar: Option<&VerifyingKey>,
+    registrar: Option<&[u8]>,
     rng: &mut R,
 ) -> Report {
     let statement = register.statement();

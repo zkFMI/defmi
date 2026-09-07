@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "verdict": "targeted_pass",
+  "test_command": "cargo test --release -p qomm-avalanche-vm --test recovery",
+  "tests_passed": 2,
+  "completed_at": "2026-09-05T22:40:05Z",
+  "remote_host": "softbank-l40s",
+  "runner_log": "20260905T223820Z-qomm-rust.log",
+  "runner_log_sha256": "e7fa7294879f384f3a4a866cdf8e476347ddf627fc208152f6ac7e3357fd1614",
+  "aggregate_run_verdict": "FAIL",
+  "aggregate_failure": "The SDK finality fixture failed to compile earlier in the same aggregate run; the later recovery target executed and passed.",
+  "input_before_sha256": "cb7169ada55017f48a93a6bafc4d036302b12d87ba1964f682ac8a9980c3a24b",
+  "input_after_sha256": "16ad69c5038b3a72200219504f7e1ee1026e7669a509c3b67438c9146329b818",
+  "verified_source": [
+    {
+      "path": "rust/qomm-avalanche-vm/src/recovery.rs",
+      "sha256": "900cc07b031fc119db633beddffb25c5c4b19a62fdad8cdf2cf0f737d0556243"
+    },
+    {
+      "path": "rust/qomm-avalanche-vm/src/recovery_cli.rs",
+      "sha256": "b7e42b9d19a9f21300f22e89331264c7efe011aa0d3d84453ebc0882fba87357"
+    },
+    {
+      "path": "rust/qomm-avalanche-vm/tests/recovery.rs",
+      "sha256": "bfc02fd58ec4d56ccd291ae823ea26e274726ea16e6859b836d5ba68189a24d1"
+    }
+  ],
+  "evidence": [
+    "Actual VM transaction, state snapshot and block restoration after archival authority expiry with independently authorized current quorum.",
+    "Classical-only or altered approvals, wrong trusted policy/nonce, expiry, rollback threshold, archive/snapshot tampering and unsupported versions are rejected.",
+    "Actual child CLI prepare, seal, request and restore; owner-only new output directory; existing output is not overwritten.",
+    "Restored state rejects a previously executed transaction and admits a new transaction authorized by the current committee."
+  ],
+  "limitations": [
+    "This receipt covers the listed recovery source snapshot and target, not all repositories.",
+    "Offline restoration does not prove live validator cutover, independent operators or physical HSM deployment.",
+    "Archived classical signatures are not retroactively upgraded by a PQ checkpoint."
+  ]
+}

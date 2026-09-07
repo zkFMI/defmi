@@ -11,12 +11,12 @@ use bulletproofs::{BulletproofGens, RangeProof};
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::Identity;
-use ed25519_dalek::{Signature as IssuerSignature, VerifyingKey};
 use merlin::Transcript;
 use qomm_zk::pedersen::Pedersen;
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use zkfmi_crypto::{hybrid::signature::HybridVerifier, key::KeyPurpose, traits::Verifier};
 
 use crate::assets::BlindedTag;
 use qomm_zk::adaptor::{self, Signature};
@@ -96,7 +96,7 @@ pub struct Ledger {
     minted: RistrettoPoint,
     /// Who may create balance. `None` accepts any opening and says so; see
     /// `open_authorised`.
-    issuer: Option<VerifyingKey>,
+    issuer: Option<Vec<u8>>,
     issued: BTreeSet<Vec<u8>>,
 }
 
@@ -116,7 +116,7 @@ impl Ledger {
     }
 
     /// A ledger where balance can only come from one place.
-    pub fn under_issuer(key: Pedersen, bits: usize, issuer: VerifyingKey) -> Self {
+    pub fn under_issuer(key: Pedersen, bits: usize, issuer: Vec<u8>) -> Self {
         let mut ledger = Ledger::new(key, bits);
         ledger.issuer = Some(issuer);
         ledger
@@ -145,7 +145,7 @@ impl Ledger {
         handle: &[u8],
         balance: RistrettoPoint,
         nonce: &[u8],
-        authorisation: &IssuerSignature,
+        authorisation: &[u8],
     ) -> Result<(), &'static str> {
         let issuer = self.issuer.as_ref().ok_or("this ledger has no issuer")?;
         if self.accounts.contains_key(handle) {
@@ -155,8 +155,8 @@ impl Ledger {
         if self.issued.contains(&body) {
             return Err("that issuance authorisation was already used");
         }
-        issuer
-            .verify_strict(&body, authorisation)
+        HybridVerifier
+            .verify(KeyPurpose::Attestation, issuer, &body, authorisation)
             .map_err(|_| "the opening balance is not signed by the issuer")?;
         self.issued.insert(body);
         self.accounts.insert(handle.to_vec(), balance);

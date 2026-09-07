@@ -254,6 +254,8 @@ impl CanonicalGuarantor {
             kind: GuarantorKind::parse(result_string(object, "kind")?)?,
             name: result_string(object, "name")?.to_string(),
             public_key: result_hex32(object, "publicKey")?,
+            pq_public_key: hex::decode(result_string(object, "pqPublicKey")?)
+                .map_err(|error| error.to_string())?,
             risk_policy_digest: result_hex32(object, "riskPolicyDigest")?,
         };
         definition.body()?;
@@ -301,6 +303,8 @@ impl CanonicalCsdIssuer {
             jurisdiction: result_string(object, "jurisdiction")?.to_string(),
             operator_entity_commitment: result_hex32(object, "operatorEntityCommitment")?,
             public_key,
+            pq_public_key: hex::decode(result_string(object, "pqPublicKey")?)
+                .map_err(|_| "L1 CSD PQ public key is not hexadecimal".to_string())?,
             permitted_asset_ids: assets,
             policy_digest: result_hex32(object, "policyDigest")?,
             valid_from: result_u64(object, "validFrom")?,
@@ -418,8 +422,13 @@ impl CanonicalNote {
             one_time: result_hex32(object, "oneTime")?,
             value_commitment: result_hex32(object, "valueCommitment")?,
             ephemeral: result_hex32(object, "ephemeral")?,
-            masked_value: result_hex32(object, "maskedValue")?,
-            masked_blinding: result_hex32(object, "maskedBlinding")?,
+            encrypted_opening: serde_json::from_value(
+                object
+                    .get("encryptedOpening")
+                    .cloned()
+                    .ok_or("missing encrypted opening")?,
+            )
+            .map_err(|e| e.to_string())?,
             lock_id: result_hex32(object, "lockID")?,
         };
         output.validate()?;
@@ -719,6 +728,7 @@ pub struct CanonicalNoteClaim {
     pub asset_id: [u8; 32],
     pub value_commitment: [u8; 32],
     pub recipient_commitment: [u8; 32],
+    pub authorization: crate::note_chain::ClaimAuthorizationCommitment,
     pub source_hold_id: [u8; 32],
     pub kind: NoteClaimKind,
     pub status: String,
@@ -760,11 +770,21 @@ impl CanonicalNoteClaim {
                 Ok(EncryptedOpeningShare {
                     party: usize::try_from(result_u64(share, "party")?)
                         .map_err(|_| "L1 opening party is too large".to_string())?,
-                    ephemeral: CompressedRistretto(result_hex32(share, "ephemeral")?)
-                        .decompress()
-                        .ok_or_else(|| "L1 opening ephemeral is not canonical".to_string())?,
-                    masked_value: scalar("maskedValue")?,
-                    masked_blinding: scalar("maskedBlinding")?,
+                    recipient_public: serde_json::from_value(
+                        share
+                            .get("recipientPublic")
+                            .cloned()
+                            .ok_or("L1 opening recipient key missing")?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                    sealed: serde_json::from_value(
+                        share
+                            .get("sealed")
+                            .cloned()
+                            .ok_or("L1 opening ciphertext missing")?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                    blinding_adjustment: scalar("blindingAdjustment")?,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -781,6 +801,13 @@ impl CanonicalNoteClaim {
             asset_id: result_hex32(object, "assetID")?,
             value_commitment: result_hex32(object, "valueCommitment")?,
             recipient_commitment: result_hex32(object, "recipientCommitment")?,
+            authorization: serde_json::from_value(
+                object
+                    .get("authorization")
+                    .cloned()
+                    .ok_or_else(|| "L1 snapshot is missing claim authorization".to_string())?,
+            )
+            .map_err(|_| "L1 claim authorization is malformed".to_string())?,
             source_hold_id: result_hex32(object, "sourceHoldID")?,
             kind,
             status,
@@ -800,6 +827,7 @@ impl CanonicalNoteClaim {
             asset_id: self.asset_id,
             value_commitment: self.value_commitment,
             recipient_commitment: self.recipient_commitment,
+            authorization: self.authorization,
             source_hold_id: self.source_hold_id,
             kind: self.kind,
             opening_envelope: self.opening_envelope.clone(),
@@ -926,6 +954,7 @@ fn register_participant_json(registration: &RegisterParticipant) -> Value {
     let purpose_key = |key: &crate::participant::PurposeKey| {
         json!({
             "publicKey": hex::encode(key.public_key),
+            "pqPublicKey": hex::encode(&key.pq_public_key),
             "epoch": key.epoch,
         })
     };
@@ -971,6 +1000,7 @@ fn participant_key_rotation_json(rotation: &RotateParticipantKey) -> Value {
         "purpose": rotation.purpose,
         "newKey": {
             "publicKey": hex::encode(rotation.new_key.public_key),
+            "pqPublicKey": hex::encode(&rotation.new_key.pq_public_key),
             "epoch": rotation.new_key.epoch,
         },
     })
@@ -1104,6 +1134,7 @@ fn csd_issuer_json(issuer: &CsdIssuerDefinition) -> Value {
         "jurisdiction": issuer.jurisdiction,
         "operatorEntityCommitment": hex::encode(issuer.operator_entity_commitment),
         "publicKey": hex::encode(issuer.public_key),
+        "pqPublicKey": hex::encode(&issuer.pq_public_key),
         "permittedAssetIDs": issuer.permitted_asset_ids.iter().map(hex::encode).collect::<Vec<_>>(),
         "policyDigest": hex::encode(issuer.policy_digest),
         "validFrom": issuer.valid_from,
@@ -1136,6 +1167,7 @@ fn guarantor_json(guarantor: &GuarantorDefinition) -> Value {
         "kind": guarantor.kind.as_str(),
         "name": guarantor.name,
         "publicKey": hex::encode(guarantor.public_key),
+        "pqPublicKey": hex::encode(&guarantor.pq_public_key),
         "riskPolicyDigest": hex::encode(guarantor.risk_policy_digest),
     })
 }
@@ -1157,7 +1189,7 @@ fn credit_grant_json(grant: &CreditFacilityGrant) -> Value {
         "validFrom": grant.valid_from,
         "validUntil": grant.valid_until,
         "nonce": hex::encode(grant.nonce),
-        "guarantorSignature": hex::encode(grant.guarantor_signature.to_bytes()),
+        "guarantorSignature": hex::encode(&grant.guarantor_signature),
     })
 }
 
@@ -1192,7 +1224,7 @@ fn credit_control_json(control: &CreditFacilityControl) -> Value {
         "beforeSequence": control.before_sequence,
         "effectiveAt": control.effective_at,
         "reasonDigest": hex::encode(control.reason_digest),
-        "guarantorSignature": hex::encode(control.guarantor_signature.to_bytes()),
+        "guarantorSignature": hex::encode(&control.guarantor_signature),
     })
 }
 
@@ -1219,7 +1251,7 @@ fn credit_amendment_json(amendment: &CreditFacilityAmendment) -> Value {
         "effectiveAt": amendment.effective_at,
         "reasonDigest": hex::encode(amendment.reason_digest),
         "relationProofDigest": hex::encode(amendment.relation_proof_digest),
-        "guarantorSignature": hex::encode(amendment.guarantor_signature.to_bytes()),
+        "guarantorSignature": hex::encode(&amendment.guarantor_signature),
     })
 }
 
@@ -1431,8 +1463,7 @@ fn note_output_json(output: &NoteOutput) -> Value {
         "oneTime": hex::encode(output.one_time),
         "valueCommitment": hex::encode(output.value_commitment),
         "ephemeral": hex::encode(output.ephemeral),
-        "maskedValue": hex::encode(output.masked_value),
-        "maskedBlinding": hex::encode(output.masked_blinding),
+        "encryptedOpening": output.encrypted_opening,
         "lockID": hex::encode(output.lock_id),
     })
 }
@@ -1458,6 +1489,7 @@ fn note_issuance_json(issuance: &NoteIssuance) -> Value {
         "output": note_output_json(&issuance.output),
         "proofDigest": hex::encode(issuance.proof_digest),
         "issuerSignature": hex::encode(issuance.issuer_signature.to_bytes()),
+        "issuerPqSignature": hex::encode(&issuance.issuer_pq_signature),
     })
 }
 
@@ -1486,6 +1518,7 @@ fn note_claim_json(claim: &NoteClaim) -> Value {
         "assetID": hex::encode(claim.asset_id),
         "valueCommitment": hex::encode(claim.value_commitment),
         "recipientCommitment": hex::encode(claim.recipient_commitment),
+        "authorization": claim.authorization,
         "sourceHoldID": hex::encode(claim.source_hold_id),
         "kind": claim.kind.as_str(),
         "openingEnvelope": {
@@ -1494,9 +1527,9 @@ fn note_claim_json(claim: &NoteClaim) -> Value {
             "recipientView": hex::encode(claim.opening_envelope.recipient_view.compress().to_bytes()),
             "shares": claim.opening_envelope.shares.iter().map(|share| json!({
                 "party": share.party,
-                "ephemeral": hex::encode(share.ephemeral.compress().to_bytes()),
-                "maskedValue": hex::encode(share.masked_value.to_bytes()),
-                "maskedBlinding": hex::encode(share.masked_blinding.to_bytes()),
+                "recipientPublic": share.recipient_public,
+                    "sealed": share.sealed,
+                    "blindingAdjustment": hex::encode(share.blinding_adjustment.to_bytes()),
             })).collect::<Vec<_>>(),
         },
     })

@@ -67,6 +67,13 @@ fn initialize(store_path: PathBuf, pin_path: PathBuf, purpose: String) -> Result
         .map_err(|error| error.to_string())?
         .as_secs();
     let key_id = store.generate(&purpose, KeyKind::Ed25519, now, 31_536_000, BTreeMap::new())?;
+    let pq_key_id = store.generate(
+        &format!("{purpose}:pq"),
+        KeyKind::MlDsa65,
+        now,
+        31_536_000,
+        BTreeMap::new(),
+    )?;
     let snapshot = store.snapshot()?;
     let record = snapshot
         .keys
@@ -76,11 +83,21 @@ fn initialize(store_path: PathBuf, pin_path: PathBuf, purpose: String) -> Result
     let public = BASE64
         .decode(&record.public)
         .map_err(|_| "initialized signer public key is malformed".to_string())?;
+    let pq_record = snapshot
+        .keys
+        .iter()
+        .find(|record| record.key_id == pq_key_id)
+        .ok_or_else(|| "initialized PQ signer key is absent".to_string())?;
+    let pq_public = BASE64
+        .decode(&pq_record.public)
+        .map_err(|_| "initialized PQ public key is malformed".to_string())?;
     pin.fill(0);
     println!(
         "{}",
         serde_json::to_string(&serde_json::json!({
             "key_id": key_id,
+            "pq_key_id": pq_key_id,
+            "pq_public_key": hex::encode(pq_public),
             "public_key": hex::encode(public),
             "backend": "process-isolated-encrypted-key-emulator",
             "private_key_exported_to_caller": false,
@@ -105,7 +122,11 @@ fn sign(store_path: PathBuf, pin_path: PathBuf, expected_key_id: String) -> Resu
     if request.key_id != expected_key_id {
         return Err("HSM signing request names another key".into());
     }
-    let message = request.decode_message()?;
+    let message = if request.version == 2 {
+        request.decode_pq_message()?
+    } else {
+        request.decode_message()?
+    };
     let mut pin = read_pin(&pin_path)?;
     let store = EncryptedKeyStore::new(store_path, &pin)?;
     let now = SystemTime::now()
@@ -113,12 +134,22 @@ fn sign(store_path: PathBuf, pin_path: PathBuf, expected_key_id: String) -> Resu
         .map_err(|error| error.to_string())?
         .as_secs();
     let key = store.private_key(&expected_key_id, now, false)?;
-    let key = key
-        .ed25519()
-        .ok_or_else(|| "HSM key is not Ed25519".to_string())?;
-    let signature = key.sign(&message);
+    let response = if request.version == 2 {
+        use zkfmi_crypto::traits::Signer as _;
+        let pq = key
+            .ml_dsa65()
+            .ok_or_else(|| "HSM key is not ML-DSA-65".to_string())?;
+        let signature = pq
+            .sign(zkfmi_crypto::key::KeyPurpose::Attestation, &message)
+            .map_err(|error| error.to_string())?;
+        ExternalSignResponse::new_pq(&expected_key_id, &signature)?
+    } else {
+        let classical = key
+            .ed25519()
+            .ok_or_else(|| "HSM key is not Ed25519".to_string())?;
+        ExternalSignResponse::new(&expected_key_id, &classical.sign(&message))
+    };
     pin.fill(0);
-    let response = ExternalSignResponse::new(&expected_key_id, &signature);
     let encoded = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
     std::io::stdout()
         .write_all(&encoded)

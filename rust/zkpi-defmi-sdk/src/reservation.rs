@@ -9,7 +9,6 @@
 use crate::application::ApplicationManifest;
 use crate::{SdkError, SdkResult};
 use curve25519_dalek::ristretto::CompressedRistretto;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use qomm_defmi::application_reservation::{ApplicationReserveMandate, ApplicationReserveScope};
 use qomm_defmi::avalanche::{AvalancheClient, CanonicalCreditHold, CanonicalNoteReservation};
 use qomm_defmi::facility::{
@@ -18,11 +17,16 @@ use qomm_defmi::facility::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zkfmi_crypto::{
+    hybrid::signature::{HybridSigner, HybridVerifier},
+    key::KeyPurpose,
+    traits::{Signer, Verifier},
+};
 
-const PERMIT_DOMAIN: &[u8] = b"ZKPI:DEFMI:APPLICATION-RESERVATION-PERMIT:v2";
+const PERMIT_DOMAIN: &[u8] = b"ZKPI:DEFMI:APPLICATION-RESERVATION-PERMIT:v3";
 const PERMIT_DIGEST_DOMAIN: &[u8] = b"ZKPI:DEFMI:APPLICATION-RESERVATION-DIGEST:v2";
-const PERMIT_VERSION: u16 = 2;
-const MAX_WIRE_BYTES: usize = 16 * 1024;
+const PERMIT_VERSION: u16 = 3;
+const MAX_WIRE_BYTES: usize = 32 * 1024;
 const MAX_UNIX_TIME: u64 = 253_402_300_799;
 const ZERO: [u8; 32] = [0; 32];
 
@@ -83,7 +87,7 @@ pub struct ReservationPermit {
     pub reserve_receipt_digest: [u8; 32],
     pub reservation_sequence: u64,
     pub valid_until: u64,
-    pub signer_public: [u8; 32],
+    pub signer_public: Vec<u8>,
     pub signature: Vec<u8>,
 }
 
@@ -126,7 +130,7 @@ impl ReservationPermit {
     pub fn issue_from_application_reservation<C: AvalancheClient + ?Sized>(
         client: &C,
         input: ApplicationReservationPermitIssue<'_>,
-        signer: &SigningKey,
+        signer: &HybridSigner,
     ) -> SdkResult<Self> {
         let ApplicationReservationPermitIssue {
             application,
@@ -210,7 +214,7 @@ impl ReservationPermit {
             reserve_receipt_digest: canonical.reserve_receipt_digest,
             reservation_sequence: hold.created_sequence,
             valid_until: mandate.valid_until,
-            signer_public: signer.verifying_key().to_bytes(),
+            signer_public: signer.public_key(),
             signature: Vec::new(),
         }
         .sign(signer)
@@ -227,7 +231,7 @@ impl ReservationPermit {
     pub fn issue_from_avalanche<C: AvalancheClient + ?Sized>(
         client: &C,
         input: ReservationPermitIssue<'_>,
-        signer: &SigningKey,
+        signer: &HybridSigner,
     ) -> SdkResult<Self> {
         let before_root = client.state_root().map_err(SdkError::InvalidFinality)?;
         let canonical = client
@@ -253,7 +257,7 @@ impl ReservationPermit {
         input: ReservationPermitIssue<'_>,
         canonical: &CanonicalNoteReservation,
         hold: &CanonicalCreditHold,
-        signer: &SigningKey,
+        signer: &HybridSigner,
     ) -> SdkResult<Self> {
         let ReservationPermitIssue {
             application,
@@ -372,7 +376,7 @@ impl ReservationPermit {
             reserve_receipt_digest,
             reservation_sequence,
             valid_until,
-            signer_public: signer.verifying_key().to_bytes(),
+            signer_public: signer.public_key(),
             signature: Vec::new(),
         }
         .sign(signer)
@@ -383,7 +387,7 @@ impl ReservationPermit {
             || self.accepted_height == 0
             || self.valid_until == 0
             || self.valid_until > MAX_UNIX_TIME
-            || self.signature.len() > 64
+            || self.signature.len() > 3373
         {
             return Err(invalid("reservation permit header is invalid"));
         }
@@ -404,7 +408,6 @@ impl ReservationPermit {
             ("side commitment", self.side_commitment),
             ("authority digest", self.authority_digest),
             ("reserve receipt digest", self.reserve_receipt_digest),
-            ("signer public key", self.signer_public),
         ] {
             if value == ZERO {
                 return Err(invalid(format!("{name} cannot be zero")));
@@ -419,8 +422,9 @@ impl ReservationPermit {
                 return Err(invalid(format!("{name} is not a canonical point")));
             }
         }
-        VerifyingKey::from_bytes(&self.signer_public)
-            .map_err(|_| invalid("reservation permit signer is malformed"))?;
+        if self.signer_public.len() != 1984 {
+            return Err(invalid("reservation permit requires a hybrid signer"));
+        }
         Ok(())
     }
 
@@ -461,13 +465,15 @@ impl ReservationPermit {
         Ok(body)
     }
 
-    pub fn sign(mut self, key: &SigningKey) -> SdkResult<Self> {
-        if self.signer_public != key.verifying_key().to_bytes() || !self.signature.is_empty() {
+    pub fn sign(mut self, key: &HybridSigner) -> SdkResult<Self> {
+        if self.signer_public != key.public_key() || !self.signature.is_empty() {
             return Err(invalid(
                 "reservation permit signing key or initial signature is invalid",
             ));
         }
-        self.signature = key.sign(&self.unsigned_body()?).to_bytes().to_vec();
+        self.signature = key
+            .sign(KeyPurpose::SettlementInstruction, &self.unsigned_body()?)
+            .map_err(|_| invalid("reservation permit signing failed"))?;
         Ok(self)
     }
 
@@ -475,28 +481,31 @@ impl ReservationPermit {
         &self,
         expected_application: [u8; 32],
         expected_defmi: [u8; 32],
-        trusted_signer: &VerifyingKey,
+        trusted_signer: &[u8],
         now: u64,
     ) -> SdkResult<()> {
         if self.application_binding != expected_application
             || self.defmi_id != expected_defmi
-            || self.signer_public != trusted_signer.to_bytes()
+            || self.signer_public != trusted_signer
             || now > self.valid_until
-            || self.signature.len() != 64
+            || self.signature.len() != 3373
         {
             return Err(invalid(
                 "reservation permit application, DeFMI, signer, time, or signature is invalid",
             ));
         }
-        let signature = Signature::try_from(self.signature.as_slice())
-            .map_err(|_| invalid("reservation permit signature is malformed"))?;
-        trusted_signer
-            .verify(&self.unsigned_body()?, &signature)
+        HybridVerifier
+            .verify(
+                KeyPurpose::SettlementInstruction,
+                trusted_signer,
+                &self.unsigned_body()?,
+                &self.signature,
+            )
             .map_err(|_| invalid("reservation permit signature does not verify"))
     }
 
     pub fn digest(&self) -> SdkResult<[u8; 32]> {
-        if self.signature.len() != 64 {
+        if self.signature.len() != 3373 {
             return Err(invalid("reservation permit is not signed"));
         }
         Ok(Sha256::new()
@@ -561,8 +570,8 @@ mod tests {
         [value; 32]
     }
 
-    fn signed() -> (ReservationPermit, SigningKey) {
-        let signer = SigningKey::from_bytes(&id(19));
+    fn signed() -> (ReservationPermit, std::sync::Arc<HybridSigner>) {
+        let signer = zkfmi_crypto::test_support::hybrid_signer(&id(19));
         let permit = ReservationPermit {
             version: PERMIT_VERSION,
             role: ReservationRole::Taker,
@@ -591,7 +600,7 @@ mod tests {
             reserve_receipt_digest: id(12),
             reservation_sequence: 3,
             valid_until: 2_000,
-            signer_public: signer.verifying_key().to_bytes(),
+            signer_public: signer.public_key(),
             signature: Vec::new(),
         }
         .sign(&signer)
@@ -604,7 +613,7 @@ mod tests {
         let (permit, signer) = signed();
         let application = oclob_manifest_v1().digest().unwrap();
         permit
-            .verify(application, id(2), &signer.verifying_key(), 1_000)
+            .verify(application, id(2), &signer.public_key(), 1_000)
             .unwrap();
         let wire = permit.encode().unwrap();
         let decoded = ReservationPermit::decode(&wire).unwrap();
@@ -617,12 +626,13 @@ mod tests {
         use crate::admission::ReservationAdmission;
         let (permit, signer) = signed();
         let reblinding = Scalar::from(91_u64);
-        let admission = ReservationAdmission::from_permit(&permit, &reblinding, &signer).unwrap();
+        let admission =
+            ReservationAdmission::from_permit(&permit, &reblinding, &signer, &[91; 32]).unwrap();
         admission
             .verify(
                 permit.application_binding,
                 permit.defmi_id,
-                &signer.verifying_key(),
+                &signer.public_key(),
                 1_000,
             )
             .unwrap();
@@ -631,7 +641,9 @@ mod tests {
         assert!(admission
             .verify_authority(&permit, &Scalar::from(92_u64))
             .is_err());
-        assert!(ReservationAdmission::from_permit(&permit, &Scalar::ZERO, &signer).is_err());
+        assert!(
+            ReservationAdmission::from_permit(&permit, &Scalar::ZERO, &signer, &[91; 32]).is_err()
+        );
         let wire = admission.encode().unwrap();
         assert_eq!(ReservationAdmission::decode(&wire).unwrap(), admission);
         let object: serde_json::Value = serde_json::from_slice(&wire).unwrap();
@@ -658,7 +670,7 @@ mod tests {
         reissued.signature.clear();
         reissued = reissued.sign(&signer).unwrap();
         let reissued_admission =
-            ReservationAdmission::from_permit(&reissued, &reblinding, &signer).unwrap();
+            ReservationAdmission::from_permit(&reissued, &reblinding, &signer, &[91; 32]).unwrap();
         assert_ne!(
             admission.authority_commitment,
             reissued_admission.authority_commitment
@@ -674,7 +686,7 @@ mod tests {
         other_hold = other_hold.sign(&signer).unwrap();
         assert_ne!(
             admission.reservation_nullifier,
-            ReservationAdmission::from_permit(&other_hold, &reblinding, &signer)
+            ReservationAdmission::from_permit(&other_hold, &reblinding, &signer, &[91; 32])
                 .unwrap()
                 .reservation_nullifier
         );
@@ -684,7 +696,7 @@ mod tests {
             .verify(
                 permit.application_binding,
                 permit.defmi_id,
-                &signer.verifying_key(),
+                &signer.public_key(),
                 1_000
             )
             .is_err());
@@ -692,14 +704,15 @@ mod tests {
             .verify(
                 permit.application_binding,
                 permit.defmi_id,
-                &signer.verifying_key(),
+                &signer.public_key(),
                 2_001
             )
             .is_err());
         assert!(ReservationAdmission::from_permit(
             &permit,
             &reblinding,
-            &SigningKey::from_bytes(&id(78))
+            &zkfmi_crypto::test_support::hybrid_signer(&id(78)),
+            &[91; 32]
         )
         .is_err());
     }
@@ -709,16 +722,79 @@ mod tests {
         let (permit, signer) = signed();
         let application = oclob_manifest_v1().digest().unwrap();
         assert!(permit
-            .verify(application, id(2), &signer.verifying_key(), 2_001)
+            .verify(application, id(2), &signer.public_key(), 2_001)
             .is_err());
         let mut tampered = permit.clone();
         tampered.reservation_id = id(99);
         assert!(tampered
-            .verify(application, id(2), &signer.verifying_key(), 1_000)
+            .verify(application, id(2), &signer.public_key(), 1_000)
             .is_err());
         assert!(permit
-            .verify(id(88), id(2), &signer.verifying_key(), 1_000)
+            .verify(id(88), id(2), &signer.public_key(), 1_000)
             .is_err());
+    }
+
+    #[test]
+    fn reservation_evidence_rejects_either_signature_component_and_wrong_purpose() {
+        let (permit, signer) = signed();
+        let admission = crate::admission::ReservationAdmission::from_permit(
+            &permit,
+            &Scalar::from(91_u64),
+            &signer,
+            &[92; 32],
+        )
+        .unwrap();
+        for index in [0, 64, 3372] {
+            let mut altered = permit.clone();
+            altered.signature[index] ^= 1;
+            assert!(altered
+                .verify(
+                    permit.application_binding,
+                    permit.defmi_id,
+                    &signer.public_key(),
+                    1000
+                )
+                .is_err());
+            let mut altered = admission.clone();
+            altered.signature[index] ^= 1;
+            assert!(altered
+                .verify(
+                    permit.application_binding,
+                    permit.defmi_id,
+                    &signer.public_key(),
+                    1000
+                )
+                .is_err());
+        }
+        let mut stripped = permit.clone();
+        stripped.signature.truncate(64);
+        assert!(stripped
+            .verify(
+                permit.application_binding,
+                permit.defmi_id,
+                &signer.public_key(),
+                1000
+            )
+            .is_err());
+        let mut wrong_purpose = permit.clone();
+        wrong_purpose.signature = signer
+            .sign(KeyPurpose::Order, &permit.unsigned_body().unwrap())
+            .unwrap();
+        assert!(wrong_purpose
+            .verify(
+                permit.application_binding,
+                permit.defmi_id,
+                &signer.public_key(),
+                1000
+            )
+            .is_err());
+        assert!(crate::admission::ReservationAdmission::from_permit(
+            &permit,
+            &Scalar::from(91_u64),
+            &signer,
+            &[0; 32]
+        )
+        .is_err());
     }
 
     fn canonical_issue_inputs() -> (
@@ -909,9 +985,9 @@ mod tests {
             committee_epoch: 1,
             amount_bits: 32,
         };
-        let participant = SigningKey::from_bytes(&id(58));
+        let participant = zkfmi_crypto::test_support::hybrid_signer(&id(58));
         let mandate = ApplicationReserveMandate {
-            version: 1,
+            version: 2,
             scope: scope.clone(),
             request_commitment: transition.query_commitment,
             facility_id: transition.facility_id,
@@ -928,10 +1004,10 @@ mod tests {
                 .to_bytes(),
             valid_from: 100,
             valid_until: transition.expires_at,
-            participant_public: participant.verifying_key().to_bytes(),
+            participant_public: participant.public_key(),
             signature: vec![],
         }
-        .sign(&participant)
+        .sign(participant.as_ref())
         .unwrap();
         let canonical = CanonicalApplicationReservation {
             state_root: legacy.state_root,
@@ -952,7 +1028,7 @@ mod tests {
             reader.application = Some(canonical.clone());
             reader
         };
-        let signer = SigningKey::from_bytes(&id(63));
+        let signer = zkfmi_crypto::test_support::hybrid_signer(&id(63));
         let input = ApplicationReservationPermitIssue {
             application: &application,
             scope: &scope,
@@ -977,7 +1053,7 @@ mod tests {
             .verify(
                 application.digest().unwrap(),
                 scope.defmi_id,
-                &signer.verifying_key(),
+                &signer.public_key(),
                 200,
             )
             .unwrap();
@@ -1065,7 +1141,7 @@ mod tests {
 
     #[test]
     fn issues_only_from_matching_active_canonical_note_reservation() {
-        let signer = SigningKey::from_bytes(&id(52));
+        let signer = zkfmi_crypto::test_support::hybrid_signer(&id(52));
         let (canonical, transition, authorization) = canonical_issue_inputs();
         let application = oclob_manifest_v1();
         let participant_handle = (RISTRETTO_BASEPOINT_POINT * Scalar::from(53_u64))
@@ -1100,7 +1176,7 @@ mod tests {
             .verify(
                 oclob_manifest_v1().digest().unwrap(),
                 id(56),
-                &signer.verifying_key(),
+                &signer.public_key(),
                 3_100,
             )
             .unwrap();

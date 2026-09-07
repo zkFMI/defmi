@@ -10,10 +10,10 @@ use std::collections::BTreeMap;
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
 use qomm_defmi::register::*;
 use qomm_zk::pedersen::{asset_tag, Pedersen};
 use rand::rngs::OsRng;
+use zkfmi_crypto::{hybrid::signature::HybridSigner, traits::Signer};
 
 const FILE: &str = "\
 # register, account, asset, as-of
@@ -152,9 +152,9 @@ fn a_ledger_that_agrees_says_so_and_opens_nothing() {
 #[test]
 fn a_signed_statement_is_checked_against_the_registrar() {
     let mut rng = OsRng;
-    let registrar = SigningKey::generate(&mut rng);
+    let registrar = HybridSigner::generate().unwrap();
     let statement = parse(FILE).unwrap();
-    let signed = statement.signed_by(&registrar);
+    let signed = statement.signed_by(&registrar).unwrap();
     let mut register = FileRegister::read(FILE).unwrap();
     register.signature = signed.signature;
     let (commitments, blindings) = ledger_for(&statement.quantities());
@@ -163,18 +163,18 @@ fn a_signed_statement_is_checked_against_the_registrar() {
         &register,
         &commitments,
         &blindings,
-        Some(&registrar.verifying_key()),
+        Some(&registrar.public_key()),
         &mut rng,
     );
     assert!(report.agrees, "{}", report.reason);
 
-    let other = SigningKey::generate(&mut rng);
+    let other = HybridSigner::generate().unwrap();
     let report = run(
         &key(),
         &register,
         &commitments,
         &blindings,
-        Some(&other.verifying_key()),
+        Some(&other.public_key()),
         &mut rng,
     );
     assert!(!report.agrees);

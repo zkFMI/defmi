@@ -14,13 +14,15 @@ fn funded() -> (NoteLedger, Wallet, Pedersen, Opening) {
     let mut ledger = NoteLedger::new(key.clone(), 32);
     let owner = Wallet::new(&mut rng);
     let blind = Scalar::random(&mut rng);
-    let note = ledger.build_note(
-        &owner.address,
-        1000,
-        key.commit_u64(1000, &blind),
-        &blind,
-        &mut rng,
-    );
+    let note = ledger
+        .build_note(
+            &owner.address,
+            1000,
+            key.commit_u64(1000, &blind),
+            &blind,
+            &mut rng,
+        )
+        .expect("valid fixture note encryption");
     ledger.add(note);
     let opening = ledger.scan(&owner, &key)[0].1;
     (ledger, owner, key, opening)
@@ -34,13 +36,15 @@ fn native_security_regression_serial_shift_cannot_inflate_a_note() {
     let owner = Wallet::new(&mut rng);
     for _ in 0..8 {
         let blind = Scalar::random(&mut rng);
-        let note = ledger.build_note(
-            &owner.address,
-            1000,
-            key.commit_u64(1000, &blind),
-            &blind,
-            &mut rng,
-        );
+        let note = ledger
+            .build_note(
+                &owner.address,
+                1000,
+                key.commit_u64(1000, &blind),
+                &blind,
+                &mut rng,
+            )
+            .expect("valid fixture note encryption");
         ledger.add(note);
     }
     let (index, opening) = ledger.scan(&owner, &key)[0];
@@ -78,13 +82,15 @@ fn native_security_regression_nullifier_does_not_identify_the_public_input_key()
     let owner = Wallet::new(&mut rng);
     for _ in 0..8 {
         let blind = Scalar::random(&mut rng);
-        let note = ledger.build_note(
-            &owner.address,
-            1000,
-            key.commit_u64(1000, &blind),
-            &blind,
-            &mut rng,
-        );
+        let note = ledger
+            .build_note(
+                &owner.address,
+                1000,
+                key.commit_u64(1000, &blind),
+                &blind,
+                &mut rng,
+            )
+            .expect("valid fixture note encryption");
         ledger.add(note);
     }
     let (index, opening) = ledger.scan(&owner, &key)[0];
@@ -231,24 +237,28 @@ fn native_security_regression_legacy_wire_and_changed_output_binding_fail_closed
 #[test]
 fn native_security_regression_issuer_signature_binds_the_note_decomposition() {
     use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
-    use ed25519_dalek::{Signer, SigningKey};
     use qomm_defmi::notes::note_issuance_body;
+    use zkfmi_crypto::{hybrid::signature::HybridSigner, key::KeyPurpose, traits::Signer};
     let key = Pedersen::new(b"qomm:defmi:v1");
-    let issuer = SigningKey::from_bytes(&[71; 32]);
-    let mut ledger = NoteLedger::new(key.clone(), 32).under_issuer(issuer.verifying_key());
+    let issuer = HybridSigner::generate().unwrap();
+    let mut ledger = NoteLedger::new(key.clone(), 32).under_issuer(issuer.public_key());
     let owner = Wallet::new(&mut OsRng);
     let blind = Scalar::random(&mut OsRng);
-    let original = ledger.build_note(
-        &owner.address,
-        1000,
-        key.commit_u64(1000, &blind),
-        &blind,
-        &mut OsRng,
-    );
-    let signature = issuer.sign(&note_issuance_body(
-        &ledger.commitment_of(&original),
-        b"issuance",
-    ));
+    let original = ledger
+        .build_note(
+            &owner.address,
+            1000,
+            key.commit_u64(1000, &blind),
+            &blind,
+            &mut OsRng,
+        )
+        .expect("valid fixture note encryption");
+    let signature = issuer
+        .sign(
+            KeyPurpose::Attestation,
+            &note_issuance_body(&ledger.commitment_of(&original), b"issuance"),
+        )
+        .unwrap();
     let mut forged = original.clone();
     forged.one_time -= G;
     forged.value_commitment += G;

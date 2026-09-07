@@ -14,12 +14,12 @@ use std::collections::BTreeMap;
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::Identity;
-use ed25519_dalek::{SigningKey, VerifyingKey};
 use qomm_defmi::ccp::*;
 use qomm_defmi::credit::{CreditCtx, Tranche};
 use qomm_zk::pedersen::{encode, Pedersen};
 use rand::rngs::OsRng;
 use rand::Rng;
+use zkfmi_crypto::{hybrid::signature::HybridSigner, traits::Signer};
 
 const ASSET: &str = "an instrument";
 
@@ -30,19 +30,18 @@ fn key() -> Pedersen {
 struct Room {
     key: Pedersen,
     members: Vec<Vec<u8>>,
-    signing: BTreeMap<Vec<u8>, SigningKey>,
-    parties: BTreeMap<Vec<u8>, VerifyingKey>,
+    signing: BTreeMap<Vec<u8>, HybridSigner>,
+    parties: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 fn room(n: usize) -> Room {
-    let mut rng = OsRng;
     let mut members = Vec::new();
     let mut signing = BTreeMap::new();
     let mut parties = BTreeMap::new();
     for i in 0..n {
         let handle = format!("p{i}").into_bytes();
-        let sk = SigningKey::generate(&mut rng);
-        parties.insert(handle.clone(), sk.verifying_key());
+        let sk = HybridSigner::generate().unwrap();
+        parties.insert(handle.clone(), sk.public_key());
         signing.insert(handle.clone(), sk);
         members.push(handle);
     }
@@ -69,18 +68,16 @@ impl Room {
                     .key
                     .commit_u64(rng.gen_range(1..1000), &Scalar::random(&mut rng)),
             };
-            out.push(sign_obligation(
-                &obligation,
-                &self.signing[&payer],
-                &self.signing[&payee],
-            ));
+            out.push(
+                sign_obligation(&obligation, &self.signing[&payer], &self.signing[&payee]).unwrap(),
+            );
         }
         out
     }
 }
 
 fn house(name: &str, handle: &[u8]) -> ClearingProvider {
-    ClearingProvider::new(name, handle, SigningKey::generate(&mut OsRng))
+    ClearingProvider::new(name, handle, HybridSigner::generate().unwrap())
 }
 
 fn margined(ctx: &CreditCtx, handle: &[u8]) -> qomm_defmi::credit::CreditLine {
@@ -234,10 +231,10 @@ fn a_house_cannot_novate_a_trade_nobody_agreed_to() {
         asset: ASSET.to_string(),
         commitment: room.key.commit_u64(999, &Scalar::random(&mut rng)),
     };
-    let forged = SigningKey::generate(&mut rng);
-    let edges = vec![sign_obligation(&invented, &forged, &forged)];
+    let forged = HybridSigner::generate().unwrap();
+    let edges = vec![sign_obligation(&invented, &forged, &forged).unwrap()];
     let novation = h.novate(&edges).unwrap();
-    let attestation = h.attest(&novation, b"cycle-1");
+    let attestation = h.attest(&novation, b"cycle-1").unwrap();
 
     // the arithmetic still checks out --- and the agreement does not
     assert_eq!(check_novation(&h.handle, &novation), Ok(()));
@@ -262,20 +259,17 @@ fn a_party_that_is_not_known_to_the_room_is_refused() {
             four_layers(&room.key, "DeCCP-A"),
         )
         .unwrap();
-    let stranger = SigningKey::generate(&mut rng);
+    let stranger = HybridSigner::generate().unwrap();
     let obligation = Obligation {
         payer: b"nobody".to_vec(),
         payee: room.members[0].clone(),
         asset: ASSET.to_string(),
         commitment: room.key.commit_u64(5, &Scalar::random(&mut rng)),
     };
-    let edges = vec![sign_obligation(
-        &obligation,
-        &stranger,
-        &room.signing[&room.members[0]],
-    )];
+    let edges =
+        vec![sign_obligation(&obligation, &stranger, &room.signing[&room.members[0]]).unwrap()];
     let novation = h.novate(&edges).unwrap();
-    let attestation = h.attest(&novation, b"c");
+    let attestation = h.attest(&novation, b"c").unwrap();
     assert!(registry
         .check_cycle(&attestation, &novation, &room.parties)
         .unwrap_err()
@@ -313,9 +307,9 @@ fn an_attestation_over_a_different_trade_set_is_caught() {
     let h = house("DeCCP-A", b"house-a");
     let first = h.novate(&room.graph(4, ASSET)).unwrap();
     let second = h.novate(&room.graph(4, ASSET)).unwrap();
-    let attestation = h.attest(&first, b"cycle-1");
+    let attestation = h.attest(&first, b"cycle-1").unwrap();
     assert_eq!(
-        check_attestation(&attestation, &second, &h.verifying_key()).err(),
+        check_attestation(&attestation, &second, &h.public_key()).err(),
         Some("the attestation is over a different trade set")
     );
 }
@@ -326,8 +320,8 @@ fn the_same_trades_in_a_different_cycle_do_not_share_an_attestation() {
     let h = house("DeCCP-A", b"house-a");
     let novation = h.novate(&room.graph(4, ASSET)).unwrap();
     assert_ne!(
-        h.attest(&novation, b"cycle-1").digest,
-        h.attest(&novation, b"cycle-2").digest
+        h.attest(&novation, b"cycle-1").unwrap().digest,
+        h.attest(&novation, b"cycle-2").unwrap().digest
     );
 }
 
@@ -388,7 +382,7 @@ fn an_unadmitted_provider_is_refused() {
         )
         .unwrap();
     let novation = stranger.novate(&room.graph(3, ASSET)).unwrap();
-    let attestation = stranger.attest(&novation, b"c");
+    let attestation = stranger.attest(&novation, b"c").unwrap();
     assert!(registry
         .check_cycle(&attestation, &novation, &room.parties)
         .unwrap_err()
@@ -409,12 +403,28 @@ fn a_whole_cleared_cycle_checks_out() {
             four_layers(&room.key, "DeCCP-A"),
         )
         .unwrap();
-    let novation = h.novate(&room.graph(32, ASSET)).unwrap();
-    let attestation = h.attest(&novation, b"cycle-1");
+    let mut novation = h.novate(&room.graph(32, ASSET)).unwrap();
+    let mut attestation = h.attest(&novation, b"cycle-1").unwrap();
     assert_eq!(
         registry.check_cycle(&attestation, &novation, &room.parties),
         Ok(())
     );
+    for component in [0, 64] {
+        attestation.signature[component] ^= 1;
+        assert!(registry
+            .check_cycle(&attestation, &novation, &room.parties)
+            .is_err());
+        attestation.signature[component] ^= 1;
+        novation.before[0].by_payer[component] ^= 1;
+        assert!(registry
+            .check_cycle(&attestation, &novation, &room.parties)
+            .is_err());
+        novation.before[0].by_payer[component] ^= 1;
+    }
+    attestation.signature.truncate(64);
+    assert!(registry
+        .check_cycle(&attestation, &novation, &room.parties)
+        .is_err());
 }
 
 // --- the other hole that is now closed: two houses, two books -------------

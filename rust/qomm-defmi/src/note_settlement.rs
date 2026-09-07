@@ -14,7 +14,6 @@
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use merlin::Transcript;
 use qomm_zk::pedersen::Pedersen;
 use qomm_zk::sigma::{
@@ -24,6 +23,11 @@ use qomm_zk::sigma::{
 use qomm_zkpi::{Instruction, Venue};
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
+use zkfmi_crypto::{
+    hybrid::signature::{HybridSigner, HybridVerifier},
+    key::KeyPurpose,
+    traits::{Signer, Verifier},
+};
 
 use crate::notes::{Address, Note, NoteLedger, Opening, SpendProof};
 
@@ -95,15 +99,14 @@ impl NoteDvpPackage {
                     note.one_time.compress().to_bytes(),
                     note.value_commitment.compress().to_bytes(),
                     note.ephemeral.compress().to_bytes(),
-                    note.masked_value.to_bytes(),
-                    note.masked_blinding.to_bytes(),
                 ] {
                     hash.update(bytes);
                 }
+                hash.update(note.encrypted_opening.binding_bytes());
             }
         }
         let mut hash = Sha256::new();
-        hash.update(b"QOMM:DEFMI:NOTE-DVP-PACKAGE:v1");
+        hash.update(b"QOMM:DEFMI:NOTE-DVP-PACKAGE:v2");
         let instruction = qomm_zkpi::wire::encode(&self.instruction);
         hash.update((instruction.len() as u64).to_be_bytes());
         hash.update(instruction);
@@ -126,7 +129,7 @@ pub struct NoteReceipt {
     pub cash_before: [u8; 32],
     pub cash_after: [u8; 32],
     pub settled_at: u64,
-    pub signature: Signature,
+    pub signature: Vec<u8>,
 }
 
 impl NoteReceipt {
@@ -157,8 +160,9 @@ impl NoteReceipt {
         h.finalize().into()
     }
 
-    pub fn verify(&self, key: &VerifyingKey) -> bool {
-        let digest = Self::digest(
+    /// Canonical public statement covered by this receipt's signature.
+    pub fn statement_digest(&self) -> [u8; 32] {
+        Self::digest(
             &self.nullifier,
             self.settled,
             self.reason,
@@ -167,8 +171,47 @@ impl NoteReceipt {
             &self.cash_before,
             &self.cash_after,
             self.settled_at,
-        );
-        key.verify(&digest, &self.signature).is_ok()
+        )
+    }
+
+    pub fn verify(&self, key: &[u8]) -> bool {
+        HybridVerifier
+            .verify(
+                KeyPurpose::AuditCheckpoint,
+                key,
+                &self.statement_digest(),
+                &self.signature,
+            )
+            .is_ok()
+    }
+
+    /// Export a verified successful receipt for the explicitly enabled offline
+    /// public continuity prover. Finality and package retrieval remain caller
+    /// responsibilities; this API never runs a prover on the settlement path.
+    #[cfg(feature = "public-audit")]
+    pub fn public_audit_transition(
+        &self,
+        authoritative_key: &[u8],
+        package_digest: [u8; 32],
+    ) -> Result<qomm_batch_audit::PublicTransition, &'static str> {
+        if !self.settled || !self.verify(authoritative_key) || package_digest == [0; 32] {
+            return Err(
+                "public audit requires an authenticated successful receipt and package digest",
+            );
+        }
+        Ok(qomm_batch_audit::PublicTransition {
+            before: qomm_batch_audit::StateRoots {
+                securities: self.securities_before,
+                cash: self.cash_before,
+            },
+            after: qomm_batch_audit::StateRoots {
+                securities: self.securities_after,
+                cash: self.cash_after,
+            },
+            zkpi_digest: package_digest,
+            receipt_digest: self.statement_digest(),
+            settled: self.settled,
+        })
     }
 }
 
@@ -350,7 +393,7 @@ pub struct NoteDefmi {
     pub securities: NoteLedger,
     pub cash: NoteLedger,
     pub venue: Venue,
-    signing: SigningKey,
+    signing: HybridSigner,
 }
 
 impl NoteDefmi {
@@ -359,7 +402,7 @@ impl NoteDefmi {
         securities: NoteLedger,
         cash: NoteLedger,
         venue: Venue,
-        signing: SigningKey,
+        signing: HybridSigner,
     ) -> Self {
         NoteDefmi {
             key,
@@ -370,8 +413,8 @@ impl NoteDefmi {
         }
     }
 
-    pub fn public_key(&self) -> VerifyingKey {
-        self.signing.verifying_key()
+    pub fn public_key(&self) -> Vec<u8> {
+        self.signing.public_key()
     }
 
     /// Verify the complete account-free DvP without mutating either note rail.
@@ -456,23 +499,10 @@ impl NoteDefmi {
         now: u64,
         context: &[u8],
         rng: &mut R,
-    ) -> NoteReceipt {
+    ) -> Result<NoteReceipt, &'static str> {
         let securities_before = self.securities.snapshot();
         let cash_before = self.cash.snapshot();
         let status = self.verify(&package, now, context, rng);
-
-        if status.is_ok() {
-            // both legs are checked before either is applied
-            self.securities
-                .apply_spend(&package.securities.spend, package.securities.notes)
-                .expect("checked");
-            self.cash
-                .apply_spend(&package.cash.spend, package.cash.notes)
-                .expect("checked");
-            self.venue
-                .settle(&package.instruction, now)
-                .expect("venue refused after checks");
-        }
 
         let nullifier = package.instruction.nullifier();
         let settled = status.is_ok();
@@ -480,8 +510,16 @@ impl NoteDefmi {
             Ok(()) => "settled",
             Err(why) => why,
         };
-        let securities_after = self.securities.snapshot();
-        let cash_after = self.cash.snapshot();
+        let (securities_after, cash_after) = if settled {
+            (
+                self.securities
+                    .spend_snapshot(&package.securities.spend, &package.securities.notes)?,
+                self.cash
+                    .spend_snapshot(&package.cash.spend, &package.cash.notes)?,
+            )
+        } else {
+            (securities_before, cash_before)
+        };
         let digest = NoteReceipt::digest(
             &nullifier,
             settled,
@@ -492,7 +530,23 @@ impl NoteDefmi {
             &cash_after,
             now,
         );
-        NoteReceipt {
+        let signature = self
+            .signing
+            .sign(KeyPurpose::AuditCheckpoint, &digest)
+            .map_err(|_| "hybrid receipt signing failed before either rail changed")?;
+        if settled {
+            // Both projected roots and the fallible signature are complete.
+            self.securities
+                .apply_spend(&package.securities.spend, package.securities.notes)
+                .expect("checked before signing");
+            self.cash
+                .apply_spend(&package.cash.spend, package.cash.notes)
+                .expect("checked before signing");
+            self.venue
+                .settle(&package.instruction, now)
+                .expect("venue checked before signing");
+        }
+        Ok(NoteReceipt {
             nullifier,
             settled,
             reason,
@@ -501,7 +555,7 @@ impl NoteDefmi {
             cash_before,
             cash_after,
             settled_at: now,
-            signature: self.signing.sign(&digest),
-        }
+            signature,
+        })
     }
 }

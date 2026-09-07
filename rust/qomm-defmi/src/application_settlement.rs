@@ -10,7 +10,9 @@
 use crate::application_reservation::ApplicationReserveScope;
 use crate::asset_link::{self, AssetLinkProof};
 use crate::facility::ZERO;
-use crate::note_chain::{note_claim_recipient_commitment, NoteClaim, NoteClaimKind};
+use crate::note_chain::{
+    note_claim_recipient_commitment, ClaimAuthorizationCommitment, NoteClaim, NoteClaimKind,
+};
 use crate::settlement::{build_threshold_package_from_proofs, Sides};
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
@@ -46,9 +48,9 @@ fn scalar(bytes: [u8; 32]) -> Result<Scalar, String> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApplicationOpeningShare {
     pub party: u16,
-    pub ephemeral: [u8; 32],
-    pub masked_value: [u8; 32],
-    pub masked_blinding: [u8; 32],
+    pub recipient_public: Vec<u8>,
+    pub sealed: zkfmi_crypto::sealed::SealedMessage,
+    pub blinding_adjustment: [u8; 32],
 }
 
 /// Public ciphertexts, never scalar openings or Shamir shares in the clear.
@@ -58,12 +60,25 @@ pub struct ApplicationOpening {
     pub context: [u8; 32],
     pub threshold: u16,
     pub recipient_view: [u8; 32],
+    /// The fill nullifier used to bind this leg's one-time claim key. This is
+    /// distinct from the encrypted-opening context and survives with a partial
+    /// remainder so cancellation and expiry recreate the authorized claim.
+    pub claim_context: [u8; 32],
+    pub claim_authorization: ClaimAuthorizationCommitment,
     pub shares: Vec<ApplicationOpeningShare>,
 }
 
 impl ApplicationOpening {
-    pub fn from_domain(value: &OpeningEnvelope) -> Result<Self, String> {
+    pub fn from_domain(
+        value: &OpeningEnvelope,
+        claim_context: [u8; 32],
+        claim_authorization: ClaimAuthorizationCommitment,
+    ) -> Result<Self, String> {
         value.validate()?;
+        if claim_context == ZERO {
+            return Err("application claim context is unbound".into());
+        }
+        claim_authorization.validate()?;
         Ok(Self {
             context: value.context,
             threshold: value
@@ -71,6 +86,8 @@ impl ApplicationOpening {
                 .try_into()
                 .map_err(|_| "opening threshold exceeds u16")?,
             recipient_view: value.recipient_view.compress().to_bytes(),
+            claim_context,
+            claim_authorization,
             shares: value
                 .shares
                 .iter()
@@ -80,9 +97,9 @@ impl ApplicationOpening {
                             .party
                             .try_into()
                             .map_err(|_| "opening party exceeds u16")?,
-                        ephemeral: share.ephemeral.compress().to_bytes(),
-                        masked_value: share.masked_value.to_bytes(),
-                        masked_blinding: share.masked_blinding.to_bytes(),
+                        recipient_public: share.recipient_public.clone(),
+                        sealed: share.sealed.clone(),
+                        blinding_adjustment: share.blinding_adjustment.to_bytes(),
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?,
@@ -90,9 +107,10 @@ impl ApplicationOpening {
     }
 
     pub fn domain(&self) -> Result<OpeningEnvelope, String> {
-        if self.shares.len() > 64 || self.context == ZERO {
+        if self.shares.len() > 64 || self.context == ZERO || self.claim_context == ZERO {
             return Err("application opening is oversized or unbound".into());
         }
+        self.claim_authorization.validate()?;
         OpeningEnvelope::new(
             self.context,
             self.threshold.into(),
@@ -102,9 +120,9 @@ impl ApplicationOpening {
                 .map(|share| {
                     Ok(EncryptedOpeningShare {
                         party: share.party.into(),
-                        ephemeral: point(share.ephemeral)?,
-                        masked_value: scalar(share.masked_value)?,
-                        masked_blinding: scalar(share.masked_blinding)?,
+                        recipient_public: share.recipient_public.clone(),
+                        sealed: share.sealed.clone(),
+                        blinding_adjustment: scalar(share.blinding_adjustment)?,
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?,
@@ -117,9 +135,9 @@ impl ApplicationOpening {
     pub fn subtract_reblinding(&self, delta: &Scalar) -> Result<Self, String> {
         let mut value = self.domain()?;
         for share in &mut value.shares {
-            share.masked_blinding -= delta;
+            share.blinding_adjustment -= delta;
         }
-        Self::from_domain(&value)
+        Self::from_domain(&value, self.claim_context, self.claim_authorization)
     }
 }
 
@@ -371,9 +389,20 @@ impl ApplicationNoteFill {
             if self.openings[index].recipient_view != recipients[index].compress().to_bytes()
                 || self.openings[index].context
                     != opening_context(&instruction.nonce, names[index])?
+                || self.openings[index].claim_context != instruction.nullifier()
             {
-                return Err("application opening names another proof job or recipient".into());
+                return Err(
+                    "application opening names another proof job, claim, or recipient".into(),
+                );
             }
+        }
+        if self.openings.iter().enumerate().any(|(index, opening)| {
+            self.openings[..index].iter().any(|prior| {
+                prior.claim_authorization.key_fingerprint
+                    == opening.claim_authorization.key_fingerprint
+            })
+        }) {
+            return Err("application claim authorization keys must be one-time".into());
         }
         let normalized_openings = [
             self.openings[1].subtract_reblinding(&securities_delta)?,
@@ -388,7 +417,6 @@ impl ApplicationNoteFill {
                 assets[index],
                 heads[index].hold_id,
                 values[index].compress().to_bytes(),
-                instruction.nullifier(),
                 NoteClaimKind::Delivery,
                 &self.openings[index * 2],
             )?);
@@ -397,7 +425,6 @@ impl ApplicationNoteFill {
                     assets[index],
                     heads[index].hold_id,
                     remaining[index].compress().to_bytes(),
-                    instruction.nullifier(),
                     NoteClaimKind::Refund,
                     &normalized_openings[index],
                 )?);
@@ -420,7 +447,6 @@ pub fn application_claim(
     asset_id: [u8; 32],
     source_hold_id: [u8; 32],
     value_commitment: [u8; 32],
-    context: [u8; 32],
     kind: NoteClaimKind,
     opening: &ApplicationOpening,
 ) -> Result<NoteClaim, String> {
@@ -432,11 +458,12 @@ pub fn application_claim(
         value_commitment,
         recipient_commitment: note_claim_recipient_commitment(
             opening.recipient_view,
-            context,
+            opening.claim_context,
             asset_id,
             source_hold_id,
             kind,
         )?,
+        authorization: opening.claim_authorization,
         kind,
         opening_envelope: opening.domain()?,
     };

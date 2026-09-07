@@ -1070,6 +1070,7 @@ fn canonical_state_snapshot(
                 "kind": record.kind,
                 "name": record.name,
                 "publicKey": hex::encode(record.public_key),
+                "pqPublicKey": hex::encode(&record.pq_public_key),
                 "riskPolicyDigest": hex::encode(record.risk_policy_digest),
                 "active": record.active,
             }))
@@ -1164,6 +1165,7 @@ fn canonical_state_snapshot(
             Ok(json!({
                 "stateRoot": state_root,
                 "issuerID": hex::encode(issuer_id),
+                "pqPublicKey": hex::encode(&record.pq_public_key),
                 "code": record.code,
                 "jurisdiction": record.jurisdiction,
                 "operatorEntityCommitment": hex::encode(record.operator_entity_commitment),
@@ -1599,6 +1601,7 @@ fn canonical_state_snapshot(
             let purpose_key = |key: &qomm_defmi::participant::PurposeKey| {
                 json!({
                     "publicKey": hex::encode(key.public_key),
+                    "pqPublicKey": hex::encode(&key.pq_public_key),
                     "epoch": key.epoch,
                 })
             };
@@ -1810,8 +1813,7 @@ fn note_snapshot(state_root: &str, note_id: [u8; 32], record: &crate::state::Not
         "oneTime": hex::encode(record.one_time),
         "valueCommitment": hex::encode(record.value_commitment),
         "ephemeral": hex::encode(record.ephemeral),
-        "maskedValue": hex::encode(record.masked_value),
-        "maskedBlinding": hex::encode(record.masked_blinding),
+        "encryptedOpening": record.encrypted_opening,
         "lockID": hex::encode(record.lock_id),
     })
 }
@@ -1876,6 +1878,7 @@ fn note_claim_snapshot(
         "assetID": hex::encode(record.asset_id),
         "valueCommitment": hex::encode(record.value_commitment),
         "recipientCommitment": hex::encode(record.recipient_commitment),
+        "authorization": record.authorization,
         "sourceHoldID": hex::encode(record.source_hold_id),
         "kind": record.kind,
         "status": record.status,
@@ -1887,9 +1890,9 @@ fn note_claim_snapshot(
             "recipientView": hex::encode(record.opening_envelope.recipient_view),
             "shares": record.opening_envelope.shares.iter().map(|share| json!({
                 "party": share.party,
-                "ephemeral": hex::encode(share.ephemeral),
-                "maskedValue": hex::encode(share.masked_value),
-                "maskedBlinding": hex::encode(share.masked_blinding),
+                "recipientPublic": share.recipient_public,
+                    "sealed": share.sealed,
+                    "blindingAdjustment": hex::encode(share.blinding_adjustment),
             })).collect::<Vec<_>>(),
         },
     })
@@ -3252,15 +3255,19 @@ mod tests {
             recipient_view,
             shares: vec![EncryptedOpeningShareRecord {
                 party: 1,
-                ephemeral: (G * Scalar::from(73_u64)).compress().to_bytes(),
-                masked_value: Scalar::from(74_u64).to_bytes(),
-                masked_blinding: Scalar::from(75_u64).to_bytes(),
+                recipient_public: zkfmi_crypto::test_support::opening_recipient_public(),
+                sealed: zkfmi_crypto::test_support::threshold_opening_envelope(),
+                blinding_adjustment: Scalar::from(75_u64).to_bytes(),
             }],
         };
-        let record = |source_hold_id, recipient_view| NoteClaimRecord {
+        let record = |source_hold_id, recipient_view, authorization_tag| NoteClaimRecord {
             asset_id: [64; 32],
             value_commitment: (G * Scalar::from(76_u64)).compress().to_bytes(),
             recipient_commitment: [65; 32],
+            authorization: qomm_defmi::note_chain::ClaimAuthorizationCommitment {
+                key_record_commitment: [authorization_tag; 32],
+                key_fingerprint: [authorization_tag + 10; 32],
+            },
             source_hold_id,
             kind: "refund".into(),
             opening_envelope: opening(recipient_view),
@@ -3271,13 +3278,13 @@ mod tests {
         let mut state = State::default();
         state
             .note_claims
-            .insert(id_key(&[1; 32]), record(source_a, recipient_a));
+            .insert(id_key(&[1; 32]), record(source_a, recipient_a, 67));
         state
             .note_claims
-            .insert(id_key(&[2; 32]), record(source_a, recipient_b));
+            .insert(id_key(&[2; 32]), record(source_a, recipient_b, 68));
         state
             .note_claims
-            .insert(id_key(&[3; 32]), record(source_b, recipient_a));
+            .insert(id_key(&[3; 32]), record(source_b, recipient_a, 69));
 
         let first = canonical_state_snapshot(
             &state,
@@ -3349,6 +3356,9 @@ mod tests {
         };
 
         let key = |value: u8| PurposeKey {
+            pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+                &zkfmi_crypto::test_support::entity_pq_signer(&[value; 32]),
+            ),
             public_key: SigningKey::from_bytes(&[value; 32])
                 .verifying_key()
                 .to_bytes(),

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::SigningKey;
 use qomm_defmi::{
     facility::{QuorumApproval, QuorumAuthorizer},
     participant::{
@@ -27,6 +27,9 @@ fn signing_key(value: u8) -> SigningKey {
 fn purpose_key(key: &SigningKey) -> PurposeKey {
     PurposeKey {
         public_key: key.verifying_key().to_bytes(),
+        pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+            &zkfmi_crypto::test_support::entity_pq_signer(&key.to_bytes()),
+        ),
         epoch: 1,
     }
 }
@@ -64,6 +67,7 @@ impl EntityKeys {
         let key = |signer: &SigningKey| {
             json!({
                 "publicKey": hex::encode(signer.verifying_key().to_bytes()),
+                "pqPublicKey": hex::encode(purpose_key(signer).pq_public_key),
                 "epoch": 1,
             })
         };
@@ -147,15 +151,23 @@ fn entity_approval_json(
     statement: [u8; 32],
     signer: &SigningKey,
 ) -> Value {
-    let signature = signer.sign(&EntityApproval::signing_body(
-        &domain_id, purpose, 1, &statement,
-    ));
+    let signature = EntityApproval::sign(
+        participant_id,
+        &domain_id,
+        purpose,
+        1,
+        statement,
+        signer,
+        &zkfmi_crypto::test_support::entity_pq_signer(&signer.to_bytes()),
+    )
+    .unwrap()
+    .signature;
     json!({
         "participantID": hex::encode(participant_id),
         "keyPurpose": purpose,
         "keyEpoch": 1,
         "statement": hex::encode(statement),
-        "signature": hex::encode(signature.to_bytes()),
+        "signature": hex::encode(signature),
     })
 }
 

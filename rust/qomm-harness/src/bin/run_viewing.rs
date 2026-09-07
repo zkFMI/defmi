@@ -94,13 +94,15 @@ fn run_main() -> HarnessResult<()> {
             // the exact 253-bit rejection sampler so later planted values stay
             // byte-for-byte reproducible.
             let blinding = py_ed25519_scalar(&mut values);
-            let note = ledger.build_note(
-                &address,
-                value,
-                asset_key.commit_u64(value, &blinding),
-                &blinding,
-                &mut os_rng,
-            );
+            let note = ledger
+                .build_note(
+                    &address,
+                    value,
+                    asset_key.commit_u64(value, &blinding),
+                    &blinding,
+                    &mut os_rng,
+                )
+                .expect("valid fixture note encryption");
             ledger.add(note);
         }
 

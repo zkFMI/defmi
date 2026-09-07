@@ -9,7 +9,7 @@
 
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{Signature, Signer, SigningKey};
+use ed25519_dalek::{Signature, SigningKey};
 use qomm_defmi::asset_link::{prove as prove_asset_link, AssetLinkProof};
 use qomm_defmi::avalanche::{
     AvalancheClient, AvalancheNoteBridge, AvalancheRpcClient, FacilityAvalancheBridge,
@@ -32,7 +32,7 @@ use qomm_defmi::product::{
 };
 use qomm_defmi::settlement::{account_of, CASH_RAIL, SECURITIES_RAIL};
 use qomm_defmi::settlement_verifier::SettlementVerifierConfig;
-use qomm_transport::external_signer::{CommandEd25519Signer, Ed25519MessageSigner};
+use qomm_transport::external_signer::{CommandCsdSigner, CommandEd25519Signer, CsdMessageSigner};
 use qomm_transport::frost_cluster::{ReserveMandateRef, StdioFrostCluster};
 use qomm_transport::mandate::Direction;
 use qomm_transport::order::{verify_admission_lane, CertifiedAdmissionLane, OrderedAdmission};
@@ -63,14 +63,25 @@ fn hash(parts: &[&[u8]]) -> [u8; 32] {
     digest.finalize().into()
 }
 
+// Public acceptance fixture, separate from CSD, guarantor and facility receipt keys.
+fn acknowledgement_key() -> qomm_transport::application_crypto::SigningKey {
+    let mut seed = [0; 64];
+    seed[..32].copy_from_slice(&Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:ED:v2"));
+    seed[32..].copy_from_slice(&Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:PQ:v2"));
+    qomm_transport::application_crypto::SigningKey::from_bytes(&seed)
+}
+
 fn receipt_key() -> SigningKey {
     let seed: [u8; 32] = Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:v1").into();
     SigningKey::from_bytes(&seed)
 }
 
-fn trusted_kyb_issuer() -> ed25519_dalek::VerifyingKey {
+fn trusted_kyb_issuer() -> qomm_proofs::kyb::KybIssuerKey {
     let seed: [u8; 32] = Sha256::digest(b"QOMM:ACCEPTANCE:KYB-ISSUER-KEY:v1").into();
-    SigningKey::from_bytes(&seed).verifying_key()
+    qomm_proofs::kyb::KybIssuerKey::from_bytes(&zkfmi_crypto::traits::Signer::public_key(
+        zkfmi_crypto::test_support::hybrid_signer(&seed).as_ref(),
+    ))
+    .unwrap()
 }
 
 fn governance_keys() -> BTreeMap<String, qomm_defmi::governance::GovernanceSigner> {
@@ -204,6 +215,7 @@ fn deterministic_wallet(discriminator: &[u8], label: &[u8]) -> Wallet {
     Wallet::from_parts(
         deterministic_scalar(&[b"QOMM:ACCEPTANCE:NOTE-VIEW:v1", discriminator, label]),
         deterministic_scalar(&[b"QOMM:ACCEPTANCE:NOTE-SPEND:v1", discriminator, label]),
+        zkfmi_crypto::hybrid::kem::HybridKemKey::from_seed(&[29; 96]),
     )
 }
 
@@ -215,7 +227,7 @@ fn issue_note_source(
     keys: &BTreeMap<String, qomm_defmi::governance::GovernanceSigner>,
     issuer: &Issuer,
     csd_issuer: &CsdIssuerDefinition,
-    csd_signer: &dyn Ed25519MessageSigner,
+    csd_signer: &dyn CsdMessageSigner,
     issued_at: u64,
     asset_id: [u8; 32],
     opening: &AcceptanceOpening,
@@ -229,13 +241,15 @@ fn issue_note_source(
     let blinding =
         deterministic_scalar(&[b"QOMM:ACCEPTANCE:NOTE-SOURCE-BLINDING:v1", discriminator]);
     let local = NoteLedger::new(issuer.key.clone(), issuer.bounds.amount_bits);
-    let note = local.build_note(
-        &wallet.address,
-        amount,
-        issuer.key.commit_u64(amount, &blinding),
-        &blinding,
-        &mut OsRng,
-    );
+    let note = local
+        .build_note(
+            &wallet.address,
+            amount,
+            issuer.key.commit_u64(amount, &blinding),
+            &blinding,
+            &mut OsRng,
+        )
+        .expect("valid fixture note encryption");
     let output = NoteOutput::from_note(&note, asset_id, ZERO)?;
     let mut issuance = NoteIssuance {
         operation_id: hash(&[b"QOMM:ACCEPTANCE:NOTE-SOURCE-OPERATION:v1", discriminator]),
@@ -249,8 +263,10 @@ fn issue_note_source(
             &asset_id,
         ]),
         issuer_signature: Signature::from_bytes(&[0_u8; 64]),
+        issuer_pq_signature: vec![0; 3309],
     };
     issuance.issuer_signature = csd_signer.sign_message(&issuance.issuer_message()?)?;
+    issuance.issuer_pq_signature = csd_signer.sign_pq_message(&issuance.issuer_message()?)?;
     issuance.verify_issuer(csd_issuer, issued_at)?;
     let approval = approve_root(
         client.state_root()?,
@@ -267,13 +283,15 @@ fn issue_note_source(
     let decoy_amount = amount.saturating_add(1);
     let decoy_blinding =
         deterministic_scalar(&[b"QOMM:ACCEPTANCE:NOTE-DECOY-BLINDING:v1", discriminator]);
-    let decoy = local.build_note(
-        &decoy_wallet.address,
-        decoy_amount,
-        issuer.key.commit_u64(decoy_amount, &decoy_blinding),
-        &decoy_blinding,
-        &mut OsRng,
-    );
+    let decoy = local
+        .build_note(
+            &decoy_wallet.address,
+            decoy_amount,
+            issuer.key.commit_u64(decoy_amount, &decoy_blinding),
+            &decoy_blinding,
+            &mut OsRng,
+        )
+        .expect("valid fixture note encryption");
     let mut decoy_issuance = NoteIssuance {
         operation_id: hash(&[b"QOMM:ACCEPTANCE:NOTE-DECOY-OPERATION:v1", discriminator]),
         issuance_nonce: hash(&[b"QOMM:ACCEPTANCE:NOTE-DECOY-NONCE:v1", discriminator]),
@@ -286,8 +304,11 @@ fn issue_note_source(
             &asset_id,
         ]),
         issuer_signature: Signature::from_bytes(&[0_u8; 64]),
+        issuer_pq_signature: vec![0; 3309],
     };
     decoy_issuance.issuer_signature = csd_signer.sign_message(&decoy_issuance.issuer_message()?)?;
+    decoy_issuance.issuer_pq_signature =
+        csd_signer.sign_pq_message(&decoy_issuance.issuer_message()?)?;
     decoy_issuance.verify_issuer(csd_issuer, issued_at)?;
     let approval = approve_root(
         client.state_root()?,
@@ -556,7 +577,7 @@ fn prepare_reservation(
         return Err("reserve issuer returned a mismatched payment digest".into());
     }
     let payment_signature = signer.sign_reserve_payment(&partial, mandate)?;
-    let payment = partial.sealed(payment_signature);
+    let payment = partial.sealed_hybrid(payment_signature.classical, payment_signature.pq);
     let (maker_reservation_id, taker_reservation_id) = match spec.role {
         ReservationRole::Maker => (spec.reserve_id, ZERO),
         ReservationRole::Taker => (ZERO, spec.reserve_id),
@@ -617,9 +638,10 @@ fn prepare_reservation(
         market_statement_digest: ZERO,
         before_state_root,
     };
+    let authorization = signer.sign_reserve_context(&payment, &context, mandate)?;
     let typed = TypedInstruction {
-        pq_authorization: None,
-        authorization: signer.sign_reserve_context(&payment, &context, mandate)?,
+        pq_authorization: Some(authorization.pq),
+        authorization: authorization.classical,
         payment,
         context,
     };
@@ -857,7 +879,7 @@ fn process_authority_notes(
     authorizer_domain: &str,
     proof_party_bin: &Path,
     proof_root: &Path,
-    csd_signer: &dyn Ed25519MessageSigner,
+    csd_signer: &dyn CsdMessageSigner,
 ) -> Result<(PretradeAcknowledgement, serde_json::Value), String> {
     let now = authority.created_at;
     let admission = authority.admission.as_ref().ok_or_else(|| {
@@ -866,7 +888,6 @@ fn process_authority_notes(
     let governance = governance_keys();
     let authorizer = authorizer(&governance, authorizer_domain)?;
     let bridge = AvalancheNoteBridge::new(&authorizer, client);
-    let signing_receipts = receipt_key();
     let approve_chain = |statement: [u8; 32]| {
         approve_root(client.state_root()?, &authorizer, &governance, statement)
     };
@@ -910,6 +931,7 @@ fn process_authority_notes(
             &authority.defmi_id,
         ]),
         public_key: csd_signer.verifying_key().to_bytes(),
+        pq_public_key: csd_signer.pq_public_key(),
         permitted_asset_ids,
         policy_digest: hash(&[b"QOMM:ACCEPTANCE:CSD-POLICY:v1", &authority.defmi_id]),
         valid_from: now.saturating_sub(1).max(1),
@@ -949,6 +971,9 @@ fn process_authority_notes(
             }
             .into(),
             public_key: key.verifying_key().to_bytes(),
+            pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+                &zkfmi_crypto::test_support::entity_pq_signer(&key.to_bytes()),
+            ),
             risk_policy_digest: hash(&[
                 b"QOMM:ACCEPTANCE:RISK-POLICY:v1",
                 &(index as u64).to_be_bytes(),
@@ -1029,9 +1054,13 @@ fn process_authority_notes(
             valid_from: now.saturating_sub(1).max(1),
             valid_until: now.saturating_add(7_200),
             nonce: hash(&[b"QOMM:ACCEPTANCE:FACILITY-GRANT-NONCE:v1", &facility_id]),
-            guarantor_signature: Signature::from_bytes(&[0_u8; 64]),
+            guarantor_signature: Vec::new(),
         };
-        grant.guarantor_signature = guarantor_key.sign(&grant.guarantor_message()?);
+        grant.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+            guarantor_key,
+            &zkfmi_crypto::test_support::entity_pq_signer(&guarantor_key.to_bytes()),
+            &grant.guarantor_message()?,
+        )?;
         bridge.grant_credit_facility(&grant, &approve_chain(grant.statement()?)?)?;
         facility_plans.insert(
             *key,
@@ -1182,7 +1211,9 @@ fn process_authority_notes(
         vec![1, 4, 7],
     )?;
     let public = reserve_signers.public().clone();
-    let venue = Venue::new(issuer.key.clone(), &issuer.bounds, public.clone());
+    let venue = Venue::new(issuer.key.clone(), &issuer.bounds, public.clone())
+        .require_pq_committee(reserve_signers.pq_committee().clone())
+        .map_err(str::to_string)?;
     let mut bindings = Vec::new();
 
     for maker in &authority.makers {
@@ -1586,11 +1617,11 @@ fn process_authority_notes(
         defmi_id: authority.defmi_id,
         after_state_root,
         bindings,
-        signer_public: signing_receipts.verifying_key().to_bytes(),
-        signature: Signature::from_bytes(&[0_u8; 64]),
+        signer_public: acknowledgement_key().verifying_key().to_bytes(),
+        signature: qomm_transport::application_crypto::Signature::from_bytes(&[]),
     }
-    .sign(&signing_receipts)?;
-    acknowledgement.verify(&signing_receipts.verifying_key())?;
+    .sign(&acknowledgement_key())?;
+    acknowledgement.verify(&acknowledgement_key().verifying_key())?;
     let reserve_public_digest: [u8; 32] = Sha256::digest(
         public
             .serialize()
@@ -1654,7 +1685,7 @@ struct AuthorityProcessing<'a> {
     proof_party_bin: &'a Path,
     proof_root: &'a Path,
     account_free_notes: bool,
-    csd_signer: Option<&'a dyn Ed25519MessageSigner>,
+    csd_signer: Option<&'a dyn CsdMessageSigner>,
 }
 
 fn process_authority(
@@ -1682,7 +1713,7 @@ fn process_authority(
         .node_keys
         .iter()
         .map(|raw| {
-            ed25519_dalek::VerifyingKey::from_bytes(raw)
+            qomm_transport::application_crypto::VerifyingKey::from_bytes(raw)
                 .map_err(|_| "admission key is malformed".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1757,7 +1788,11 @@ fn process_authority(
     let governance = governance_keys();
     let authorizer = authorizer(&governance, authorizer_domain)?;
     let signing_receipts = receipt_key();
-    let facility = DefmiFacility::open(state_path, authorizer.clone(), signing_receipts.clone())?;
+    let facility = DefmiFacility::open(
+        state_path,
+        authorizer.clone(),
+        zkfmi_crypto::test_support::hybrid_signer(&signing_receipts.to_bytes()),
+    )?;
     let bridge = avalanche_client.map(|client| FacilityAvalancheBridge::new(&facility, client));
     let traded_asset = register_asset(
         &facility,
@@ -1810,6 +1845,9 @@ fn process_authority(
             }
             .into(),
             public_key: key.verifying_key().to_bytes(),
+            pq_public_key: zkfmi_crypto::traits::Signer::public_key(
+                &zkfmi_crypto::test_support::entity_pq_signer(&key.to_bytes()),
+            ),
             risk_policy_digest: hash(&[
                 b"QOMM:ACCEPTANCE:RISK-POLICY:v1",
                 &(index as u64).to_be_bytes(),
@@ -1895,9 +1933,13 @@ fn process_authority(
             valid_from: now.saturating_sub(1).max(1),
             valid_until: now.saturating_add(7_200),
             nonce: hash(&[b"QOMM:ACCEPTANCE:FACILITY-GRANT-NONCE:v1", &facility_id]),
-            guarantor_signature: Signature::from_bytes(&[0_u8; 64]),
+            guarantor_signature: Vec::new(),
         };
-        grant.guarantor_signature = guarantor_key.sign(&grant.guarantor_message()?);
+        grant.guarantor_signature = qomm_defmi::facility::sign_guarantor_message(
+            guarantor_key,
+            &zkfmi_crypto::test_support::entity_pq_signer(&guarantor_key.to_bytes()),
+            &grant.guarantor_message()?,
+        )?;
         let approval = approve(&facility, &authorizer, &governance, grant.statement()?)?;
         if let Some(bridge) = bridge.as_ref() {
             bridge.grant_credit_facility(&grant, &approval, now)?;
@@ -2072,7 +2114,9 @@ fn process_authority(
     )?;
     let public = reserve_signers.public().clone();
     let issuer = Issuer::new(Pedersen::new(b"qomm:defmi:v1"), Bounds::default());
-    let venue = Venue::new(issuer.key.clone(), &issuer.bounds, public.clone());
+    let venue = Venue::new(issuer.key.clone(), &issuer.bounds, public.clone())
+        .require_pq_committee(reserve_signers.pq_committee().clone())
+        .map_err(str::to_string)?;
     let mut bindings = Vec::new();
 
     for maker in &authority.makers {
@@ -2486,11 +2530,11 @@ fn process_authority(
         defmi_id: authority.defmi_id,
         after_state_root: facility.state_root()?,
         bindings,
-        signer_public: signing_receipts.verifying_key().to_bytes(),
-        signature: Signature::from_bytes(&[0_u8; 64]),
+        signer_public: acknowledgement_key().verifying_key().to_bytes(),
+        signature: qomm_transport::application_crypto::Signature::from_bytes(&[]),
     }
-    .sign(&signing_receipts)?;
-    acknowledgement.verify(&signing_receipts.verifying_key())?;
+    .sign(&acknowledgement_key())?;
+    acknowledgement.verify(&acknowledgement_key().verifying_key())?;
     if !facility.verify_receipt_chain()? {
         return Err("DeFMI receipt chain failed after pre-trade reservations".into());
     }
@@ -2581,7 +2625,22 @@ fn run() -> Result<(), String> {
         .map_err(|_| "CSD signer public key is not 32 bytes".to_string())?;
         let public = ed25519_dalek::VerifyingKey::from_bytes(&public)
             .map_err(|_| "CSD signer public key is malformed".to_string())?;
-        Some(CommandEd25519Signer::new(
+        let pq_key_id = optional_string(&arguments, "--csd-signer-pq-key-id")
+            .ok_or_else(|| "--csd-signer-pq-key-id is required".to_string())?;
+        let pq_public = hex::decode(
+            optional_string(&arguments, "--csd-signer-pq-public")
+                .ok_or_else(|| "--csd-signer-pq-public is required".to_string())?,
+        )
+        .map_err(|_| "CSD PQ public key is not hexadecimal".to_string())?;
+        let pq_arguments = vec![
+            "--store".into(),
+            store.display().to_string(),
+            "--pin-file".into(),
+            pin.display().to_string(),
+            "--key-id".into(),
+            pq_key_id.clone(),
+        ];
+        let classical = CommandEd25519Signer::new(
             executable,
             vec![
                 "--store".into(),
@@ -2594,6 +2653,12 @@ fn run() -> Result<(), String> {
             key_id,
             public,
             Duration::from_secs(5),
+        )?;
+        Some(CommandCsdSigner::new(
+            classical,
+            pq_arguments,
+            pq_key_id,
+            pq_public,
         )?)
     } else {
         None
@@ -2629,7 +2694,7 @@ fn run() -> Result<(), String> {
         account_free_notes,
         csd_signer: csd_signer
             .as_ref()
-            .map(|signer| signer as &dyn Ed25519MessageSigner),
+            .map(|signer| signer as &dyn CsdMessageSigner),
     })?;
     write_ack_private(&acknowledgement_path, &acknowledgement)?;
     let report_bytes = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;

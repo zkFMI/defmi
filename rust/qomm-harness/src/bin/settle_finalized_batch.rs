@@ -8,11 +8,12 @@
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::SigningKey;
 use qomm_defmi::asset_link::{prove as prove_asset_link, AssetLinkProof};
 use qomm_defmi::avalanche::{
     AvalancheClient, AvalancheNoteBridge, AvalancheRpcClient, FacilityAvalancheBridge,
 };
+use qomm_defmi::claim_redemption::NoteClaimAuthorization;
 use qomm_defmi::facility::{
     build_threshold_dvp_consumption, reserve_handle_for, CreditFacilityTransition,
     CreditTransitionKind, DefmiFacility, ProductSettlementBatch, ProductSettlementOrder,
@@ -20,9 +21,10 @@ use qomm_defmi::facility::{
     StateLeg, ZERO,
 };
 use qomm_defmi::note_chain::{
-    materialize_claim, verify_claim_materialization, DelegatedClaimOpenings,
-    DelegatedNoteLegProjection, ProductNoteBindings, ProductNoteSettlementBatch,
-    ProductNoteSettlementOrder, VerifiedDelegatedNoteSettlementProjection,
+    materialize_claim, note_claim_recipient_commitment, verify_claim_materialization,
+    DelegatedClaimOpenings, DelegatedNoteLegProjection, NoteClaimKind, ProductNoteBindings,
+    ProductNoteSettlementBatch, ProductNoteSettlementOrder,
+    VerifiedDelegatedNoteSettlementProjection,
 };
 use qomm_defmi::notes::Wallet;
 use qomm_defmi::product::{
@@ -35,6 +37,7 @@ use qomm_defmi::settlement::{
     SECURITIES_RAIL,
 };
 use qomm_proofs::price_limit::{from_threshold as threshold_price_limit, PriceLimitProof};
+use qomm_transport::application_crypto::VerifyingKey;
 use qomm_transport::order::{
     encode_execution_attestations, NodeExecutionAttestation, OrderedAdmission,
 };
@@ -74,14 +77,25 @@ fn hash(parts: &[&[u8]]) -> [u8; 32] {
     digest.finalize().into()
 }
 
+// Public acceptance fixture, separate from CSD, guarantor and facility receipt keys.
+fn acknowledgement_key() -> qomm_transport::application_crypto::SigningKey {
+    let mut seed = [0; 64];
+    seed[..32].copy_from_slice(&Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:ED:v2"));
+    seed[32..].copy_from_slice(&Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:PQ:v2"));
+    qomm_transport::application_crypto::SigningKey::from_bytes(&seed)
+}
+
 fn receipt_key() -> SigningKey {
     let seed: [u8; 32] = Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:v1").into();
     SigningKey::from_bytes(&seed)
 }
 
-fn trusted_kyb_issuer() -> VerifyingKey {
+fn trusted_kyb_issuer() -> qomm_proofs::kyb::KybIssuerKey {
     let seed: [u8; 32] = Sha256::digest(b"QOMM:ACCEPTANCE:KYB-ISSUER-KEY:v1").into();
-    SigningKey::from_bytes(&seed).verifying_key()
+    qomm_proofs::kyb::KybIssuerKey::from_bytes(&zkfmi_crypto::traits::Signer::public_key(
+        zkfmi_crypto::test_support::hybrid_signer(&seed).as_ref(),
+    ))
+    .unwrap()
 }
 
 fn governance_keys() -> BTreeMap<String, qomm_defmi::governance::GovernanceSigner> {
@@ -380,6 +394,23 @@ fn prepare_note_record(
     {
         return Err("canonical note covenants do not match the acknowledged reserves".into());
     }
+    let claim_authorization = |opening: &qomm_proofs::opening_envelope::OpeningEnvelope,
+                               asset: [u8; 32],
+                               hold: [u8; 32],
+                               kind: NoteClaimKind| {
+        NoteClaimAuthorization::generate(
+            note_claim_recipient_commitment(
+                opening.recipient_view.compress().to_bytes(),
+                typed.context.rfq_nullifier,
+                asset,
+                hold,
+                kind,
+            )?,
+            authority.created_at,
+            u64::MAX,
+        )?
+        .commitment()
+    };
     let projection = VerifiedDelegatedNoteSettlementProjection::verify_and_project(
         venue,
         &typed,
@@ -408,6 +439,32 @@ fn prepare_note_record(
             securities_refund: record.securities_refund_opening.clone(),
             cash_delivery: record.cash_delivery_opening.clone(),
             cash_refund: record.cash_refund_opening.clone(),
+            authorizations: [
+                claim_authorization(
+                    &record.securities_delivery_opening,
+                    authority.traded_asset_id,
+                    securities_binding.reserve_id,
+                    NoteClaimKind::Delivery,
+                )?,
+                claim_authorization(
+                    &record.securities_refund_opening,
+                    authority.traded_asset_id,
+                    securities_binding.reserve_id,
+                    NoteClaimKind::Refund,
+                )?,
+                claim_authorization(
+                    &record.cash_delivery_opening,
+                    authority.cash_asset_id,
+                    cash_binding.reserve_id,
+                    NoteClaimKind::Delivery,
+                )?,
+                claim_authorization(
+                    &record.cash_refund_opening,
+                    authority.cash_asset_id,
+                    cash_binding.reserve_id,
+                    NoteClaimKind::Refund,
+                )?,
+            ],
         },
         context.market_statement_digest,
         authority.created_at,
@@ -1020,6 +1077,7 @@ fn settle_account_free_note_batch(
             b"QOMM:ACCEPTANCE:CLAIM-DESTINATION-SPEND:v1",
             &first_claim.claim_id,
         ])),
+        zkfmi_crypto::hybrid::kem::HybridKemKey::from_seed(&[29; 96]),
     );
     let (materialization, ownership_proof) = materialize_claim(
         first_claim,
@@ -1027,6 +1085,9 @@ fn settle_account_free_note_batch(
         AMOUNT_BITS,
         first_prepared.order.rfq_nullifier,
         &recipient_secret,
+        &zkfmi_crypto::test_support::public_fixture_recipient_key(
+            &(G * recipient_secret).compress().to_bytes(),
+        ),
         &destination.address,
         &[1, 4, 7],
         hash(&[
@@ -1135,7 +1196,7 @@ fn run() -> Result<(), String> {
     }
     let authority = read_authority_private(&authority_path)?;
     let acknowledgement = read_ack_private(&acknowledgement_path)?;
-    acknowledgement.verify(&receipt_key().verifying_key())?;
+    acknowledgement.verify(&acknowledgement_key().verifying_key())?;
     if acknowledgement.authority_digest != authority.digest()?
         || acknowledgement.defmi_id != authority.defmi_id
     {
@@ -1212,7 +1273,11 @@ fn run() -> Result<(), String> {
             &report_path,
         );
     }
-    let facility = DefmiFacility::open(&state_path, authorizer.clone(), receipt_key())?;
+    let facility = DefmiFacility::open(
+        &state_path,
+        authorizer.clone(),
+        zkfmi_crypto::test_support::hybrid_signer(&receipt_key().to_bytes()),
+    )?;
     if facility.state_root()? != acknowledgement.after_state_root {
         return Err("DeFMI state changed after its pre-trade acknowledgement".into());
     }

@@ -1,11 +1,11 @@
 //! Agreeing with the book of record without opening anything to it.
 
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{Signer, SigningKey};
 use qomm_defmi::reconcile::*;
 use qomm_zk::pedersen::{asset_tag, Pedersen};
 use rand::rngs::OsRng;
 use rand::Rng;
+use zkfmi_crypto::{hybrid::signature::HybridSigner, key::KeyPurpose, traits::Signer};
 
 fn key() -> Pedersen {
     Pedersen::new(b"qomm:defmi:v1").with_value_generator(asset_tag(7))
@@ -108,19 +108,32 @@ fn an_unsigned_attestation_is_only_as_good_as_the_number_it_carries() {
     let mut rng = OsRng;
     let (k, values, blindings, commitments) = ledger(10);
     let total: u64 = values.iter().sum();
-    let registrar = SigningKey::generate(&mut rng);
+    let registrar = HybridSigner::generate().unwrap();
     let mut signed = attest(total);
-    signed.signature = Some(registrar.sign(&signed.body()));
+    signed.signature = Some(
+        registrar
+            .sign(KeyPurpose::Attestation, &signed.body())
+            .unwrap(),
+    );
     let r = prove(&k, &commitments, &blindings, &signed, &mut rng).unwrap();
     assert_eq!(
-        check(&k, &commitments, &r, Some(&registrar.verifying_key())),
+        check(&k, &commitments, &r, Some(&registrar.public_key())),
         Ok(())
     );
     // the same proof with a signature nobody checked
     assert!(check(&k, &commitments, &r, None).is_err());
     // and one from the wrong registrar
-    let other = SigningKey::generate(&mut rng);
-    assert!(check(&k, &commitments, &r, Some(&other.verifying_key())).is_err());
+    let other = HybridSigner::generate().unwrap();
+    assert!(check(&k, &commitments, &r, Some(&other.public_key())).is_err());
+    for component in [0, 64] {
+        let mut modified = signed.clone();
+        modified.signature.as_mut().unwrap()[component] ^= 1;
+        let proof = prove(&k, &commitments, &blindings, &modified, &mut rng).unwrap();
+        assert!(check(&k, &commitments, &proof, Some(&registrar.public_key())).is_err());
+    }
+    signed.signature.as_mut().unwrap().truncate(64);
+    let proof = prove(&k, &commitments, &blindings, &signed, &mut rng).unwrap();
+    assert!(check(&k, &commitments, &proof, Some(&registrar.public_key())).is_err());
 }
 
 #[test]

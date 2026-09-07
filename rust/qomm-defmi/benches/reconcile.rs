@@ -132,13 +132,15 @@ fn main() {
                 }
                 owner.address(scope)
             };
-            let note = ledger.build_note(
-                &address,
-                value,
-                asset.commit_u64(value, &blinding),
-                &blinding,
-                &mut rng,
-            );
+            let note = ledger
+                .build_note(
+                    &address,
+                    value,
+                    asset.commit_u64(value, &blinding),
+                    &blinding,
+                    &mut rng,
+                )
+                .expect("valid fixture note encryption");
             ledger.add(note);
         }
         let grant = owner.grant(scopes[0], "an auditor", 1_780_000_000, 90);

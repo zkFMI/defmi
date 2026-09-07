@@ -1,6 +1,7 @@
 use std::{env, fs, io::Write, path::PathBuf, process::ExitCode};
 
 use qomm_avalanche_vm::{genesis::GenesisConfig, id::vm_id, QommVm, VERSION};
+mod recovery_cli;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -19,6 +20,7 @@ async fn run() -> Result<(), String> {
         Some("version") if arguments.len() == 1 => println!("{VERSION}"),
         Some("vmid") if arguments.len() == 1 => println!("{}", vm_id()),
         Some("genesis") => genesis_command(&arguments[1..])?,
+        Some("recovery") => recovery_cli::run(&arguments[1..])?,
         Some(_) => return Err("unknown command".into()),
         None => {
             avalanche_rpcchainvm_qomm::plugin::serve(QommVm::default())

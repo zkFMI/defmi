@@ -16,13 +16,18 @@ use dekyx_core::{
     AnonymousPresentation, DeKyxVerifier, EligibilityProvider, EligibilityRequirement,
     PresentationContext, SubjectKind,
 };
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use zkfmi_crypto::{
+    hybrid::signature::HybridVerifier,
+    key::KeyPurpose,
+    suite::{Suite, SuiteId},
+    traits::{Signer, Verifier},
+};
 
-const MANDATE_DOMAIN: &[u8] = b"DEFMI:APPLICATION:RESERVE-MANDATE:v1";
+const MANDATE_DOMAIN: &[u8] = b"DEFMI:APPLICATION:RESERVE-MANDATE:v2";
 const IDENTITY_DOMAIN: &[u8] = b"DEFMI:APPLICATION:RESERVE-IDENTITY:v1";
 const SPEND_DOMAIN: &[u8] = b"DEFMI:APPLICATION:RESERVE-SPEND:v1";
 const DELEGATION_DOMAIN: &[u8] = b"DEFMI:APPLICATION:RESERVE-DELEGATION:v1";
@@ -139,18 +144,19 @@ pub struct ApplicationReserveMandate {
     pub settlement_terms_commitment: [u8; 32],
     pub valid_from: u64,
     pub valid_until: u64,
-    pub participant_public: [u8; 32],
+    pub participant_public: Vec<u8>,
     pub signature: Vec<u8>,
 }
 
 impl ApplicationReserveMandate {
     pub fn unsigned(&self) -> Result<Vec<u8>, String> {
         self.scope.validate()?;
-        if self.version != 1
+        if self.version != 2
             || self.valid_from == 0
             || self.valid_until < self.valid_from
             || self.valid_until > MAX_UNIX_TIME
-            || self.signature.len() > 64
+            || self.signature.len() > 3373
+            || self.participant_public.len() != 1984
         {
             return Err("application reserve mandate has an invalid lifetime or version".into());
         }
@@ -169,7 +175,6 @@ impl ApplicationReserveMandate {
             self.participant_handle,
             self.entity_commitment,
             self.credential_digest,
-            self.participant_public,
             self.settlement_terms_commitment,
         ] {
             if value == ZERO {
@@ -177,6 +182,8 @@ impl ApplicationReserveMandate {
             }
             body.extend_from_slice(&value);
         }
+        body.extend_from_slice(&Suite::new(SuiteId::Ed25519MlDsa65).encode());
+        body.extend_from_slice(&self.participant_public);
         for value in [
             self.amount_commitment,
             self.participant_handle,
@@ -197,11 +204,15 @@ impl ApplicationReserveMandate {
         Ok(body)
     }
 
-    pub fn sign(mut self, key: &SigningKey) -> Result<Self, String> {
-        if key.verifying_key().to_bytes() != self.participant_public {
+    pub fn sign(mut self, key: &dyn Signer) -> Result<Self, String> {
+        if key.suite() != Suite::new(SuiteId::Ed25519MlDsa65)
+            || key.public_key() != self.participant_public
+        {
             return Err("application reserve signer differs from its mandate".into());
         }
-        self.signature = key.sign(&self.unsigned()?).to_bytes().to_vec();
+        self.signature = key
+            .sign(KeyPurpose::SettlementInstruction, &self.unsigned()?)
+            .map_err(|error| error.to_string())?;
         Ok(self)
     }
 
@@ -209,11 +220,13 @@ impl ApplicationReserveMandate {
         if &self.scope != scope || now < self.valid_from || now > self.valid_until {
             return Err("application reserve scope or current lifetime differs".into());
         }
-        let signature = Signature::try_from(self.signature.as_slice())
-            .map_err(|_| "application reserve signature is malformed")?;
-        VerifyingKey::from_bytes(&self.participant_public)
-            .map_err(|_| "application reserve key is malformed")?
-            .verify_strict(&self.unsigned()?, &signature)
+        HybridVerifier
+            .verify(
+                KeyPurpose::SettlementInstruction,
+                &self.participant_public,
+                &self.unsigned()?,
+                &self.signature,
+            )
             .map_err(|_| "application reserve signature is invalid".into())
     }
 
