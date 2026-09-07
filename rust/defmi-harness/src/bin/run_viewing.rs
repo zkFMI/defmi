@@ -1,6 +1,9 @@
 use curve25519_dalek::scalar::Scalar;
 use defmi::notes::NoteLedger;
-use defmi::viewing::{check_grant, scan_scope, total_seen, ScopedWallet};
+use defmi::viewing::{
+    check_grant, scan_scope, total_seen, HybridSignature, ScopedWallet, IDENTITY_BYTES,
+    SIGNATURE_BYTES,
+};
 use defmi_harness::{parse_value, timing_summary, write_pretty_json, HarnessResult};
 use qomm_sim::deterministic_random::DeterministicRng;
 use zkfmi_zk::pedersen::{asset_tag, Pedersen};
@@ -48,19 +51,40 @@ fn run_main() -> HarnessResult<()> {
         let _ = owner.grant(&scope_names[0], "an auditor", NOW, 90);
         grant_build.push(started.elapsed().as_secs_f64() * 1e3);
     }
+    // Both public keys, taken once: the check is what is being timed, not the
+    // clone of a 1,984-byte identity.
+    let identity = owner.public_identity();
     let mut grant_check = Vec::new();
     for _ in 0..grant_repeats {
         let started = Instant::now();
-        let _ = check_grant(&grant, &owner.public_identity(), NOW + 1);
+        let _ = check_grant(&grant, &identity, NOW + 1);
         grant_check.push(started.elapsed().as_secs_f64() * 1e3);
     }
     let wrong_owner = ScopedWallet::new(&mut os_rng);
+    // The same body signed again, so the honest halves can be split apart: a
+    // hybrid signature is both halves or nothing, and this records that the
+    // verifier holds to it.
+    let honest = grant.signature.clone().expect("a grant is signed");
+    let mut half_signed = owner.grant(&scope_names[0], "an auditor", NOW, 90);
+    half_signed.signature = Some(HybridSignature {
+        classical: honest.classical.clone(),
+        pq: Vec::new(),
+    });
+    let ed25519_half_alone_is_refused = check_grant(&half_signed, &identity, NOW + 1).is_err();
+    half_signed.signature = Some(HybridSignature {
+        classical: Vec::new(),
+        pq: honest.pq.clone(),
+    });
+    let mldsa65_half_alone_is_refused = check_grant(&half_signed, &identity, NOW + 1).is_err();
     let grant_json = json!({
         "build": timing_summary(&grant_build),
         "check": timing_summary(&grant_check),
+        "signature_suite": "ed25519-and-mldsa65-attestation-v1",
+        "identity_bytes": IDENTITY_BYTES,
+        "signature_bytes": SIGNATURE_BYTES,
         "expired_is_refused": check_grant(
             &grant,
-            &owner.public_identity(),
+            &identity,
             NOW + 400 * 86_400,
         ).is_err(),
         "wrong_owner_is_refused": check_grant(
@@ -68,6 +92,8 @@ fn run_main() -> HarnessResult<()> {
             &wrong_owner.public_identity(),
             NOW + 1,
         ).is_err(),
+        "ed25519_half_alone_is_refused": ed25519_half_alone_is_refused,
+        "mldsa65_half_alone_is_refused": mldsa65_half_alone_is_refused,
     });
 
     let mut scaling = Vec::new();

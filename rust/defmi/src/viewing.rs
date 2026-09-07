@@ -24,6 +24,25 @@
 //! scalar. The complete viewing capability is required to open v3 note payloads;
 //! classical-only addresses and grants are incompatible.
 //!
+//! # What signs a grant
+//!
+//! A grant and a disclosure are signed by the wallet, and the signature is the
+//! stack's hybrid one: Ed25519 and ML-DSA-65 over the same body, accepted only
+//! when **both** verify. The reason is what these documents are for. A grant is
+//! an attribution record --- a key found where it should not be traces back to
+//! the grant that produced it --- and attribution has to hold for as long as
+//! anyone might ask, which is longer than Ed25519 is expected to resist a
+//! quantum adversary. A signature that verified on the Ed25519 half alone would
+//! be exactly the one such an adversary can forge, so a grant with one half, or
+//! with the halves swapped, is refused as unsigned.
+//!
+//! The wallet's identity is still one Ed25519 seed. The ML-DSA-65 signing seed
+//! is derived from it under its own label, so the wallet stores nothing new,
+//! and a wallet rebuilt from the same seeds signs with the same two keys. The
+//! derivation hashes the *seed*, not the curve scalar: recovering the scalar
+//! from the public key, which is what a quantum break of Ed25519 yields, is
+//! still one preimage short of the ML-DSA-65 seed.
+//!
 //! # Three things it does not do
 //!
 //! **A grant cannot be taken back.** Whoever holds a scope's key can read every
@@ -63,14 +82,45 @@
 
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use zkfmi_zk::pedersen::Pedersen;
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha512};
+use zkfmi_crypto::backend::{Ed25519Signer, MlDsa65Signer};
+use zkfmi_crypto::hybrid::signature::{HybridSigner, HybridVerifier};
+use zkfmi_crypto::key::KeyPurpose;
+use zkfmi_crypto::suite::{ML_DSA_65_PK_BYTES, ML_DSA_65_SIG_BYTES};
+use zkfmi_crypto::traits::Signer as _;
 
 use crate::notes::{Address, NoteLedger, ViewKey, Wallet};
 
-pub const VIEW_DOMAIN: &[u8] = b"qomm:defmi:view:v2";
+/// The signature a grant or a disclosure carries: an Ed25519 half and an
+/// ML-DSA-65 half over one body. Re-exported so a caller that holds a grant
+/// can name its signature without reaching into the crypto crate.
+pub use zkfmi_crypto::hybrid::signature::HybridSignature;
+
+/// v3: grants and disclosures are signed by the hybrid identity. A v2 grant is
+/// a different body and does not verify, which is what the bump is for.
+pub const VIEW_DOMAIN: &[u8] = b"qomm:defmi:view:v3";
+
+/// The label under which a wallet's ML-DSA-65 signing seed is derived from its
+/// Ed25519 seed. Its own label, like the scoped KEM halves below, so that no
+/// two keys in this module are ever hashed from the same preimage.
+const IDENTITY_ML_DSA_65_DOMAIN: &[u8] = b"DEFMI:IDENTITY:ML-DSA-65:v1";
+
+/// What the hybrid suite is told it is signing. A grant attests that a key was
+/// handed out and a disclosure attests to a list; `participant.rs` and
+/// `note_chain.rs` sign their attestations under the same purpose.
+const SIGNING_PURPOSE: KeyPurpose = KeyPurpose::Attestation;
+
+/// Bytes in a [`WalletIdentity`] once encoded: 32 of Ed25519 and 1,952 of
+/// ML-DSA-65.
+pub const IDENTITY_BYTES: usize = 32 + ML_DSA_65_PK_BYTES;
+
+/// Bytes in a hybrid signature once encoded: 64 of Ed25519 and 3,309 of
+/// ML-DSA-65. A grant is small and its signature is not; that is the price of
+/// an attribution that outlives the curve.
+pub const SIGNATURE_BYTES: usize = 64 + ML_DSA_65_SIG_BYTES;
 
 fn opening_key(seed: &[u8; 32], scope: &str) -> zkfmi_crypto::hybrid::kem::HybridKemKey {
     use sha2::Sha256;
@@ -96,6 +146,24 @@ fn opening_key(seed: &[u8; 32], scope: &str) -> zkfmi_crypto::hybrid::kem::Hybri
     zkfmi_crypto::hybrid::kem::HybridKemKey::from_seed(&material)
 }
 
+/// The ML-DSA-65 half of a wallet's identity, derived from the Ed25519 seed.
+///
+/// One way, like everything else derived here: the ML-DSA-65 key says nothing
+/// about the Ed25519 seed, and the Ed25519 *public* key --- or the scalar
+/// behind it, which is all a discrete-log break recovers --- says nothing
+/// about the ML-DSA-65 seed, because the hash is over the seed and the scalar
+/// is itself a hash of it.
+fn ml_dsa_identity(classical: &SigningKey) -> MlDsa65Signer {
+    let seed: zeroize::Zeroizing<[u8; 32]> = zeroize::Zeroizing::new(
+        sha2::Sha256::new()
+            .chain_update(IDENTITY_ML_DSA_65_DOMAIN)
+            .chain_update(classical.as_bytes())
+            .finalize()
+            .into(),
+    );
+    MlDsa65Signer::from_seed(&seed)
+}
+
 /// One scope's scalar. One way, so a scope reveals neither seed nor sibling.
 pub fn derive(seed: &[u8], role: &[u8], scope: &str) -> Scalar {
     let mut hasher = Sha512::new();
@@ -110,6 +178,32 @@ pub fn derive(seed: &[u8], role: &[u8], scope: &str) -> Scalar {
     Scalar::from_bytes_mod_order_wide(&hasher.finalize().into())
 }
 
+/// Who a grant or a disclosure is checked against: the wallet's Ed25519
+/// verifying key and its ML-DSA-65 public key, together.
+///
+/// One identity, two keys, because a signature here is two signatures over one
+/// body and a verifier needs both keys to insist on both. The Ed25519 key is
+/// still what the rest of the stack calls the wallet; the ML-DSA-65 key rides
+/// alongside it so that a grant checked today is still attributable once the
+/// Ed25519 half is forgeable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WalletIdentity {
+    pub classical: VerifyingKey,
+    /// [`ML_DSA_65_PK_BYTES`] long, as the signer produced it.
+    pub pq: Vec<u8>,
+}
+
+impl WalletIdentity {
+    /// The two keys as the hybrid suite lays them out: Ed25519 first, then
+    /// ML-DSA-65, [`IDENTITY_BYTES`] in all.
+    pub fn encoded(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(IDENTITY_BYTES);
+        out.extend_from_slice(&self.classical.to_bytes());
+        out.extend_from_slice(&self.pq);
+        out
+    }
+}
+
 /// One scope handed to one named party, signed by the wallet that owns it.
 ///
 /// The grantee is named and the grant is signed so that a key found somewhere
@@ -122,7 +216,8 @@ pub struct ViewingGrant {
     pub view_key: ViewKey,
     pub issued_at: u64,
     pub expires_at: u64,
-    pub signature: Option<Signature>,
+    /// Both halves, or the grant is a key somebody wrote down.
+    pub signature: Option<HybridSignature>,
 }
 
 impl ViewingGrant {
@@ -151,7 +246,8 @@ impl ViewingGrant {
 pub struct ScopedWallet {
     view_seed: [u8; 32],
     spend_seed: [u8; 32],
-    identity: SigningKey,
+    identity: HybridSigner,
+    public_identity: WalletIdentity,
 }
 
 impl ScopedWallet {
@@ -160,23 +256,44 @@ impl ScopedWallet {
         let mut spend_seed = [0u8; 32];
         rng.fill_bytes(&mut view_seed);
         rng.fill_bytes(&mut spend_seed);
-        ScopedWallet {
-            view_seed,
-            spend_seed,
-            identity: SigningKey::generate(rng),
-        }
+        Self::from_seeds(view_seed, spend_seed, SigningKey::generate(rng))
     }
 
+    /// Rebuild a wallet from its three secrets.
+    ///
+    /// The identity is one Ed25519 seed and stays one. Its ML-DSA-65 half is
+    /// derived from it here, so a wallet stored before v3 comes back with the
+    /// same Ed25519 key and a well-defined ML-DSA-65 key, and whoever holds the
+    /// seed holds the whole hybrid identity --- no second secret to lose.
     pub fn from_seeds(view_seed: [u8; 32], spend_seed: [u8; 32], identity: SigningKey) -> Self {
+        let pq = ml_dsa_identity(&identity);
+        let public_identity = WalletIdentity {
+            classical: identity.verifying_key(),
+            pq: pq.public_key(),
+        };
         ScopedWallet {
             view_seed,
             spend_seed,
-            identity,
+            identity: HybridSigner::new(Ed25519Signer::from_key(identity), pq),
+            public_identity,
         }
     }
 
-    pub fn public_identity(&self) -> VerifyingKey {
-        self.identity.verifying_key()
+    /// Both public keys, which is what a verifier of this wallet's grants needs.
+    pub fn public_identity(&self) -> WalletIdentity {
+        self.public_identity.clone()
+    }
+
+    /// Both halves of the hybrid signature over one body.
+    ///
+    /// ML-DSA-65 signing draws randomness from the OS. The module already
+    /// treats the OS refusing randomness as fatal --- `new` does, through its
+    /// `RngCore` --- so this does the same rather than teaching every grant to
+    /// return an error nobody can act on.
+    fn sign(&self, body: &[u8; 32]) -> HybridSignature {
+        self.identity
+            .sign_hybrid(SIGNING_PURPOSE, body)
+            .expect("the OS refused randomness for an ML-DSA-65 signature")
     }
 
     /// The full wallet for one scope. This is what spends.
@@ -226,9 +343,33 @@ impl ScopedWallet {
             expires_at,
             signature: None,
         };
-        grant.signature = Some(self.identity.sign(&grant.body()));
+        grant.signature = Some(self.sign(&grant.body()));
         grant
     }
+
+    /// Sign a grant somebody assembled by hand. Only the tests need this, and
+    /// they need it to say what a grant with one honest half looks like.
+    pub fn sign_grant(&self, grant: &ViewingGrant) -> HybridSignature {
+        self.sign(&grant.body())
+    }
+}
+
+/// Both halves against both keys, or nothing.
+///
+/// The hybrid verifier evaluates the Ed25519 half and the ML-DSA-65 half and
+/// accepts only when both hold; a signature with a half missing or the halves
+/// swapped fails its length check before either is looked at. Nothing here
+/// turns a failure of one half into acceptance on the other, because a
+/// signature that passes on one half is precisely the forgery the other half
+/// is there to stop.
+fn check_signature(
+    owner: &WalletIdentity,
+    body: &[u8; 32],
+    signature: &HybridSignature,
+) -> Result<(), &'static str> {
+    HybridVerifier
+        .verify_hybrid(SIGNING_PURPOSE, &owner.encoded(), body, signature)
+        .map_err(|_| "not signed by that wallet --- a hybrid signature is both halves or nothing")
 }
 
 /// Whether this grant is what it says, and still current.
@@ -240,16 +381,14 @@ impl ScopedWallet {
 /// be shown to have gone outside it.
 pub fn check_grant(
     grant: &ViewingGrant,
-    owner: &VerifyingKey,
+    owner: &WalletIdentity,
     now: u64,
 ) -> Result<(), &'static str> {
     let signature = grant
         .signature
         .as_ref()
         .ok_or("an unsigned grant is a key somebody wrote down")?;
-    owner
-        .verify(&grant.body(), signature)
-        .map_err(|_| "not signed by that wallet")?;
+    check_signature(owner, &grant.body(), signature)?;
     if grant.view_key.address_view() != grant.address.view
         || grant.view_key.opening_public() != grant.address.opening_public
     {
@@ -324,7 +463,8 @@ pub struct SpendDisclosure {
     pub grantee: String,
     pub serials: Vec<Scalar>,
     pub issued_at: u64,
-    pub signature: Option<Signature>,
+    /// Both halves, or the disclosure is a list somebody typed.
+    pub signature: Option<HybridSignature>,
 }
 
 impl SpendDisclosure {
@@ -373,14 +513,14 @@ impl ScopedWallet {
             issued_at,
             signature: None,
         };
-        disclosure.signature = Some(self.identity.sign(&disclosure.body()));
+        disclosure.signature = Some(self.sign(&disclosure.body()));
         disclosure
     }
 
     /// Sign a disclosure somebody assembled by hand. Only the tests need this,
     /// and they need it to say what a *dishonest* disclosure looks like.
-    pub fn sign_disclosure(&self, disclosure: &SpendDisclosure) -> Signature {
-        self.identity.sign(&disclosure.body())
+    pub fn sign_disclosure(&self, disclosure: &SpendDisclosure) -> HybridSignature {
+        self.sign(&disclosure.body())
     }
 }
 
@@ -392,16 +532,14 @@ impl ScopedWallet {
 /// only the first is visible here.
 pub fn check_spend_disclosure(
     disclosure: &SpendDisclosure,
-    owner: &VerifyingKey,
+    owner: &WalletIdentity,
     ledger: &NoteLedger,
 ) -> Result<usize, &'static str> {
     let signature = disclosure
         .signature
         .as_ref()
         .ok_or("an unsigned disclosure is a list somebody typed")?;
-    owner
-        .verify(&disclosure.body(), signature)
-        .map_err(|_| "not signed by that wallet")?;
+    check_signature(owner, &disclosure.body(), signature)?;
     let unknown = disclosure
         .serials
         .iter()

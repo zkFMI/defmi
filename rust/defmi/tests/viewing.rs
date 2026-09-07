@@ -137,6 +137,129 @@ fn an_unsigned_grant_is_a_key_somebody_wrote_down() {
 }
 
 #[test]
+fn a_grant_is_signed_twice_and_neither_half_alone_is_enough() {
+    // Ed25519 and ML-DSA-65 over one body, and the verifier insists on both.
+    // A signature that passed on the Ed25519 half alone is the one a quantum
+    // adversary can forge; one that passed on the ML-DSA-65 half alone leans
+    // the whole attribution on a standard younger than the mandate it covers.
+    let mut rng = OsRng;
+    let owner = ScopedWallet::new(&mut rng);
+    let identity = owner.public_identity();
+    let mut grant = owner.grant("s", "an auditor", NOW, 90);
+    let honest = grant.signature.clone().expect("a grant is signed");
+    assert_eq!(honest.classical.len(), 64);
+    assert_eq!(honest.pq.len(), SIGNATURE_BYTES - 64);
+
+    // the Ed25519 half only
+    grant.signature = Some(HybridSignature {
+        classical: honest.classical.clone(),
+        pq: Vec::new(),
+    });
+    assert!(check_grant(&grant, &identity, NOW + 10)
+        .unwrap_err()
+        .contains("both halves"));
+    // the ML-DSA-65 half only
+    grant.signature = Some(HybridSignature {
+        classical: Vec::new(),
+        pq: honest.pq.clone(),
+    });
+    assert!(check_grant(&grant, &identity, NOW + 10).is_err());
+    // the two halves swapped
+    grant.signature = Some(HybridSignature {
+        classical: honest.pq.clone(),
+        pq: honest.classical.clone(),
+    });
+    assert!(check_grant(&grant, &identity, NOW + 10).is_err());
+    // and put back, it verifies again --- the body was never the problem
+    grant.signature = Some(honest);
+    assert_eq!(check_grant(&grant, &identity, NOW + 10), Ok(()));
+}
+
+#[test]
+fn a_grant_with_one_honest_half_is_refused() {
+    // The stronger case: both halves well formed, both over the right body,
+    // and one of them by somebody else. A length check does not catch this;
+    // only verifying each half against its own key does.
+    let mut rng = OsRng;
+    let owner = ScopedWallet::new(&mut rng);
+    let other = ScopedWallet::new(&mut rng);
+    let identity = owner.public_identity();
+    let mut grant = owner.grant("s", "an auditor", NOW, 90);
+    let honest = grant.signature.clone().expect("a grant is signed");
+    let forged = other.sign_grant(&grant);
+
+    grant.signature = Some(HybridSignature {
+        classical: honest.classical.clone(),
+        pq: forged.pq.clone(),
+    });
+    assert!(
+        check_grant(&grant, &identity, NOW + 10).is_err(),
+        "an honest Ed25519 half does not carry a foreign ML-DSA-65 half"
+    );
+    grant.signature = Some(HybridSignature {
+        classical: forged.classical.clone(),
+        pq: honest.pq.clone(),
+    });
+    assert!(
+        check_grant(&grant, &identity, NOW + 10).is_err(),
+        "nor the other way round"
+    );
+    grant.signature = Some(forged);
+    assert!(
+        check_grant(&grant, &identity, NOW + 10).is_err(),
+        "and the forger's own pair is not the owner's"
+    );
+}
+
+#[test]
+fn the_identity_is_two_keys_and_the_signature_is_two_signatures() {
+    // The wire facts, pinned: an identity is 32 + 1,952 bytes and a signature
+    // 64 + 3,309. A grant is small and its signature is not, and anything that
+    // stores one should know that before it does.
+    let mut rng = OsRng;
+    let owner = ScopedWallet::new(&mut rng);
+    let identity = owner.public_identity();
+    assert_eq!(IDENTITY_BYTES, 32 + 1_952);
+    assert_eq!(identity.pq.len(), IDENTITY_BYTES - 32);
+    assert_eq!(identity.encoded().len(), IDENTITY_BYTES);
+    assert_eq!(
+        &identity.encoded()[..32],
+        &identity.classical.as_bytes()[..]
+    );
+    let grant = owner.grant("s", "an auditor", NOW, 90);
+    let signature = grant.signature.as_ref().expect("a grant is signed");
+    assert_eq!(SIGNATURE_BYTES, 64 + 3_309);
+    assert_eq!(
+        signature.encode().expect("well formed").len(),
+        SIGNATURE_BYTES
+    );
+}
+
+#[test]
+fn a_wallet_rebuilt_from_its_seeds_has_the_same_hybrid_identity() {
+    // The ML-DSA-65 half is derived from the Ed25519 seed under its own label,
+    // so a wallet stored before v3 comes back with both keys and there is no
+    // second secret to keep --- and no second secret to lose.
+    let mut rng = OsRng;
+    let identity = ed25519_dalek::SigningKey::generate(&mut rng);
+    let a = ScopedWallet::from_seeds([1u8; 32], [2u8; 32], identity.clone());
+    let b = ScopedWallet::from_seeds([1u8; 32], [2u8; 32], identity.clone());
+    assert_eq!(a.public_identity(), b.public_identity());
+    assert_eq!(a.public_identity().classical, identity.verifying_key());
+    let grant = a.grant("s", "an auditor", NOW, 90);
+    assert_eq!(check_grant(&grant, &b.public_identity(), NOW + 10), Ok(()));
+
+    // a different Ed25519 seed is a different ML-DSA-65 key as well
+    let c = ScopedWallet::from_seeds(
+        [1u8; 32],
+        [2u8; 32],
+        ed25519_dalek::SigningKey::generate(&mut rng),
+    );
+    assert_ne!(c.public_identity().pq, a.public_identity().pq);
+    assert!(check_grant(&grant, &c.public_identity(), NOW + 10).is_err());
+}
+
+#[test]
 fn revocation_is_the_next_scope_and_not_a_message() {
     // The limit most likely to be assumed away: what stops an auditor seeing
     // next quarter is that next quarter has its own address, not a withdrawal.
@@ -285,6 +408,52 @@ fn an_unsigned_or_misattributed_disclosure_is_refused() {
     assert!(check_spend_disclosure(&disclosure, &other.public_identity(), &ledger).is_err());
     disclosure.signature = None;
     assert!(check_spend_disclosure(&disclosure, &owner.public_identity(), &ledger).is_err());
+}
+
+#[test]
+fn a_disclosure_with_one_half_or_one_honest_half_is_refused() {
+    // The same five shapes a grant refuses, because a disclosure is the same
+    // signature over a different body: a half missing, the halves swapped, and
+    // one honest half beside a foreign one.
+    let mut rng = OsRng;
+    let mut ledger = NoteLedger::new(Pedersen::new(b"qomm:defmi:note:v1"), BITS);
+    let owner = ScopedWallet::new(&mut rng);
+    let other = ScopedWallet::new(&mut rng);
+    fill(&mut ledger, &owner, &["s"], 2);
+    let identity = owner.public_identity();
+    let mut disclosure = owner.disclose_spends(&ledger, "s", "an auditor", &asset_key(), NOW);
+    let honest = disclosure.signature.clone().expect("a disclosure is signed");
+    let forged = other.sign_disclosure(&disclosure);
+    for signature in [
+        HybridSignature {
+            classical: honest.classical.clone(),
+            pq: Vec::new(),
+        },
+        HybridSignature {
+            classical: Vec::new(),
+            pq: honest.pq.clone(),
+        },
+        HybridSignature {
+            classical: honest.pq.clone(),
+            pq: honest.classical.clone(),
+        },
+        HybridSignature {
+            classical: honest.classical.clone(),
+            pq: forged.pq.clone(),
+        },
+        HybridSignature {
+            classical: forged.classical.clone(),
+            pq: honest.pq.clone(),
+        },
+    ] {
+        disclosure.signature = Some(signature);
+        assert!(check_spend_disclosure(&disclosure, &identity, &ledger).is_err());
+    }
+    disclosure.signature = Some(honest);
+    assert_eq!(
+        check_spend_disclosure(&disclosure, &identity, &ledger),
+        Ok(0)
+    );
 }
 
 #[test]
