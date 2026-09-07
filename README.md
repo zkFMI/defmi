@@ -14,7 +14,7 @@ Delivery versus payment for committed holdings: two legs that move together or n
 
 ## Deployment target
 
-The deployment target is a dedicated **non-EVM Avalanche L1**. `rust/qomm-avalanche-vm/` contains the Rust state machine, while `avalanche/defmivm/` contains configuration and five-validator acceptance launchers. The full gate covers account-free notes, pre-authorized reserves, seven-party MPC zkPI, atomic multi-RFQ settlement, shared legal-entity caps, restart recovery, and state-root agreement. AvalancheGo remains an external consensus host and launches the Rust VM over RPCChainVM protocol 45.
+The deployment target is a dedicated **non-EVM Avalanche L1**. `rust/defmi-avalanche-vm/` contains the Rust state machine, while `avalanche/defmivm/` contains configuration and five-validator acceptance launchers. The full gate covers account-free notes, pre-authorized reserves, seven-party MPC zkPI, atomic multi-RFQ settlement, shared legal-entity caps, restart recovery, and state-root agreement. AvalancheGo remains an external consensus host and launches the Rust VM over RPCChainVM protocol 45.
 
 
 ## What it does
@@ -109,19 +109,19 @@ tree.
 
 Rust crates:
 
-- `rust/qomm-defmi`
+- `rust/defmi`
 - `rust/qomm-proofs`
-- `rust/qomm-zk`
-- `rust/qomm-zkpi`
-- `rust/qomm-measure`
+- `rust/zkfmi-zk`
+- `rust/zkpi`
+- `rust/zkfmi-measure`
 - `rust/qomm-sim`
 - `rust/qomm-dsl`
 - `rust/qomm-mpc`
 - `rust/qomm-transport`
 - `rust/qomm-audit`
-- `rust/qomm-avalanche-vm`
+- `rust/defmi-avalanche-vm`
 - `rust/zkpi-defmi-sdk`
-- `rust/qomm-harness`
+- `rust/defmi-harness`
 
 `zkpi-defmi-sdk` separates two signed reservation documents. A
 `ReservationAdmission` lets a matching node check the private order's binding
@@ -154,12 +154,12 @@ and settlement must still consume the live hold atomically. The issuing
 service must authenticate the participant and keep its signing key outside
 the application coordinator.
 
-Measurement binaries carried by `qomm-harness`:
+Measurement binaries carried by `defmi-harness`:
 
 - `build_defmi_doc`
 - `build_settlement_contexts`
 - `issue_external_kyb`
-- `qomm_hsm_signer`
+- `zkpi-hsm-signer`
 - `run_avalanche_l1_acceptance`
 - `run_deccp`
 - `run_defmi`

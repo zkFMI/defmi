@@ -232,7 +232,7 @@ fn reblinded_amount(permit: &ReservationPermit, reblinding: &Scalar) -> SdkResul
         .decompress()
         .ok_or_else(|| invalid("canonical reserve commitment is malformed"))?;
     Ok(
-        (canonical + qomm_zk::pedersen::Pedersen::new(b"qomm:defmi:v1").h * reblinding)
+        (canonical + zkfmi_zk::pedersen::Pedersen::new(b"qomm:defmi:v1").h * reblinding)
             .compress()
             .to_bytes(),
     )

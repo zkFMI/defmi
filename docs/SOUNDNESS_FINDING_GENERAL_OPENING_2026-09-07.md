@@ -22,7 +22,7 @@ zkpi・defmi・qomm の 3 リポジトリに複製されており、すべてに
 
 ## The gap
 
-`qomm-zk/src/sigma.rs`: `prove_opening` / `verify_opening` prove knowledge of
+`zkfmi-zk/src/sigma.rs`: `prove_opening` / `verify_opening` prove knowledge of
 `(v, r)` with `C = g·v + h·r`. `prove_zero_opening` / `verify_zero_opening`
 (added as the N3 fix) additionally force `z_value = 0` and verify under a key
 whose value generator is the identity, so they prove `C = h·r`.
@@ -33,8 +33,8 @@ general opening of the residual for any claimed value.
 
 | site | statement intended | file (defmi copy) | also in |
 |---|---|---|---|
-| reconciliation against a register | `Σ C_i − A_a·N` is a multiple of `h` (totals agree) | `qomm-defmi/src/reconcile.rs:133,170` | qomm |
-| bit-decomposition range linkage | `C − Σ 2^j C_j` is a multiple of `h` | `qomm-zk/src/bitrange.rs:129-136,181` | zkpi, qomm |
+| reconciliation against a register | `Σ C_i − A_a·N` is a multiple of `h` (totals agree) | `defmi/src/reconcile.rs:133,170` | qomm |
+| bit-decomposition range linkage | `C − Σ 2^j C_j` is a multiple of `h` | `zkfmi-zk/src/bitrange.rs:129-136,181` | zkpi, qomm |
 | threshold range linkage (zkPI ranges, threshold DvP remainders) | same | `qomm-proofs/src/threshold_range.rs:1019-1044,1098` | zkpi, qomm |
 | quote proof, winner opens to revealed value | `C_winner − g·v` is a multiple of `h` | `qomm-proofs/src/quote_proof.rs:1352-1362` | zkpi, qomm |
 | rule audit, equality step | commitment equality | `qomm-proofs/src/rule_audit.rs:791` | zkpi, qomm |
@@ -62,7 +62,7 @@ step is.
 4. `quote_proof.rs`: `verify_zero_opening` on `shift(C_winner, v)`; prover side
    `prove_zero_opening`.
 5. `rule_audit.rs` `Step::Equality`: zero-opening.
-6. Regenerate the zkPI wire vectors (`qomm-zkpi-verify --vectors`) because the
+6. Regenerate the zkPI wire vectors (`zkpi-verify --vectors`) because the
    linkage transcript changes; note it in `ZKPI_WIRE.md` as a format change.
 7. Apply to all three copies (`zkpi/rust`, `defmi/rust`, `qomm/rust`) and to the
    codex PQC branches, which carry these crates.
@@ -70,7 +70,7 @@ step is.
 
 ## Tests (failing at discovery, passing after the fix)
 
-`qomm-defmi/tests/reconcile_forgery.rs`:
+`defmi/tests/reconcile_forgery.rs`:
 
 ```rust
 //! A prover who knows the openings can make the reconciliation proof accept a
@@ -78,9 +78,9 @@ step is.
 //! proof of the residual rather than a proof that its value part is zero.
 
 use curve25519_dalek::scalar::Scalar;
-use qomm_defmi::reconcile::*;
-use qomm_zk::pedersen::{asset_tag, Pedersen};
-use qomm_zk::sigma::prove_opening;
+use defmi::reconcile::*;
+use zkfmi_zk::pedersen::{asset_tag, Pedersen};
+use zkfmi_zk::sigma::prove_opening;
 use merlin::Transcript;
 use rand::rngs::OsRng;
 
@@ -109,7 +109,7 @@ fn a_dishonest_total_is_refused() {
 }
 ```
 
-`qomm-zk/tests/bitrange_forgery.rs`:
+`zkfmi-zk/tests/bitrange_forgery.rs`:
 
 ```rust
 //! The linkage of a bit-decomposition range proof must pin the residual's
@@ -117,9 +117,9 @@ fn a_dishonest_total_is_refused() {
 //! to a commitment of a value outside the range.
 
 use curve25519_dalek::scalar::Scalar;
-use qomm_zk::bitrange::*;
-use qomm_zk::pedersen::Pedersen;
-use qomm_zk::sigma::prove_opening;
+use zkfmi_zk::bitrange::*;
+use zkfmi_zk::pedersen::Pedersen;
+use zkfmi_zk::sigma::prove_opening;
 use rand::rngs::OsRng;
 
 #[test]
@@ -148,7 +148,7 @@ fn bits_of_another_value_do_not_link() {
     for (j, (b, rb)) in value_bits.iter().zip(&bit_blindings).enumerate() {
         let c = key.commit_u64(*b, rb);
         let mut t = component_transcript(&bit_context(ctx, j).unwrap());
-        bit_proofs.push(qomm_zk::sigma::prove_bit(&key, &mut t, &c, *b == 1, rb, &mut rng));
+        bit_proofs.push(zkfmi_zk::sigma::prove_bit(&key, &mut t, &c, *b == 1, rb, &mut rng));
         bit_commitments.push(c);
         aggregate_blinding += rb * weight;
         weight += weight;

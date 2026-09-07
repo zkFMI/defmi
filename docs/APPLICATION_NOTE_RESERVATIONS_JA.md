@@ -173,15 +173,15 @@ SDK の `ReservationPermit::issue_from_application_reservation` は、参加者�
 
 実行用コードと検証箇所は次のとおり。
 
-- `rust/qomm-defmi/src/application_reservation.rs`: 予約指示、DeKYX との接続、公開用情報、証明全文の検証。
-- `rust/qomm-avalanche-vm/src/execution/application_reservation.rs`: 正本を使った検証と一括更新。
-- `rust/qomm-defmi/src/application_settlement.rs`: 共同署名、zkPI と金額の証明全文、残額暗号文の正本向け変換。
-- `rust/qomm-avalanche-vm/src/execution/application_settlement.rs`: 部分消費・取消・期限切れ解除の一括更新。
+- `rust/defmi/src/application_reservation.rs`: 予約指示、DeKYX との接続、公開用情報、証明全文の検証。
+- `rust/defmi-avalanche-vm/src/execution/application_reservation.rs`: 正本を使った検証と一括更新。
+- `rust/defmi/src/application_settlement.rs`: 共同署名、zkPI と金額の証明全文、残額暗号文の正本向け変換。
+- `rust/defmi-avalanche-vm/src/execution/application_settlement.rs`: 部分消費・取消・期限切れ解除の一括更新。
 - `rust/zkpi-defmi-sdk/src/reservation.rs`: 正本からの予約証明発行。
-- `rust/qomm-defmi/src/avalanche.rs`: 依頼の送信、予約の現在残額の読み取り、確定結果の照合。
-- `rust/qomm-defmi/tests/application_reservation.rs`: 実際に発行した DeKYX 資格証明と暗号証明を使う試験。
-- `rust/qomm-avalanche-vm/src/execution.rs`: 改ざん、枠の不一致、再送、保存・復元を含む VM 試験。
-- `rust/qomm-avalanche-vm/src/execution/tests/application_lifecycle.rs`: 実際の 3-of-7 共同署名と範囲・積の証明による連続部分約定、署名し直した改ざんの拒否、残額の復号、取消・期限切れ・再送の試験。
+- `rust/defmi/src/avalanche.rs`: 依頼の送信、予約の現在残額の読み取り、確定結果の照合。
+- `rust/defmi/tests/application_reservation.rs`: 実際に発行した DeKYX 資格証明と暗号証明を使う試験。
+- `rust/defmi-avalanche-vm/src/execution.rs`: 改ざん、枠の不一致、再送、保存・復元を含む VM 試験。
+- `rust/defmi-avalanche-vm/src/execution/tests/application_lifecycle.rs`: 実際の 3-of-7 共同署名と範囲・積の証明による連続部分約定、署名し直した改ざんの拒否、残額の復号、取消・期限切れ・再送の試験。
 
 SDK の読み取り試験は単体試験であり、実ネットワークの検証には数えない。VM の状態更新試験も、複数運営者による Avalanche L1 の稼働実績とは区別する。
 

@@ -315,7 +315,7 @@ What it buys is the question, and the answer turned out to depend on something t
 
 **The privacy of this construction was sitting in a naming convention.** With one identifier at both venues --- which is what a caller reaches for, and what this benchmark did on its first run --- the adaptor buys nothing between distinct parties: a prepare is a transfer, a transfer says who is paying whom, and joining "this firm pays here" to "this firm is paid there" needs no cryptanalysis. Four times the calls for a number that does not move.
 
-With a handle derived per venue --- `qomm_zkpi::handles`, one seed and an unrelated point at each venue --- the adaptor delivers exactly what it promises: the observer falls to chance, 1/k, and stays there whether the swaps are between distinct parties or the same pair. Nothing about the cryptography changed between those two blocks of the table. Only the names did.
+With a handle derived per venue --- `zkpi::handles`, one seed and an unrelated point at each venue --- the adaptor delivers exactly what it promises: the observer falls to chance, 1/k, and stays there whether the swaps are between distinct parties or the same pair. Nothing about the cryptography changed between those two blocks of the table. Only the names did.
 
 This is worth stating plainly because the property was written down as prose before it was code, and prose does not hold. The design said handles are derived per venue so that one firm is two unrelated points; the library offered no way to derive them, so the obvious integration was the one that loses. It is code now, and the test that goes with it runs the scheme that suggests itself first --- one secret scaled by a public per-venue factor --- and shows it is publicly linkable.
 
@@ -404,7 +404,7 @@ Which is why the schedule is an object rather than a discipline. `Rolling` says 
 
 ## 6.7 Who is allowed to hold a handle
 
-A handle is `A = a.G` and anyone can pick `a`. Nobody's permission is needed to make one, and that is deliberate --- the chain should not have an opinion about who opens an address. What needs permission is being **vetted**, and `rust/qomm-defmi/src/vetting.rs` is where that is recorded.
+A handle is `A = a.G` and anyone can pick `a`. Nobody's permission is needed to make one, and that is deliberate --- the chain should not have an opinion about who opens an address. What needs permission is being **vetted**, and `rust/defmi/src/vetting.rs` is where that is recorded.
 
 **The list holds sealed envelopes, not handles.** An envelope is `C = a.G + r.h`, so `C - A = r.h`: the envelope is the handle plus a blinding nobody else knows, and adding one to the public list reveals a uniformly random point.
 

@@ -8,9 +8,9 @@ description = "Rust application SDK for verifier-complete zkPI and DeFMI workflo
 [dependencies]
 zkfmi-crypto.workspace = true
 qomm-transport.workspace = true
-qomm-defmi.workspace = true
-qomm-zkpi.workspace = true
-qomm-zk.workspace = true
+defmi.workspace = true
+zkpi.workspace = true
+zkfmi-zk.workspace = true
 curve25519-dalek.workspace = true
 ed25519-dalek.workspace = true
 openssl.workspace = true

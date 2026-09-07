@@ -539,13 +539,13 @@ saying because it was a fair thing to suspect. Sweeping it: 2 pairs 1.01, 4 pair
 Three scripts multiplied the standard error by 1.96 at every `n`. At the eight
 seeds the disclosure-harm arms ran, the multiplier the sample earns is 2.365; at
 the five seeds a per-symbol cell runs, 2.776. The quantile is now derived from
-the incomplete beta now in `rust/qomm-measure/src/beta.rs`, checked against the published table
+the incomplete beta now in `rust/zkfmi-measure/src/beta.rs`, checked against the published table
 at eight degrees of freedom (12.706, 4.303, 2.776, 2.365, 2.179, 2.086, 2.064,
 1.980 --- all agreeing to four places).
 
 ### The pre-registration said five repetitions and three were run
 
-`THEORY.md` fixed five repetitions or more in advance. `rust/qomm-harness/src/bin/run_three_times.rs`
+`THEORY.md` fixed five repetitions or more in advance. `rust/defmi-harness/src/bin/run_three_times.rs`
 defaulted to
 `--slots 3` and nobody passed the flag, so three is what the artifact holds. The
 deviation came from a default that disagreed with the plan rather than from a
@@ -559,7 +559,7 @@ tests importing `zk`, which neither export carried, so four tests in one and two
 in the other failed at import --- and the check printed "exports agree on the
 shared modules and carry what they declare" the whole time.
 
-The exporter now creates a minimal `qomm-harness` for each repository, generates
+The exporter now creates a minimal `defmi-harness` for each repository, generates
 that repository's actual Cargo workspace, and runs `cargo test --locked --workspace`
 from an isolated copy of each exported
 tree. This catches missing Rust source, missing crate or bin dependencies,
@@ -1053,7 +1053,7 @@ in section 12 said was needed; now it is code.
 
 The 1.06x per-node figure was arithmetic --- total work divided by the quorum ---
 from one process that held every share and could have reconstructed every
-witness. `rust/qomm-harness/src/bin/run_distributed_assembly.rs` runs one OS process per node, each handed
+witness. `rust/defmi-harness/src/bin/run_distributed_assembly.rs` runs one OS process per node, each handed
 **one share of each value and nothing of anyone else's**, asserted rather than
 described. On host-a: 8.7 ms wall, 3.4 ms of it a node actually waiting, 288
 bytes between them, and the proof verifies.
@@ -1198,7 +1198,7 @@ inventory recovery entirely --- **is in the artifacts and in no sentence of the
 paper**. Writing it correctly makes the result better, not worse.
 
 `probe_budget.json` inherits the confusion: its `attack` field says "own
-two-sided quotes" while `rust/qomm-harness/src/bin/run_probe_budget.rs` runs QOMM and reads the
+two-sided quotes" while `rust/defmi-harness/src/bin/run_probe_budget.rs` runs QOMM and reads the
 aggregate estimator. The 24 and 96 probe figures, and the shipped cap of 60,
 are calibrated on the **generated** market, where the aggregate attack is 3x
 stronger than on Bybit and 8x stronger than on UniswapX. The cap is therefore
@@ -1324,7 +1324,7 @@ quoted pair either: −0.0344 against −0.0053 is 6.5x.
 `main.tex:2265` says the residual "clears the noise" by 4.7x at six hundred
 blocks and is "what the epsilon buys".
 
-`rust/qomm-harness/src/bin/run_block_range_query.rs` fits an ordinary least squares line of distinct
+`rust/defmi-harness/src/bin/run_block_range_query.rs` fits an ordinary least squares line of distinct
 entities on fill count **over the same 400 sampled ranges it then scores**, and
 compares the population standard deviation of those in-sample residuals against
 the *theoretical* one-answer noise standard deviation. The real-identity arm
@@ -1686,7 +1686,7 @@ threshold on a duration, and a value that is freshly randomised per run.
 Closing the aggregate proving API turned up something the API was not the point
 of. The Rust refuses to prove a quote when `n_slots` is smaller than the number
 of makers; the retired implementation never checked; and
-the predecessor of `rust/qomm-harness/src/bin/run_threshold_assembly.rs` set `n_slots=8` whatever `--makers`
+the predecessor of `rust/defmi-harness/src/bin/run_threshold_assembly.rs` set `n_slots=8` whatever `--makers`
 says, while the Makefile asks for `--makers 2 4 8 16`.
 
 So the checked-in `threshold_assembly.json` has a sixteen-maker row measured in
@@ -1950,7 +1950,7 @@ Five of seventy-two frames had not been delivered.
 
 Not the parameters, though those were wrong too and were fixed: the Rust ran
 four slots with a 5 ms link delay where the test now embedded in
-`rust/qomm-harness/src/bin/run_transport.rs` runs eight slots
+`rust/defmi-harness/src/bin/run_transport.rs` runs eight slots
 and none, and three hops at 5 ms against a 10 ms slot is a race the delay
 always wins. Correcting that made it flake instead of fail.
 
@@ -2002,7 +2002,7 @@ the laptop and measurement host; later acceptance counts are recorded in
 `STATUS.md` rather than frozen here.
 
 The three published repositories were rebuilt rather than trimmed. Each now
-ships `qomm-harness` carrying only the binaries that repository names, with a
+ships `defmi-harness` carrying only the binaries that repository names, with a
 generated manifest, because the alternative --- shipping the whole harness
 everywhere --- would put the DeFMI measurements in `zkpi`, and listing the
 runners one by one is exactly what the retired implementation did.
@@ -2027,11 +2027,11 @@ commit that carried it and pinned:
 
 | where | what was pinned |
 |---|---|
-| `qomm-harness/src/measure.rs` | the whole public contract of the locked measurement contract |
-| `qomm-measure/src/hosts.rs` | the retired reader's contract |
+| `defmi-harness/src/measure.rs` | the whole public contract of the locked measurement contract |
+| `zkfmi-measure/src/hosts.rs` | the retired reader's contract |
 | `qomm-mpc/tests/program_parity.rs` | six generated programs, by length and SHA-256 |
 | `qomm-mpc/tests/all_files_parity.rs` | 27 cases: outputs, status, stdout, stderr, file bytes |
-| `qomm-harness/src/bin/zk_bench.rs` | the `platform.machine()` shell-out |
+| `defmi-harness/src/bin/zk_bench.rs` | the `platform.machine()` shell-out |
 
 The first was pinned by hand and checked load-bearing --- one digit changed in
 the recorded JSON makes it fail. The rest were found by asking for others of the

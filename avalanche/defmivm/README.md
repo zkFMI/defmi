@@ -1,6 +1,6 @@
 # DeFMI VM deployment for Avalanche L1
 
-The product VM is implemented in Rust at `rust/qomm-avalanche-vm`. This
+The product VM is implemented in Rust at `rust/defmi-avalanche-vm`. This
 directory contains its Avalanche L1 genesis configuration and reproducible
 acceptance launchers. No QOMM-owned alternative VM implementation is retained.
 
@@ -20,8 +20,8 @@ Taker signature after the quote.
 ```sh
 cd rust
 env -u MP_SPDZ_ROOT cargo build --release \
-  -p qomm-avalanche-vm --bin qomm-avalanche-vm \
-  -p qomm-harness --bin run_avalanche_l1_acceptance
+  -p defmi-avalanche-vm --bin qomm-avalanche-vm \
+  -p defmi-harness --bin run_avalanche_l1_acceptance
 ```
 
 The VM deliberately does not link `libSPDZ`. Stock MP-SPDZ runs as seven

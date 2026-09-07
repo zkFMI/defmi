@@ -36,12 +36,12 @@ pub mod product {
 
 /// Typed payment-instruction primitives used by application adapters.
 pub mod zkpi {
-    pub use qomm_zkpi::*;
+    pub use ::zkpi::*;
 }
 
 /// DeFMI primitives and the Avalanche-backed canonical ledger adapter.
 pub mod defmi {
-    pub use qomm_defmi::*;
+    pub use ::defmi::*;
 }
 
 pub mod prelude {
@@ -60,11 +60,11 @@ pub mod prelude {
         ReservationPermitIssue, ReservationRole,
     };
     pub use crate::{SdkError, SdkResult};
-    pub use qomm_defmi::application_reservation::{
+    pub use ::defmi::application_reservation::{
         ApplicationIdentityEvidence, ApplicationNoteReservation, ApplicationReservationBinding,
         ApplicationReserveMandate, ApplicationReserveScope, VerifiedApplicationNoteReservation,
     };
-    pub use qomm_defmi::application_settlement::{
+    pub use ::defmi::application_settlement::{
         ApplicationNoteFill, ApplicationNoteRelease, ApplicationOpening, ApplicationReleaseReason,
         ApplicationSpendHead,
     };

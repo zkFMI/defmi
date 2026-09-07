@@ -1,0 +1,74 @@
+[package]
+name = "defmi-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+autobins = false
+
+[dependencies]
+zkfmi-crypto = { workspace = true, features = ["test-support"] }
+defmi.workspace = true
+zkfmi-measure.workspace = true
+qomm-proofs.workspace = true
+qomm-sim.workspace = true
+qomm-transport.workspace = true
+zkfmi-zk.workspace = true
+zkpi.workspace = true
+curve25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+merlin.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+hex.workspace = true
+libc.workspace = true
+sha2.workspace = true
+
+[[bin]]
+name = "build_defmi_doc"
+path = "src/bin/build_defmi_doc.rs"
+
+[[bin]]
+name = "build_settlement_contexts"
+path = "src/bin/build_settlement_contexts.rs"
+
+[[bin]]
+name = "issue_external_kyb"
+path = "src/bin/issue_external_kyb.rs"
+
+[[bin]]
+name = "zkpi-hsm-signer"
+path = "src/bin/zkpi-hsm-signer.rs"
+
+[[bin]]
+name = "run_avalanche_l1_acceptance"
+path = "src/bin/run_avalanche_l1_acceptance.rs"
+
+[[bin]]
+name = "run_deccp"
+path = "src/bin/run_deccp.rs"
+
+[[bin]]
+name = "run_defmi"
+path = "src/bin/run_defmi.rs"
+
+[[bin]]
+name = "run_pretrade_reservations"
+path = "src/bin/run_pretrade_reservations.rs"
+
+[[bin]]
+name = "run_reconcile"
+path = "src/bin/run_reconcile.rs"
+
+[[bin]]
+name = "settle_finalized_batch"
+path = "src/bin/settle_finalized_batch.rs"
+
+[[bin]]
+name = "run_viewing"
+path = "src/bin/run_viewing.rs"
+
+[[bin]]
+name = "export_pqc_genesis"
+path = "src/bin/export_pqc_genesis.rs"

@@ -20,7 +20,7 @@
 
 ## 所有場所の変更
 
-DeFMIからAethel / DeCCPの専用reducerとテストを `aethel/crates/aethel-defmi-host` へ移した。`qomm-zkpi` の債権固有proof / wire / testは `aethel/crates/aethel-zkpi` へ移した。DeCCP・DeKYXのAethel adapterも、それぞれAethelが所有する。詳細と新ホストの起動方法は[Aethel側の説明](../../aethel/docs/FOUNDATION_INDEPENDENCE_JA.md)にまとめた。
+DeFMIからAethel / DeCCPの専用reducerとテストを `aethel/crates/aethel-defmi-host` へ移した。`zkpi` の債権固有proof / wire / testは `aethel/crates/aethel-zkpi` へ移した。DeCCP・DeKYXのAethel adapterも、それぞれAethelが所有する。詳細と新ホストの起動方法は[Aethel側の説明](../../aethel/docs/FOUNDATION_INDEPENDENCE_JA.md)にまとめた。
 
 汎用DeFMIのCargo依存に `aethel-core`、`deccp-aethel`、`deccp-core` は残らない。DeCCP coreの清算ロジック自体は独立したライブラリとして利用できる。
 
@@ -38,7 +38,7 @@ DeFMIからAethel / DeCCPの専用reducerとテストを `aethel/crates/aethel-d
 
 6基盤workspaceの `cargo metadata --all-features` に対し、package名・source・manifest・dependencyにAethelが0件であることを機械検査した。Aethel側では12クレート、Clippyと57件のリリーステスト、専用バイナリの起動コマンドを別に検証した。
 
-基盤の受入れコマンドは、DeCCP / DeKYXのworkspace全体、およびDeFMIの `qomm-defmi`・`qomm-avalanche-vm`・`zkpi-defmi-sdk`・`qomm-zkpi` と、QOMM / zkPI各コピーの `qomm-zkpi` に対するformat、Clippy、release testである。VMの境界テストでは、既定ホストの拒否、失敗時rollback、rootへの束縛・保存復元・replay拒否、旧状態と旧RPCの拒否を検査する。
+基盤の受入れコマンドは、DeCCP / DeKYXのworkspace全体、およびDeFMIの `defmi`・`qomm-avalanche-vm`・`zkpi-defmi-sdk`・`zkpi` と、QOMM / zkPI各コピーの `zkpi` に対するformat、Clippy、release testである。VMの境界テストでは、既定ホストの拒否、失敗時rollback、rootへの束縛・保存復元・replay拒否、旧状態と旧RPCの拒否を検査する。
 
 検証ログはAethel作業ツリーの `.artifacts/foundation-isolation-*.log` に保存する。最初の試行は隔離コピーに `ZKPI_WIRE.md` を含め忘れたため、既存wireテストのcompileで停止した。仕様書を追加し、未完了の基盤検証を再開した。結果は同ディレクトリの検証receiptに集約する。
 

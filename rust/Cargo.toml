@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["qomm-defmi","qomm-avalanche-vm","zkpi-defmi-sdk","qomm-harness"]
+members = ["defmi","defmi-avalanche-vm","zkpi-defmi-sdk","defmi-harness"]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,8 +8,8 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
-zkfmi-crypto = { git = "https://github.com/zkFMI/zkfmi-crypto.git", rev = "26ebfe96563a05c3379219f7fdacea137ab5fb4f" }
-qomm-avalanche-vm = { path = "qomm-avalanche-vm" }
+zkfmi-crypto = { git = "https://github.com/zkFMI/zkfmi-crypto.git", rev = "9a183c90b6ee6af17fce26ca4b235bdb543dc0a0" }
+defmi-avalanche-vm = { path = "defmi-avalanche-vm" }
 dekyx-core = { git = "https://github.com/zkFMI/dekyx.git", rev = "09c2c1a7295e8cab592aca6af2f89381c3c110ac" }
 # Audited by Quarkslab (2019, commissioned by Tari Labs, 30 man-days) together
 # with subtle and bulletproofs. 4.1.3 is the first release carrying the fix for
@@ -36,20 +36,20 @@ rand = "0.8"
 regex = "1.13.1"
 openssl = { version = "=0.10.81", features = ["vendored"] }
 libc = "0.2"
-qomm-zk = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-qomm-zkpi = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-qomm-proofs = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-qomm-defmi = { path = "qomm-defmi" }
-qomm-dsl = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-qomm-sim = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-qomm-measure = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-qomm-mpc = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
-qomm-transport = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
+zkfmi-zk = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+zkpi = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+qomm-proofs = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+defmi = { path = "defmi" }
+qomm-dsl = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+qomm-sim = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+zkfmi-measure = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+qomm-mpc = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+qomm-transport = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
 zkpi-defmi-sdk = { path = "zkpi-defmi-sdk" }
-qomm-audit = { git = "https://github.com/zkFMI/zkpi.git", rev = "6228efed75648ac546cd5926797c847deb681dff" }
+qomm-audit = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
 
 # Unpublished integration overlay; see zkfmi-crypto/docs/INTEGRATION_SOURCES.json.
 [patch."https://github.com/zkFMI/defmi.git"]
-qomm-defmi = { path = "qomm-defmi" }
+defmi = { path = "defmi" }
 zkpi-defmi-sdk = { path = "zkpi-defmi-sdk" }
-qomm-avalanche-vm = { path = "qomm-avalanche-vm" }
+defmi-avalanche-vm = { path = "defmi-avalanche-vm" }

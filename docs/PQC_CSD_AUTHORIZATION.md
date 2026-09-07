@@ -44,7 +44,7 @@ must match its requested version and key ID and verify against the corresponding
 pinned public key. The response limit is 8 KiB; process timeouts and request
 limits apply to both algorithms.
 
-`qomm_hsm_signer --initialize` generates two independent keys in the encrypted
+`zkpi-hsm-signer --initialize` generates two independent keys in the encrypted
 key store and returns only their IDs and public keys. On each request the helper
 restores the selected key and checks its current lifecycle state. The caller
 never receives a private key. This helper is a software acceptance emulator and
@@ -59,9 +59,9 @@ Production signer APIs require an independently provisioned PQ signer/key handle
 
 Run on the repository's required remote Rust runner:
 
-- `cargo test -p qomm-defmi --features avalanche --test note_chain`
+- `cargo test -p defmi --features avalanche --test note_chain`
 - The VM CSD registration and note issuance test in `qomm-avalanche-vm`.
-- `cargo test -p qomm-harness --test csd_external_signer`
+- `cargo test -p defmi-harness --test csd_external_signer`
 - `cargo test -p qomm-transport --test external_signer`
 
 The external process test initializes a real encrypted store, restores and signs

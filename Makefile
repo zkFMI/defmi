@@ -3,7 +3,7 @@
 REMOTE_TEST_HOST ?= softbank-l40s
 REMOTE_TEST_SSH_OPTIONS ?= -o BatchMode=yes
 REMOTE_TEST_IMAGE ?= qomm-test:rust-1.97.1-mpspdz-9d809599
-REMOTE_TEST_COMMAND ?= cargo test --locked --release -j16 -p qomm-defmi -p qomm-avalanche-vm -p zkpi-defmi-sdk
+REMOTE_TEST_COMMAND ?= cargo test --locked --release -j16 -p defmi -p defmi-avalanche-vm -p zkpi-defmi-sdk
 REMOTE_TEST_EXPORTS ?=
 
 .PHONY: remote-test

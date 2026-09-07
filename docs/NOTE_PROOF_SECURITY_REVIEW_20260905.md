@@ -13,7 +13,7 @@
 | N3 | 最優先 | 線形関係の検証で「ある値への開示情報を知る」ことしか確認せず、指定した定数との一致を強制していない。支出残差の検証も同型。 | 1への正当な開示証明を、0であるべき残差の検証器が受け入れた。 |
 | N4 | 高 | 支出の所属証明が出力先の保有記録全体を拘束していない。発行承認も二つの値を足したものだけに署名する補助経路がある。 | コード上の欠落。修正では出力鍵・暗号化開示情報まで拘束し、出力先差替え・発行承認使い回しの拒否試験を追加する。 |
 
-再現は Softbank の Docker 内で実行した。`qomm-defmi/tests/note_security.rs`
+再現は Softbank の Docker 内で実行した。`defmi/tests/note_security.rs`
 の3件すべてが、期待する拒否・非一致にならず失敗した。
 記録は `/tmp/defmi-note-security-baseline-20260905.log`。
 これは意図的に拒否を要求した回帰試験であり、「無視してよい既存テスト失敗」ではない。
@@ -44,8 +44,8 @@
 - 使用不可の入力候補は、攻撃者が秘密鍵へ足せる既知の数ではなく、離散対数の未知な点へ置き換える。
 
 Softbank上で607件のテスト、全対象の警告を許さないClippy、整形、
-`qomm-defmi --no-default-features` 検査が成功した。対象は `qomm-defmi`、
-`qomm-zk`、`qomm-proofs`、`qomm-avalanche-vm`、`zkpi-defmi-sdk`、`qomm-transport`。
+`defmi --no-default-features` 検査が成功した。対象は `defmi`、
+`zkfmi-zk`、`qomm-proofs`、`qomm-avalanche-vm`、`zkpi-defmi-sdk`、`qomm-transport`。
 新しい7件の支出拒否試験と、旧保存状態の読込み拒否試験を含む。
 記録は `/tmp/defmi-note-security-full-gate-retry-20260905.log`、SHA-256
 `d1b81d9551494e4b0064fd3e7078febf823d8d74ea490cffa09be905ff69490b`。

@@ -1,5 +1,5 @@
 use crate::{SdkError, SdkResult};
-use qomm_defmi::facility::SettlementReceipt;
+use defmi::facility::SettlementReceipt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 

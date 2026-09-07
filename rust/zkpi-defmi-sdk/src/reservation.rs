@@ -9,9 +9,9 @@
 use crate::application::ApplicationManifest;
 use crate::{SdkError, SdkResult};
 use curve25519_dalek::ristretto::CompressedRistretto;
-use qomm_defmi::application_reservation::{ApplicationReserveMandate, ApplicationReserveScope};
-use qomm_defmi::avalanche::{AvalancheClient, CanonicalCreditHold, CanonicalNoteReservation};
-use qomm_defmi::facility::{
+use defmi::application_reservation::{ApplicationReserveMandate, ApplicationReserveScope};
+use defmi::avalanche::{AvalancheClient, CanonicalCreditHold, CanonicalNoteReservation};
+use defmi::facility::{
     CreditFacilityTransition, CreditTransitionKind, ReservationAuthorization,
     ReservationRole as DefmiReservationRole,
 };
@@ -563,7 +563,7 @@ mod tests {
     use crate::application::oclob_manifest_v1;
     use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
     use curve25519_dalek::scalar::Scalar;
-    use qomm_defmi::facility::{CreditFacilityTransition, ReservationAuthorization};
+    use defmi::facility::{CreditFacilityTransition, ReservationAuthorization};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn id(value: u8) -> [u8; 32] {
@@ -867,7 +867,7 @@ mod tests {
     // Unit-level readback fixture. Live validator acceptance is a separate gate.
     struct ReadbackClient {
         note: CanonicalNoteReservation,
-        application: Option<qomm_defmi::avalanche::CanonicalApplicationReservation>,
+        application: Option<defmi::avalanche::CanonicalApplicationReservation>,
         hold: CanonicalCreditHold,
         after_root: [u8; 32],
         reads: AtomicUsize,
@@ -902,7 +902,7 @@ mod tests {
         fn application_reservation_snapshot(
             &self,
             hold_id: [u8; 32],
-        ) -> Result<qomm_defmi::avalanche::CanonicalApplicationReservation, String> {
+        ) -> Result<defmi::avalanche::CanonicalApplicationReservation, String> {
             self.application
                 .as_ref()
                 .filter(|reservation| !self.fail_note && reservation.binding.hold_id == hold_id)
@@ -936,8 +936,8 @@ mod tests {
 
         fn issue_asset(
             &self,
-            _: &qomm_defmi::facility::AssetDefinition,
-            _: &qomm_defmi::facility::QuorumApproval,
+            _: &defmi::facility::AssetDefinition,
+            _: &defmi::facility::QuorumApproval,
             _: [u8; 32],
         ) -> Result<String, String> {
             panic!("permit issuance must not mutate the ledger")
@@ -945,8 +945,8 @@ mod tests {
 
         fn issue_account(
             &self,
-            _: &qomm_defmi::facility::AccountOpening,
-            _: &qomm_defmi::facility::QuorumApproval,
+            _: &defmi::facility::AccountOpening,
+            _: &defmi::facility::QuorumApproval,
             _: [u8; 32],
         ) -> Result<String, String> {
             panic!("permit issuance must not create an account")
@@ -954,8 +954,8 @@ mod tests {
 
         fn issue_settlement(
             &self,
-            _: &qomm_defmi::facility::SettlementOrder,
-            _: &qomm_defmi::facility::QuorumApproval,
+            _: &defmi::facility::SettlementOrder,
+            _: &defmi::facility::QuorumApproval,
             _: [u8; 32],
         ) -> Result<String, String> {
             panic!("permit issuance must not settle a trade")
@@ -966,14 +966,14 @@ mod tests {
             _: &str,
             _: std::time::Duration,
             _: std::time::Duration,
-        ) -> Result<qomm_defmi::avalanche::AcceptedTransition, String> {
+        ) -> Result<defmi::avalanche::AcceptedTransition, String> {
             panic!("permit issuance reads already accepted state")
         }
     }
 
     #[test]
     fn issues_application_permits_only_for_the_signed_finalized_note_hold() {
-        use qomm_defmi::avalanche::CanonicalApplicationReservation;
+        use defmi::avalanche::CanonicalApplicationReservation;
         let (legacy, transition, _) = canonical_issue_inputs();
         let application = oclob_manifest_v1();
         let scope = ApplicationReserveScope {

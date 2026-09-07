@@ -96,10 +96,10 @@ cd "$qomm_root/rust"
 # warnings even though the external engine path is the one that actually ran.
 env -u MP_SPDZ_ROOT cargo build --release \
   -p qomm-transport --bin seven_node_cluster --bin qomm_node_party \
-  -p qomm-avalanche-vm --bin qomm-avalanche-vm \
-  -p qomm-harness --bin run_pretrade_reservations \
+  -p defmi-avalanche-vm --bin qomm-avalanche-vm \
+  -p defmi-harness --bin run_pretrade_reservations \
   --bin build_settlement_contexts --bin settle_finalized_batch \
-  --bin issue_external_kyb --bin qomm_hsm_signer
+  --bin issue_external_kyb --bin zkpi-hsm-signer
 
 seven_node="$qomm_root/rust/target/release/seven_node_cluster"
 node_party="$qomm_root/rust/target/release/qomm_node_party"
@@ -107,7 +107,7 @@ pretrade="$qomm_root/rust/target/release/run_pretrade_reservations"
 build_contexts="$qomm_root/rust/target/release/build_settlement_contexts"
 settle="$qomm_root/rust/target/release/settle_finalized_batch"
 issue_external_kyb="$qomm_root/rust/target/release/issue_external_kyb"
-qomm_hsm_signer="$qomm_root/rust/target/release/qomm_hsm_signer"
+zkpi-hsm-signer="$qomm_root/rust/target/release/zkpi-hsm-signer"
 
 if [[ ! -x "$rust_vm" ]]; then
   echo "the QOMM Rust VM build did not produce $rust_vm" >&2
@@ -125,7 +125,7 @@ fi
 # final receipt remains explicit that no physical hardware HSM was available.
 openssl rand -hex 32 >"$csd_signer_pin"
 chmod 0600 "$csd_signer_pin"
-"$qomm_hsm_signer" --initialize --store "$csd_signer_store" \
+"$zkpi-hsm-signer" --initialize --store "$csd_signer_store" \
   --pin-file "$csd_signer_pin" --purpose defmi-csd-issuance \
   >"$csd_signer_metadata"
 csd_signer_key_id="$(jq -er '.key_id' "$csd_signer_metadata")"
@@ -208,7 +208,7 @@ fi
   --report-out "$pretrade_report" --avalanche-endpoint "$primary_endpoint" \
   --avalanche-domain "$chain_id" --proof-party-bin "$seven_node" \
   --proof-root "$reserve_proof_root" --account-free-notes \
-  --csd-signer-bin "$qomm_hsm_signer" --csd-signer-store "$csd_signer_store" \
+  --csd-signer-bin "$zkpi-hsm-signer" --csd-signer-store "$csd_signer_store" \
   --csd-signer-pin-file "$csd_signer_pin" --csd-signer-key-id "$csd_signer_key_id" \
   --csd-signer-public "$csd_signer_public" \
   --csd-signer-pq-key-id "$(jq -r .pq_key_id "$csd_signer_metadata")" \

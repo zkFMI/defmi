@@ -365,7 +365,7 @@ left is a division of labour:
 | security proof | UC, 68 pages | none |
 | input vs computing parties | **not separated** (stated in the paper) | separated |
 | binary circuits | open problem (their appendix A) | not needed |
-| implementation | **none** | `rust/qomm-harness/src/voleith.rs` |
+| implementation | **none** | `rust/defmi-harness/src/voleith.rs` |
 | efficiency | asymptotic estimate, `O(n·λ²·|C|)` online | measured |
 
 **They report no benchmarks.** Appendix C is an estimate --- "we estimate the
@@ -409,7 +409,7 @@ and then settled in the clear has leaked everything the computation protected**:
 the asset, the size, the counterparties and, by difference, the policy. The
 audit trail is intact and the privacy is gone.
 
-**zkPI** (`rust/qomm-zkpi/`) makes the payment instruction itself a commitment plus a
+**zkPI** (`rust/zkpi/`) makes the payment instruction itself a commitment plus a
 proof. A settlement venue checks an instruction is well-formed, authorised and
 unspent, and learns none of the asset, the amount, the price, or which entity
 holds it --- only that *some* enrolled entity holds an instruction whose asset
@@ -521,7 +521,7 @@ bank's existing pipeline.
 - **The staleness measurement has selection bias.** UniswapX fills are the trades
   that happened; the ones that did not are the interesting ones.
 - **The VOLE-in-the-Head arm is one linear statement**, not the MPC protocol of
-  2026/337, and the linear-code instantiation is arithmetic in `rust/qomm-harness/src/bin/run_voleith.rs`
+  2026/337, and the linear-code instantiation is arithmetic in `rust/defmi-harness/src/bin/run_voleith.rs`
   rather than code. It also shrinks the proof 2.4x and not fourfold: a general
   code is homomorphic only across blocks, so an inner product with a distinct
   coefficient per value needs the paper's degree-2 protocol and its 2x
@@ -603,7 +603,7 @@ masked product, names who sent them and does not stop; three refuses past the
 capacity, and seven refuses to start rather than pretending. Measured on two
 machines with two independent builds
 (`artifacts/robust_atlas.json`, `robust_atlas_host_c.json`), and the decoder is
-in Rust as `qomm-zk/src/shamir.rs` beside the commitments, because the binding
+in Rust as `zkfmi-zk/src/shamir.rs` beside the commitments, because the binding
 chain now deals over the same field.
 
 What is *not* robust is stated in the same place: the double sharings, the

@@ -63,8 +63,8 @@ cd ..
 ```sh
 cd rust
 env -u MP_SPDZ_ROOT cargo build -j 4 --release --locked \
-  -p qomm-avalanche-vm --bin qomm-avalanche-vm \
-  -p qomm-harness --bin run_avalanche_l1_acceptance
+  -p defmi-avalanche-vm --bin qomm-avalanche-vm \
+  -p defmi-harness --bin run_avalanche_l1_acceptance
 cd ..
 ```
 
@@ -220,9 +220,9 @@ note、専用Rust VM、Avalanche L1、地域ごとの制度を記述するDSL、
 | 合意層 | AvalancheGo | 検証者間のblock合意、network運用 |
 | VM境界 | avalanche-rs由来のRPCChainVM | AvalancheGoと別processのRust VMを接続 |
 | 実行層 | `qomm-avalanche-vm` | transaction検証、決定的実行、state root、再起動復元 |
-| 金融状態機械 | `qomm-defmi` | 資産、note、予約、DvP/PvP、枠、担保、照合 |
-| 配備設計 | `qomm-defmi-dsl` | FMI構造、運営者、台帳、link、不変条件をcompile・検証。現時点では統合開発ソースにあり、standalone公開レポには未収録 |
-| 指図 | `qomm-zkpi` | 公開文へ束縛された一回限りの秘密決済指図 |
+| 金融状態機械 | `defmi` | 資産、note、予約、DvP/PvP、枠、担保、照合 |
+| 配備設計 | `defmi-dsl` | FMI構造、運営者、台帳、link、不変条件をcompile・検証。現時点では統合開発ソースにあり、standalone公開レポには未収録 |
+| 指図 | `zkpi` | 公開文へ束縛された一回限りの秘密決済指図 |
 | アプリ接続 | `zkpi-defmi-sdk` | QOMM/OCLOB等の実行と正本readbackを一つの受領証へ結ぶ |
 
 EVMは使わない。AvalancheGoをRustへ移植したものでもない。公式AvalancheGoが各検証者上で動き、
@@ -450,12 +450,12 @@ migrationする場合は、旧root、新root、変換program digest、全件保�
 
 ## 20. DSLで地域別FMIを定義する
 
-注意: 現在の `shukob/defmi` standalone公開配布には `qomm-defmi-dsl` と
+注意: 現在の `shukob/defmi` standalone公開配布には `defmi-dsl` と
 `defmi_schemas/` がまだ含まれない。この章を実行するには統合開発ソースが必要である。
 公開cloneだけで完結するPoCでは、この章を合格済みと報告しない。DSLとschemaを公開配布へ
 収録し、lockfileと受入試験を同じcommitで公開することが、この段階の配布上の前提である。
 
-`qomm-defmi-dsl` は、法域名を付けただけの設定生成器ではない。運営主体、権利の正本、中央銀行
+`defmi-dsl` は、法域名を付けただけの設定生成器ではない。運営主体、権利の正本、中央銀行
 負債、証券title ledger、gross/net、DvP link、安全不変条件を記述し、矛盾する構成をcompile時に拒否する。
 
 現在のschema例は、日本国債、日本の社債、米国株式、米国債を対象に、次のような構造を
