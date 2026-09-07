@@ -36,17 +36,17 @@ rand = "0.8"
 regex = "1.13.1"
 openssl = { version = "=0.10.81", features = ["vendored"] }
 libc = "0.2"
-zkfmi-zk = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
-zkpi = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
-qomm-proofs = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+zkfmi-zk = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
+zkpi = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
+qomm-proofs = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
 defmi = { path = "defmi" }
-qomm-dsl = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
-qomm-sim = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
-zkfmi-measure = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
-qomm-mpc = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
-qomm-transport = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+qomm-dsl = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
+qomm-sim = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
+zkfmi-measure = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
+qomm-mpc = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
+qomm-transport = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
 zkpi-defmi-sdk = { path = "zkpi-defmi-sdk" }
-qomm-audit = { git = "https://github.com/zkFMI/zkpi.git", rev = "38baa1a86bedd2b47d7439c57412d25a20f9c405" }
+qomm-audit = { git = "https://github.com/zkFMI/zkpi.git", rev = "1366f4c0c20924c5c2665a13fe0901de3a4f76f8" }
 
 # Unpublished integration overlay; see zkfmi-crypto/docs/INTEGRATION_SOURCES.json.
 [patch."https://github.com/zkFMI/defmi.git"]
