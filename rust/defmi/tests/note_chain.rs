@@ -2,7 +2,6 @@
 
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{Signature, SigningKey};
 use defmi::note_chain::{
     escrow_claim_serial, materialize_claim, note_claim_recipient_commitment, note_ring_root,
     verify_claim_materialization, ClaimAuthorizationCommitment, CsdIssuerDefinition,
@@ -10,13 +9,14 @@ use defmi::note_chain::{
     NoteOutput, NoteSettlementOrder, NoteSpend,
 };
 use defmi::notes::{NoteLedger, Wallet};
-use qomm_proofs::opening_envelope::{
-    encrypt_opening_share, opening_context, EncryptedOpeningShare, OpeningEnvelope,
-};
-use qomm_proofs::threshold_sigma::deal;
-use zkfmi_zk::pedersen::Pedersen;
+use ed25519_dalek::{Signature, SigningKey};
 use rand_core::OsRng;
 use sha2::{Digest, Sha256};
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi_proofs::opening_envelope::{
+    encrypt_opening_share, opening_context, EncryptedOpeningShare, OpeningEnvelope,
+};
+use zkpi_proofs::threshold_sigma::deal;
 
 fn id(label: &str) -> [u8; 32] {
     Sha256::digest(label.as_bytes()).into()
@@ -100,7 +100,7 @@ fn note_issuance_must_be_signed_during_csd_validity() {
         one_time: id("csd-validity-one-time"),
         value_commitment: id("csd-validity-value"),
         ephemeral: id("csd-validity-ephemeral"),
-        encrypted_opening: qomm_transport::standing_pool::NoteOpening::Recipient(
+        encrypted_opening: zkpi_committee::standing_pool::NoteOpening::Recipient(
             zkfmi_crypto::test_support::note_envelope(),
         ),
         lock_id: [0; 32],
@@ -192,7 +192,7 @@ fn account_free_consensus_timestamps_fit_sqlites_signed_integer_domain() {
         one_time: id("timestamp-note-one-time"),
         value_commitment: id("timestamp-note-value"),
         ephemeral: id("timestamp-note-ephemeral"),
-        encrypted_opening: qomm_transport::standing_pool::NoteOpening::Recipient(
+        encrypted_opening: zkpi_committee::standing_pool::NoteOpening::Recipient(
             zkfmi_crypto::test_support::note_envelope(),
         ),
         lock_id: [0; 32],
@@ -306,7 +306,7 @@ fn note_consolidation_preserves_the_exact_commitment_sum() {
             one_time: id(&format!("{label}:one-time")),
             value_commitment,
             ephemeral: id(&format!("{label}:ephemeral")),
-            encrypted_opening: qomm_transport::standing_pool::NoteOpening::Recipient(
+            encrypted_opening: zkpi_committee::standing_pool::NoteOpening::Recipient(
                 zkfmi_crypto::test_support::note_envelope(),
             ),
             lock_id: [0; 32],
@@ -383,7 +383,7 @@ fn account_free_note_statements_match_the_pinned_consensus_vectors() {
         one_time: id("note-compat-one-time"),
         value_commitment: id("note-compat-value"),
         ephemeral: id("note-compat-ephemeral"),
-        encrypted_opening: qomm_transport::standing_pool::NoteOpening::Recipient(
+        encrypted_opening: zkpi_committee::standing_pool::NoteOpening::Recipient(
             zkfmi_crypto::test_support::note_envelope(),
         ),
         lock_id: [0; 32],

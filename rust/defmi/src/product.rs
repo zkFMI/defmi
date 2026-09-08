@@ -8,16 +8,16 @@
 //! them.
 
 use curve25519_dalek::ristretto::CompressedRistretto;
-use qomm_proofs::kyb::{KybPresentation, SignedCohortRegistry};
-use qomm_proofs::price_limit::{
-    verify as verify_price_limit, PriceLimitDirection, PriceLimitProof,
-};
-use qomm_transport::mandate::{MakerPolicyMandate, TakerExecutionMandate};
-use qomm_transport::order::OrderedAdmission;
-use zkpi::typed::TypedInstruction;
-use zkpi::Venue;
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
+use zkpi::typed::TypedInstruction;
+use zkpi::Venue;
+use zkpi_committee::mandate::{MakerPolicyMandate, TakerExecutionMandate};
+use zkpi_committee::order::OrderedAdmission;
+use zkpi_proofs::kyb::{KybPresentation, SignedCohortRegistry};
+use zkpi_proofs::price_limit::{
+    verify as verify_price_limit, PriceLimitDirection, PriceLimitProof,
+};
 
 use crate::asset_link::AssetLinkProof;
 use crate::facility::{
@@ -51,7 +51,7 @@ pub fn escrow_transfer_context(hold_id: &[u8; 32]) -> Vec<u8> {
 pub struct IdentityEvidence<'a> {
     pub presentation: &'a KybPresentation,
     pub registry: &'a SignedCohortRegistry,
-    pub trusted_issuer: &'a qomm_proofs::kyb::KybIssuerKey,
+    pub trusted_issuer: &'a zkpi_proofs::kyb::KybIssuerKey,
     pub scope: &'a [u8],
     pub context: &'a [u8],
     pub required_cohort: &'a str,
@@ -73,7 +73,7 @@ pub struct ThresholdProductSettlement<'a> {
     pub taker_identity: &'a IdentityEvidence<'a>,
 }
 
-fn direction(value: qomm_transport::mandate::Direction) -> u8 {
+fn direction(value: zkpi_committee::mandate::Direction) -> u8 {
     value as u8
 }
 
@@ -412,8 +412,7 @@ pub fn verify_note_reservation(
         _ => {}
     }
 
-    let typed_digest: [u8; 32] =
-        Sha256::digest(zkpi::typed_wire::encode(typed_instruction)).into();
+    let typed_digest: [u8; 32] = Sha256::digest(zkpi::typed_wire::encode(typed_instruction)).into();
     if typed_digest != authorization.typed_reserve_digest
         || typed_instruction.payment.nullifier() != authorization.reserve_nullifier
         || !crate::asset_link::verify(
@@ -650,8 +649,8 @@ pub(crate) fn verify_settlement_authority(
             .decompress()
             .ok_or_else(|| "Taker limit price is not a canonical commitment".to_string())?;
     let price_direction = match taker_mandate.direction {
-        qomm_transport::mandate::Direction::TakerBuys => PriceLimitDirection::MaximumBuyPrice,
-        qomm_transport::mandate::Direction::TakerSells => PriceLimitDirection::MinimumSellPrice,
+        zkpi_committee::mandate::Direction::TakerBuys => PriceLimitDirection::MaximumBuyPrice,
+        zkpi_committee::mandate::Direction::TakerSells => PriceLimitDirection::MinimumSellPrice,
     };
     verify_price_limit(
         &typed_venue.key,
@@ -763,8 +762,8 @@ pub fn verify_note_settlement_authority(
             .decompress()
             .ok_or_else(|| "Taker limit price is not a canonical commitment".to_string())?;
     let price_direction = match taker_mandate.direction {
-        qomm_transport::mandate::Direction::TakerBuys => PriceLimitDirection::MaximumBuyPrice,
-        qomm_transport::mandate::Direction::TakerSells => PriceLimitDirection::MinimumSellPrice,
+        zkpi_committee::mandate::Direction::TakerBuys => PriceLimitDirection::MaximumBuyPrice,
+        zkpi_committee::mandate::Direction::TakerSells => PriceLimitDirection::MinimumSellPrice,
     };
     verify_price_limit(
         &typed_venue.key,

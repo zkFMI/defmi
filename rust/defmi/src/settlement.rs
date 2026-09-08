@@ -16,28 +16,28 @@
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
-use qomm_proofs::threshold_gadgets::{
-    joint_prove_product_from_contributions, ProductNodeContribution,
-};
-use qomm_proofs::threshold_range::{
-    joint_prove_range_from_contributions, verify_threshold_range, NodeValueShares,
-    ThresholdRangeProof,
-};
-use qomm_proofs::threshold_sigma::PartyId;
-use qomm_transport::dvp_issuer::{
-    DvpProofs, DVP_CASH_REMAINDER_CONTEXT, DVP_PRODUCT_CONTEXT, DVP_SECURITIES_REMAINDER_CONTEXT,
-};
-use qomm_transport::standing_pool::{
-    account_of as shared_account_of, threshold_dvp_package_digest, ThresholdDvpSides,
-};
+use rand_core::{CryptoRng, RngCore};
+use sha2::{Digest, Sha256};
 use zkfmi_zk::pedersen::Pedersen;
 use zkfmi_zk::sigma::{
     product_terms, prove_product, prove_same_value, same_value_terms, verify_product, Batch,
     CrossGeneratorProof, ProductProof,
 };
 use zkpi::{Instruction, Venue};
-use rand_core::{CryptoRng, RngCore};
-use sha2::{Digest, Sha256};
+use zkpi_committee::dvp_issuer::{
+    DvpProofs, DVP_CASH_REMAINDER_CONTEXT, DVP_PRODUCT_CONTEXT, DVP_SECURITIES_REMAINDER_CONTEXT,
+};
+use zkpi_committee::standing_pool::{
+    account_of as shared_account_of, threshold_dvp_package_digest, ThresholdDvpSides,
+};
+use zkpi_proofs::threshold_gadgets::{
+    joint_prove_product_from_contributions, ProductNodeContribution,
+};
+use zkpi_proofs::threshold_range::{
+    joint_prove_range_from_contributions, verify_threshold_range, NodeValueShares,
+    ThresholdRangeProof,
+};
+use zkpi_proofs::threshold_sigma::PartyId;
 
 use crate::assets::BlindedTag;
 use crate::ledger::{Ledger, Transfer};

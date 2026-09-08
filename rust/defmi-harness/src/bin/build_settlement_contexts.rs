@@ -2,17 +2,17 @@
 
 use curve25519_dalek::ristretto::CompressedRistretto;
 use defmi::facility::reserve_handle_for;
-use qomm_transport::application_crypto::VerifyingKey;
-use qomm_transport::mandate::Direction;
-use qomm_transport::pretrade_authority::{
-    read_ack_private, read_authority_private, ReservationParty,
-};
-use qomm_transport::settlement_finalization::write_private as write_contexts;
-use qomm_transport::settlement_handoff::read_private as read_handoff;
-use zkpi::typed::{AuthorizationScope, ExecutionContext, OperationKind, TradeDirection};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use zkpi::typed::{AuthorizationScope, ExecutionContext, OperationKind, TradeDirection};
+use zkpi_committee::application_crypto::VerifyingKey;
+use zkpi_committee::mandate::Direction;
+use zkpi_committee::pretrade_authority::{
+    read_ack_private, read_authority_private, ReservationParty,
+};
+use zkpi_committee::settlement_finalization::write_private as write_contexts;
+use zkpi_committee::settlement_handoff::read_private as read_handoff;
 
 fn hash(parts: &[&[u8]]) -> [u8; 32] {
     let mut digest = Sha256::new();
@@ -24,11 +24,11 @@ fn hash(parts: &[&[u8]]) -> [u8; 32] {
 }
 
 // Public acceptance fixture, separate from CSD, guarantor and facility receipt keys.
-fn acknowledgement_key() -> qomm_transport::application_crypto::SigningKey {
+fn acknowledgement_key() -> zkpi_committee::application_crypto::SigningKey {
     let mut seed = [0; 64];
     seed[..32].copy_from_slice(&Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:ED:v2"));
     seed[32..].copy_from_slice(&Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:PQ:v2"));
-    qomm_transport::application_crypto::SigningKey::from_bytes(&seed)
+    zkpi_committee::application_crypto::SigningKey::from_bytes(&seed)
 }
 
 fn receipt_public() -> VerifyingKey {

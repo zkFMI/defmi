@@ -34,9 +34,7 @@ fn keys() -> BTreeMap<String, defmi::governance::GovernanceSigner> {
         .collect()
 }
 
-fn authorizer(
-    keys: &BTreeMap<String, defmi::governance::GovernanceSigner>,
-) -> QuorumAuthorizer {
+fn authorizer(keys: &BTreeMap<String, defmi::governance::GovernanceSigner>) -> QuorumAuthorizer {
     QuorumAuthorizer::new(
         keys.iter()
             .map(|(node, key)| (node.clone(), key.verifying_key()))
@@ -415,7 +413,7 @@ fn rpc_reads_one_root_consistent_account_free_authoring_snapshot() {
         one_time: h("one-time"),
         value_commitment: h("value"),
         ephemeral: h("ephemeral"),
-        encrypted_opening: qomm_transport::standing_pool::NoteOpening::Recipient(
+        encrypted_opening: zkpi_committee::standing_pool::NoteOpening::Recipient(
             zkfmi_crypto::test_support::note_envelope(),
         ),
         lock_id: [0; 32],

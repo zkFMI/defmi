@@ -24,17 +24,17 @@ use crate::notes::{Address, Note, NoteLedger, SpendProof};
 use crate::settlement::ThresholdDvpPackage;
 use crate::MAX_UNIX_TIME;
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
-use qomm_proofs::opening_envelope::{opening_context, OpeningEnvelope};
-use qomm_transport::standing_pool::{
-    standing_note_pool_delegation_digest as shared_standing_note_pool_delegation_digest,
-    standing_note_pool_id as shared_standing_note_pool_id, StandingPoolAllocationBinding,
-    StandingPoolMakerAuthorization, StandingPoolNote,
-};
 use zkfmi_zk::pedersen::Pedersen;
 use zkpi::{
     frost,
     typed::{OperationKind, TradeDirection, TypedInstruction},
 };
+use zkpi_committee::standing_pool::{
+    standing_note_pool_delegation_digest as shared_standing_note_pool_delegation_digest,
+    standing_note_pool_id as shared_standing_note_pool_id, StandingPoolAllocationBinding,
+    StandingPoolMakerAuthorization, StandingPoolNote,
+};
+use zkpi_proofs::opening_envelope::{opening_context, OpeningEnvelope};
 
 const NOTE_OUTPUT_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-OUTPUT:v2";
 const NOTE_ISSUE_DOMAIN: &[u8] = b"QOMM:DEFMI:NOTE-ISSUE:v2";
@@ -213,7 +213,7 @@ pub struct NoteOutput {
     pub one_time: [u8; 32],
     pub value_commitment: [u8; 32],
     pub ephemeral: [u8; 32],
-    pub encrypted_opening: qomm_transport::standing_pool::NoteOpening,
+    pub encrypted_opening: zkpi_committee::standing_pool::NoteOpening,
     pub lock_id: [u8; 32],
 }
 
@@ -1810,8 +1810,7 @@ impl VerifiedNoteSettlementProjection {
             .venue
             .verify_typed(typed, now)
             .map_err(str::to_string)?;
-        if zkpi::wire::encode(&typed.payment) != zkpi::wire::encode(&package.instruction)
-        {
+        if zkpi::wire::encode(&typed.payment) != zkpi::wire::encode(&package.instruction) {
             return Err("typed zkPI and note DvP contain different payments".into());
         }
         if typed.context.market_statement_digest != market_statement_digest {
@@ -2021,8 +2020,7 @@ impl VerifiedDelegatedNoteSettlementProjection {
             return Err("delegated DvP needs a consume or settle zkPI".into());
         }
         venue.verify_typed(typed, now).map_err(str::to_string)?;
-        if zkpi::wire::encode(&typed.payment) != zkpi::wire::encode(&package.instruction)
-        {
+        if zkpi::wire::encode(&typed.payment) != zkpi::wire::encode(&package.instruction) {
             return Err("typed zkPI and threshold DvP contain different payments".into());
         }
         if typed.context.market_statement_digest != market_statement_digest {

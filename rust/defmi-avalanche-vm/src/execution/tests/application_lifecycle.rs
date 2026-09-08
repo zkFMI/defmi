@@ -15,8 +15,8 @@ use defmi::claim_redemption::NoteClaimAuthorization;
 use defmi::facility::CreditFacilityRelationProof;
 use defmi::note_chain::{note_claim_recipient_commitment, ClaimAuthorizationCommitment};
 use defmi::notes::{encode_spend_proof, NoteLedger, Wallet};
-use qomm_proofs::opening_envelope::{encrypt_opening_share, opening_context};
 use std::cell::RefCell;
+use zkpi_proofs::opening_envelope::{encrypt_opening_share, opening_context};
 
 const ASSETS: [[u8; 32]; 2] = [[201; 32], [202; 32]];
 const FACILITIES: [[u8; 32]; 2] = [[203; 32], [204; 32]];
@@ -433,9 +433,8 @@ impl Fixture {
                 DVP_CASH_REMAINDER_CONTEXT,
             ),
         };
-        let link =
-            defmi::asset_link::prove(&self.key, ASSETS[0], &asset, &asset_blind, &mut OsRng)
-                .unwrap();
+        let link = defmi::asset_link::prove(&self.key, ASSETS[0], &asset, &asset_blind, &mut OsRng)
+            .unwrap();
         let head = |index: usize| {
             let record = &self.state.application_reservations[&id_key(&HOLDS[index])];
             ApplicationSpendHead {
@@ -1550,7 +1549,7 @@ fn native_claim_redemption_rejects_rebinding_and_legacy_approval_bypass() {
             4 => bad.output.asset_id = ASSETS[0],
             5 => bad.output.one_time = fixture.wallets[0].address.spend.compress().to_bytes(),
             6 => {
-                bad.output.encrypted_opening = qomm_transport::standing_pool::NoteOpening::Covenant
+                bad.output.encrypted_opening = zkpi_committee::standing_pool::NoteOpening::Covenant
             }
             7 => bad.output.lock_id = HOLDS[0],
             8 => bad.recipient_signature[40] ^= 1,

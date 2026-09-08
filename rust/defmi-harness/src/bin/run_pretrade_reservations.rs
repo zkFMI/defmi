@@ -9,7 +9,6 @@
 
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::{Signature, SigningKey};
 use defmi::asset_link::{prove as prove_asset_link, AssetLinkProof};
 use defmi::avalanche::{
     AvalancheClient, AvalancheNoteBridge, AvalancheRpcClient, FacilityAvalancheBridge,
@@ -22,9 +21,7 @@ use defmi::facility::{
     ReservationEscrow, ReservationRole, ZERO,
 };
 use defmi::ledger::Ledger;
-use defmi::note_chain::{
-    CsdIssuerDefinition, NoteIssuance, NoteOutput, NoteReservationEscrow,
-};
+use defmi::note_chain::{CsdIssuerDefinition, NoteIssuance, NoteOutput, NoteReservationEscrow};
 use defmi::notes::{NoteLedger, Wallet};
 use defmi::product::{
     escrow_transfer_context, reserve_maker, reserve_taker, verify_maker_reservation,
@@ -32,19 +29,7 @@ use defmi::product::{
 };
 use defmi::settlement::{account_of, CASH_RAIL, SECURITIES_RAIL};
 use defmi::settlement_verifier::SettlementVerifierConfig;
-use qomm_transport::external_signer::{CommandCsdSigner, CommandEd25519Signer, CsdMessageSigner};
-use qomm_transport::frost_cluster::{ReserveMandateRef, StdioFrostCluster};
-use qomm_transport::mandate::Direction;
-use qomm_transport::order::{verify_admission_lane, CertifiedAdmissionLane, OrderedAdmission};
-use qomm_transport::pretrade_authority::{
-    read_authority_private, write_ack_private, AcceptanceOpening, PretradeAcknowledgement,
-    PretradeAuthorityBundle, PretradeReservationBinding, ReservationParty, TakerPretradeAuthority,
-};
-use zkfmi_zk::pedersen::Pedersen;
-use zkpi::typed::{
-    AuthorizationScope, ExecutionContext, OperationKind, TradeDirection, TypedInstruction,
-};
-use zkpi::{typed_wire, Bounds, Issuer, Openings, Venue};
+use ed25519_dalek::{Signature, SigningKey};
 use rand_core::OsRng;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -53,6 +38,19 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::typed::{
+    AuthorizationScope, ExecutionContext, OperationKind, TradeDirection, TypedInstruction,
+};
+use zkpi::{typed_wire, Bounds, Issuer, Openings, Venue};
+use zkpi_committee::external_signer::{CommandCsdSigner, CommandEd25519Signer, CsdMessageSigner};
+use zkpi_committee::frost_cluster::{ReserveMandateRef, StdioFrostCluster};
+use zkpi_committee::mandate::Direction;
+use zkpi_committee::order::{verify_admission_lane, CertifiedAdmissionLane, OrderedAdmission};
+use zkpi_committee::pretrade_authority::{
+    read_authority_private, write_ack_private, AcceptanceOpening, PretradeAcknowledgement,
+    PretradeAuthorityBundle, PretradeReservationBinding, ReservationParty, TakerPretradeAuthority,
+};
 
 fn hash(parts: &[&[u8]]) -> [u8; 32] {
     let mut digest = Sha256::new();
@@ -64,11 +62,11 @@ fn hash(parts: &[&[u8]]) -> [u8; 32] {
 }
 
 // Public acceptance fixture, separate from CSD, guarantor and facility receipt keys.
-fn acknowledgement_key() -> qomm_transport::application_crypto::SigningKey {
+fn acknowledgement_key() -> zkpi_committee::application_crypto::SigningKey {
     let mut seed = [0; 64];
     seed[..32].copy_from_slice(&Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:ED:v2"));
     seed[32..].copy_from_slice(&Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:PQ:v2"));
-    qomm_transport::application_crypto::SigningKey::from_bytes(&seed)
+    zkpi_committee::application_crypto::SigningKey::from_bytes(&seed)
 }
 
 fn receipt_key() -> SigningKey {
@@ -76,9 +74,9 @@ fn receipt_key() -> SigningKey {
     SigningKey::from_bytes(&seed)
 }
 
-fn trusted_kyb_issuer() -> qomm_proofs::kyb::KybIssuerKey {
+fn trusted_kyb_issuer() -> zkpi_proofs::kyb::KybIssuerKey {
     let seed: [u8; 32] = Sha256::digest(b"QOMM:ACCEPTANCE:KYB-ISSUER-KEY:v1").into();
-    qomm_proofs::kyb::KybIssuerKey::from_bytes(&zkfmi_crypto::traits::Signer::public_key(
+    zkpi_proofs::kyb::KybIssuerKey::from_bytes(&zkfmi_crypto::traits::Signer::public_key(
         zkfmi_crypto::test_support::hybrid_signer(&seed).as_ref(),
     ))
     .unwrap()
@@ -1618,7 +1616,7 @@ fn process_authority_notes(
         after_state_root,
         bindings,
         signer_public: acknowledgement_key().verifying_key().to_bytes(),
-        signature: qomm_transport::application_crypto::Signature::from_bytes(&[]),
+        signature: zkpi_committee::application_crypto::Signature::from_bytes(&[]),
     }
     .sign(&acknowledgement_key())?;
     acknowledgement.verify(&acknowledgement_key().verifying_key())?;
@@ -1713,7 +1711,7 @@ fn process_authority(
         .node_keys
         .iter()
         .map(|raw| {
-            qomm_transport::application_crypto::VerifyingKey::from_bytes(raw)
+            zkpi_committee::application_crypto::VerifyingKey::from_bytes(raw)
                 .map_err(|_| "admission key is malformed".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -2531,7 +2529,7 @@ fn process_authority(
         after_state_root: facility.state_root()?,
         bindings,
         signer_public: acknowledgement_key().verifying_key().to_bytes(),
-        signature: qomm_transport::application_crypto::Signature::from_bytes(&[]),
+        signature: zkpi_committee::application_crypto::Signature::from_bytes(&[]),
     }
     .sign(&acknowledgement_key())?;
     acknowledgement.verify(&acknowledgement_key().verifying_key())?;

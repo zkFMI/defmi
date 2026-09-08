@@ -5,16 +5,16 @@
 //! deployment replaces this executable with its regulated KYC/KYB connector
 //! while retaining the same fail-closed ingestion boundary.
 
-use qomm_proofs::kyb::BusinessAttributes;
-use qomm_transport::external_kyb::{
-    write_external_kyb_inputs, ExternalKybAssertion, ExternalKybBundle, ExternalKybTrustAnchor,
-};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zkfmi_crypto::{hybrid::signature::HybridSigner, traits::Signer};
+use zkpi_committee::external_kyb::{
+    write_external_kyb_inputs, ExternalKybAssertion, ExternalKybBundle, ExternalKybTrustAnchor,
+};
+use zkpi_proofs::kyb::BusinessAttributes;
 
 fn required_path(arguments: &[String], name: &str) -> Result<PathBuf, String> {
     arguments
@@ -98,7 +98,7 @@ fn run(arguments: &[String]) -> Result<(), String> {
         provider: provider.into(),
         key_id: key_id.into(),
         audience: audience.into(),
-        public_key: qomm_proofs::kyb::KybIssuerKey::from_bytes(&signing.public_key())
+        public_key: zkpi_proofs::kyb::KybIssuerKey::from_bytes(&signing.public_key())
             .map_err(str::to_string)?,
         valid_from: now.saturating_sub(60).max(1),
         valid_until: now.saturating_add(86_400),

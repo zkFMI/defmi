@@ -10,8 +10,8 @@ description = "Non-EVM Avalanche custom VM for QOMM and DeFMI"
 zkfmi-crypto.workspace = true
 avalanche-rpcchainvm-qomm = { path = "../vendor/avalanche-rs-qomm/crates/avalanche-rpcchainvm" }
 defmi.workspace = true
-qomm-transport.workspace = true
-qomm-proofs.workspace = true
+zkpi-committee.workspace = true
+zkpi-proofs.workspace = true
 zkfmi-zk.workspace = true
 zkpi.workspace = true
 curve25519-dalek.workspace = true

@@ -1,6 +1,5 @@
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
 use defmi::facility::{
     build_threshold_dvp_consumption, build_threshold_dvp_consumption_from_snapshot,
     reserve_handle_for, AccountOpening, AdmissionBatchPlan, AdmissionCommitteePlan,
@@ -22,20 +21,12 @@ use defmi::product::{
 use defmi::settlement::{
     account_of, build_threshold_package_from_proofs, Sides, CASH_RAIL, SECURITIES_RAIL,
 };
-use qomm_proofs::kyb::{cohort_id, present, BusinessAttributes, KybIssuer, SignedCohortRegistry};
-use qomm_proofs::price_limit::{prove as prove_price_limit, PriceLimitDirection};
-use qomm_proofs::threshold_gadgets::LocalProductShares;
-use qomm_proofs::threshold_range::{
-    deal_bits, joint_prove_range_from_contributions, LocalRangeShares,
-};
-use qomm_proofs::threshold_sigma::deal;
-use qomm_transport::dvp_issuer::{
-    assemble_proofs as assemble_dvp_proofs, make_challenge as make_dvp_challenge,
-    relation_statements_from_evaluations as dvp_relation_statements,
-    statements_from_evaluations as dvp_statements, MpcDvpNode,
-};
-use qomm_transport::mandate::{Direction, MakerPolicyMandate, TakerExecutionMandate};
-use qomm_transport::order::{verify_admission_lane, NodeAdmissionAttestation, OrderedAdmission};
+use ed25519_dalek::SigningKey;
+use rand_core::OsRng;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Barrier};
 use zkfmi_zk::pedersen::Pedersen;
 use zkpi::typed::{
     digest_for as typed_digest_for, AuthorizationScope, ExecutionContext, OperationKind,
@@ -45,11 +36,20 @@ use zkpi::{
     asset_scalar, deal_quorum, frost, typed_wire, Bounds, Issuer, Openings, PartialInstruction,
     Venue, AMOUNT_RANGE_CONTEXT, DEFAULT_DOMAIN, PRICE_RANGE_CONTEXT,
 };
-use rand_core::OsRng;
-use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::sync::{Arc, Barrier};
+use zkpi_committee::dvp_issuer::{
+    assemble_proofs as assemble_dvp_proofs, make_challenge as make_dvp_challenge,
+    relation_statements_from_evaluations as dvp_relation_statements,
+    statements_from_evaluations as dvp_statements, MpcDvpNode,
+};
+use zkpi_committee::mandate::{Direction, MakerPolicyMandate, TakerExecutionMandate};
+use zkpi_committee::order::{verify_admission_lane, NodeAdmissionAttestation, OrderedAdmission};
+use zkpi_proofs::kyb::{cohort_id, present, BusinessAttributes, KybIssuer, SignedCohortRegistry};
+use zkpi_proofs::price_limit::{prove as prove_price_limit, PriceLimitDirection};
+use zkpi_proofs::threshold_gadgets::LocalProductShares;
+use zkpi_proofs::threshold_range::{
+    deal_bits, joint_prove_range_from_contributions, LocalRangeShares,
+};
+use zkpi_proofs::threshold_sigma::deal;
 
 fn h(label: &str) -> [u8; 32] {
     Sha256::digest(label.as_bytes()).into()
@@ -266,9 +266,7 @@ fn keys() -> BTreeMap<String, defmi::governance::GovernanceSigner> {
         .collect()
 }
 
-fn authorizer(
-    keys: &BTreeMap<String, defmi::governance::GovernanceSigner>,
-) -> QuorumAuthorizer {
+fn authorizer(keys: &BTreeMap<String, defmi::governance::GovernanceSigner>) -> QuorumAuthorizer {
     QuorumAuthorizer::new(
         keys.iter()
             .map(|(node, key)| (node.clone(), key.verifying_key()))
@@ -329,7 +327,7 @@ fn certified_admission_population(
     } = population;
     assert_eq!(claims.len(), tickets.len());
     let node_keys = (0..7)
-        .map(|_| qomm_transport::application_crypto::SigningKey::generate(&mut OsRng))
+        .map(|_| zkpi_committee::application_crypto::SigningKey::generate(&mut OsRng))
         .collect::<Vec<_>>();
     let node_batches = (0..7)
         .map(|node| h(&format!("{label}:node-batch:{node}")))
@@ -352,7 +350,7 @@ fn certified_admission_population(
                         claim_digest: *claim,
                         batch_digest: node_batches[node],
                         order_digest,
-                        signature: qomm_transport::application_crypto::Signature::from_bytes(
+                        signature: zkpi_committee::application_crypto::Signature::from_bytes(
                             &[0; 64],
                         ),
                     }
@@ -364,7 +362,7 @@ fn certified_admission_population(
         .collect::<Vec<_>>();
     let verifying = node_keys
         .iter()
-        .map(qomm_transport::application_crypto::SigningKey::verifying_key)
+        .map(zkpi_committee::application_crypto::SigningKey::verifying_key)
         .collect::<Vec<_>>();
     let certified = lanes
         .iter()
@@ -510,7 +508,7 @@ fn consensus_timestamps_fit_sqlites_signed_integer_domain() {
 
     let node_keys = (1_u8..=7)
         .map(|value| {
-            qomm_transport::application_crypto::SigningKey::from_bytes(&[value; 64])
+            zkpi_committee::application_crypto::SigningKey::from_bytes(&[value; 64])
                 .verifying_key()
                 .to_bytes()
         })
@@ -2480,7 +2478,7 @@ fn expired_product_reservation_restores_asset_and_credit_atomically_without_owne
         40,
         reserve_openings.amount,
     );
-    let maker_key = qomm_transport::application_crypto::SigningKey::generate(&mut OsRng);
+    let maker_key = zkpi_committee::application_crypto::SigningKey::generate(&mut OsRng);
     let mandate = MakerPolicyMandate {
         venue_id,
         defmi_id,
@@ -2497,7 +2495,7 @@ fn expired_product_reservation_restores_asset_and_credit_atomically_without_owne
         valid_until: 1_000,
         auto_execute: true,
         maker_public: maker_key.verifying_key().to_bytes(),
-        signature: qomm_transport::application_crypto::Signature::from_bytes(&[0; 64]),
+        signature: zkpi_committee::application_crypto::Signature::from_bytes(&[0; 64]),
     }
     .sign(&maker_key)
     .unwrap();
@@ -3063,7 +3061,7 @@ fn product_settlement_for(kind: GuarantorKind) {
     let taker_reserve_payment =
         taker_reserve_partial.sealed(frost_sign(&shares, &public, &taker_reserve_payment_digest));
 
-    let maker_signing_key = qomm_transport::application_crypto::SigningKey::generate(&mut OsRng);
+    let maker_signing_key = zkpi_committee::application_crypto::SigningKey::generate(&mut OsRng);
     let maker_hold_id = h("product:hold:maker");
     let maker_mandate = MakerPolicyMandate {
         venue_id,
@@ -3084,13 +3082,13 @@ fn product_settlement_for(kind: GuarantorKind) {
         valid_until: 1_000,
         auto_execute: true,
         maker_public: maker_signing_key.verifying_key().to_bytes(),
-        signature: qomm_transport::application_crypto::Signature::from_bytes(&[0; 64]),
+        signature: zkpi_committee::application_crypto::Signature::from_bytes(&[0; 64]),
     }
     .sign(&maker_signing_key)
     .unwrap();
     let maker_mandate_digest = maker_mandate.digest().unwrap();
 
-    let taker_signing_key = qomm_transport::application_crypto::SigningKey::generate(&mut OsRng);
+    let taker_signing_key = zkpi_committee::application_crypto::SigningKey::generate(&mut OsRng);
     let taker_hold_id = h("product:hold:taker");
     let taker_mandate = TakerExecutionMandate {
         venue_id,
@@ -3117,7 +3115,7 @@ fn product_settlement_for(kind: GuarantorKind) {
         allow_partial: false,
         auto_settle: true,
         taker_public: taker_signing_key.verifying_key().to_bytes(),
-        signature: qomm_transport::application_crypto::Signature::from_bytes(&[0; 64]),
+        signature: zkpi_committee::application_crypto::Signature::from_bytes(&[0; 64]),
     }
     .sign(&taker_signing_key)
     .unwrap();

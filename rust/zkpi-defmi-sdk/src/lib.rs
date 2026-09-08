@@ -17,7 +17,7 @@ pub mod reservation;
 /// Durable legal-entity request queue. Applications use this facade instead
 /// of depending on QOMM's transport layout directly.
 pub mod corporate {
-    pub use qomm_transport::corporate_outbox::{
+    pub use zkpi_committee::corporate_outbox::{
         CanonicalReceipt, ClaimedRequest, CorporateOutbox, CoverAction, CoverSlot, EnqueueOutcome,
         MpcAdmissionReceipt, OutboxEntrySummary, OutboxMetrics, OutboxState, QueueAction,
     };
@@ -26,7 +26,7 @@ pub mod corporate {
 /// Current verifier-complete QOMM proof adapter. Future application adapters
 /// can coexist without changing the application/execution/finality contracts.
 pub mod product {
-    pub use qomm_transport::product_proof_coordinator::{
+    pub use zkpi_committee::product_proof_coordinator::{
         authorize_standing_pool_allocation, complete_product_proof, complete_quote_request,
         finalize_product_settlement, prove_complete_quote, prove_product_settlement,
         CompleteQuotePublicInput, CompleteQuoteRequest, ProductSettlementProof,

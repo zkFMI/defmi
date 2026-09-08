@@ -9,9 +9,9 @@ autobins = false
 zkfmi-crypto = { workspace = true, features = ["test-support"] }
 defmi.workspace = true
 zkfmi-measure.workspace = true
-qomm-proofs.workspace = true
+zkpi-proofs.workspace = true
 qomm-sim.workspace = true
-qomm-transport.workspace = true
+zkpi-committee.workspace = true
 zkfmi-zk.workspace = true
 zkpi.workspace = true
 curve25519-dalek.workspace = true

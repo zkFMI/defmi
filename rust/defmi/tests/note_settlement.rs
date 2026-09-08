@@ -11,15 +11,15 @@ use defmi::claim_redemption::NoteClaimAuthorization;
 use defmi::note_chain::note_claim_recipient_commitment;
 use defmi::note_settlement::*;
 use defmi::notes::{ring_for, NoteLedger, Wallet};
-use qomm_proofs::threshold_range::{deal_bits, joint_prove_range_from_contributions};
+use rand::rngs::OsRng;
+use std::collections::BTreeMap;
+use zkfmi_crypto::hybrid::signature::HybridSigner;
 use zkfmi_zk::pedersen::Pedersen;
 use zkpi::{
     deal_quorum, frost, Bounds, Instruction, Issuer, Openings, PartialInstruction, Venue,
     AMOUNT_RANGE_CONTEXT, PRICE_RANGE_CONTEXT,
 };
-use rand::rngs::OsRng;
-use std::collections::BTreeMap;
-use zkfmi_crypto::hybrid::signature::HybridSigner;
+use zkpi_proofs::threshold_range::{deal_bits, joint_prove_range_from_contributions};
 
 const BITS: usize = 32;
 const RING: usize = 8;
@@ -450,12 +450,12 @@ fn two_payments_to_one_address_share_no_bytes() {
 fn verified_wallet_dvp_and_typed_zkpi_project_only_to_a_non_product_note_order() {
     use defmi::facility::ZERO;
     use defmi::note_chain::{NoteLegProjection, VerifiedNoteSettlementProjection};
+    use sha2::{Digest, Sha256};
     use zkpi::typed::{
         digest_for as typed_digest_for, AuthorizationScope, ExecutionContext, OperationKind,
         TradeDirection, TypedInstruction,
     };
     use zkpi::DEFAULT_DOMAIN;
-    use sha2::{Digest, Sha256};
 
     fn h(label: &str) -> [u8; 32] {
         Sha256::digest(label.as_bytes()).into()
@@ -561,16 +561,16 @@ fn threshold_dvp_projects_to_predelegated_claims_without_a_post_quote_wallet_spe
     use defmi::settlement::{
         build_threshold_package_from_contributions, Sides, ThresholdDvpNodeContribution,
     };
-    use qomm_proofs::opening_envelope::{encrypt_opening_share, opening_context, OpeningEnvelope};
-    use qomm_proofs::threshold_gadgets::{ProductNodeContribution, Shared};
-    use qomm_proofs::threshold_sigma::deal;
+    use sha2::{Digest, Sha256};
     use zkfmi_zk::shamir;
     use zkpi::typed::{
         digest_for as typed_digest_for, AuthorizationScope, ExecutionContext, OperationKind,
         TradeDirection, TypedInstruction,
     };
     use zkpi::DEFAULT_DOMAIN;
-    use sha2::{Digest, Sha256};
+    use zkpi_proofs::opening_envelope::{encrypt_opening_share, opening_context, OpeningEnvelope};
+    use zkpi_proofs::threshold_gadgets::{ProductNodeContribution, Shared};
+    use zkpi_proofs::threshold_sigma::deal;
 
     fn h(label: &str) -> [u8; 32] {
         Sha256::digest(label.as_bytes()).into()

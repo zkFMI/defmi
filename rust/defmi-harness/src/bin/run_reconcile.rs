@@ -1,17 +1,15 @@
 use curve25519_dalek::scalar::Scalar;
-use merlin::Transcript;
-use defmi::reconcile::{
-    check, check_positions, locate_break, prove, Attestation, Reconciliation,
-};
+use defmi::reconcile::{check, check_positions, locate_break, prove, Attestation, Reconciliation};
 use defmi_harness::{parse_value, timing_summary, write_pretty_json, HarnessResult};
-use qomm_proofs::threshold_sigma::{deal, joint_prove_zero_opening};
+use merlin::Transcript;
 use qomm_sim::deterministic_random::DeterministicRng;
-use zkfmi_zk::pedersen::{asset_tag, Pedersen};
 use rand::rngs::OsRng;
 use serde_json::json;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Instant;
+use zkfmi_zk::pedersen::{asset_tag, Pedersen};
+use zkpi_proofs::threshold_sigma::{deal, joint_prove_zero_opening};
 
 struct Options {
     sizes: Vec<usize>,
@@ -176,7 +174,7 @@ fn run_main() -> HarnessResult<()> {
 fn prove_by_quorum(
     key: &Pedersen,
     commitments: &[curve25519_dalek::ristretto::RistrettoPoint],
-    shares: &qomm_proofs::threshold_sigma::ShareSet,
+    shares: &zkpi_proofs::threshold_sigma::ShareSet,
     quorum: &[usize],
     attestation: &Attestation,
     rng: &mut OsRng,

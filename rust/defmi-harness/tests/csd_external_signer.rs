@@ -1,14 +1,14 @@
 use ed25519_dalek::VerifyingKey;
-use qomm_transport::external_signer::{
-    CommandCsdSigner, CommandEd25519Signer, CsdMessageSigner, Ed25519MessageSigner,
-};
-use qomm_transport::key_management::EncryptedKeyStore;
 use serde_json::Value;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use zkpi_committee::external_signer::{
+    CommandCsdSigner, CommandEd25519Signer, CsdMessageSigner, Ed25519MessageSigner,
+};
+use zkpi_committee::key_management::EncryptedKeyStore;
 
 struct Directory(PathBuf);
 impl Drop for Directory {

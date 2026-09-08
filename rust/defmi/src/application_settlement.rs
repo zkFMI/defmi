@@ -16,12 +16,12 @@ use crate::note_chain::{
 use crate::settlement::{build_threshold_package_from_proofs, Sides};
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use qomm_proofs::opening_envelope::{opening_context, EncryptedOpeningShare, OpeningEnvelope};
-use qomm_transport::proof_codec::decode_dvp_proofs;
-use zkfmi_zk::pedersen::Pedersen;
-use zkpi::{frost, Bounds, QuoteBinding, Venue};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::{frost, Bounds, QuoteBinding, Venue};
+use zkpi_committee::proof_codec::decode_dvp_proofs;
+use zkpi_proofs::opening_envelope::{opening_context, EncryptedOpeningShare, OpeningEnvelope};
 
 const FILL_DOMAIN: &[u8] = b"DEFMI:APPLICATION:NOTE-FILL:v2";
 const RELEASE_DOMAIN: &[u8] = b"DEFMI:APPLICATION:NOTE-RELEASE:v2";

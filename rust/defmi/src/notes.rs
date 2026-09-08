@@ -19,9 +19,6 @@ use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::Identity;
 use merlin::Transcript;
-pub use qomm_transport::standing_pool::NoteOpening;
-use zkfmi_zk::pedersen::Pedersen;
-use zkfmi_zk::sigma::{prove_zero_opening, verify_zero_opening, OpeningProof};
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha512};
 use std::{collections::HashSet, sync::Arc};
@@ -31,6 +28,9 @@ use zkfmi_crypto::{
     traits::KemDecapsulator,
 };
 use zkfmi_crypto::{hybrid::signature::HybridVerifier, key::KeyPurpose, traits::Verifier};
+use zkfmi_zk::pedersen::Pedersen;
+use zkfmi_zk::sigma::{prove_zero_opening, verify_zero_opening, OpeningProof};
+pub use zkpi_committee::standing_pool::NoteOpening;
 
 fn scalar_from(label: &[u8], parts: &[&[u8]]) -> Scalar {
     let mut hasher = Sha512::new();

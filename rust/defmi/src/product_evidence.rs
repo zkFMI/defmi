@@ -5,17 +5,17 @@
 //! decoding here is shared by the Avalanche client and every Rust validator.
 
 use crate::asset_link::AssetLinkProof;
-use qomm_transport::mandate::{decode_taker_mandate, encode_taker_mandate, TakerExecutionMandate};
-use qomm_transport::mpc_result::{
+use sha2::{Digest, Sha256};
+use zkpi_committee::mandate::{decode_taker_mandate, encode_taker_mandate, TakerExecutionMandate};
+use zkpi_committee::mpc_result::{
     decode_public_result_attestations, encode_public_result_attestations, fill_mask_commitment,
     NodePublicResultAttestation,
 };
-use qomm_transport::order::{decode_execution_attestations, encode_execution_attestations};
-use qomm_transport::proof_codec::{
+use zkpi_committee::order::{decode_execution_attestations, encode_execution_attestations};
+use zkpi_committee::proof_codec::{
     decode_dvp_proofs, decode_quote_verification, decode_threshold_range, encode_dvp_proofs,
     encode_quote_verification, encode_threshold_range,
 };
-use sha2::{Digest, Sha256};
 
 const MAX_TYPED_BYTES: usize = 512 * 1024;
 const MAX_QUOTE_BYTES: usize = 768 * 1024;
@@ -196,7 +196,7 @@ fn validate_execution_attestations(raw: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qomm_transport::{
+    use zkpi_committee::{
         application_crypto::{Signature, SigningKey},
         order::{NodeExecutionAttestation, COMMITTEE_NODES, ZERO},
     };

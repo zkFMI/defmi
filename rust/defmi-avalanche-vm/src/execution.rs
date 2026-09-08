@@ -12,7 +12,6 @@ use curve25519_dalek::{
     ristretto::{CompressedRistretto, RistrettoPoint},
     scalar::Scalar,
 };
-use ed25519_dalek::Signature;
 use defmi::asset_link::{self, AssetLinkProof};
 use defmi::central_bank_liquidity::{
     operation_statement as boj_operation_statement, ApplyFundsReceipt, BojParticipant,
@@ -45,23 +44,24 @@ use defmi::note_chain::{
 use defmi::product_evidence::{MpcNoFillEvidence, ProductSettlementEvidence};
 use defmi::settlement::{build_threshold_package_from_proofs, Sides};
 use defmi::settlement_verifier::{settlement_verifier_key, SettlementVerifierConfig};
-use qomm_proofs::opening_envelope::{EncryptedOpeningShare, OpeningEnvelope};
-use qomm_proofs::price_limit::{from_threshold as threshold_price_limit, PriceLimitDirection};
-use qomm_proofs::quote_proof::registered_policy_digest;
-use qomm_transport::mpc_result::verify_public_result_lane;
-use qomm_transport::order::{
-    complete_quote_context, decode_execution_attestations, live_proof_job_id,
-    verify_admission_lane, verify_execution_lane, CertifiedAdmissionLane, NodeAdmissionAttestation,
-};
-use qomm_transport::proof_codec::{
-    decode_dvp_proofs, decode_quote_verification, decode_threshold_range, QuoteVerificationBundle,
-};
-use zkfmi_zk::pedersen::Pedersen;
-use zkpi::{frost, typed, typed_wire, Bounds, Venue};
+use ed25519_dalek::Signature;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::{frost, typed, typed_wire, Bounds, Venue};
+use zkpi_committee::mpc_result::verify_public_result_lane;
+use zkpi_committee::order::{
+    complete_quote_context, decode_execution_attestations, live_proof_job_id,
+    verify_admission_lane, verify_execution_lane, CertifiedAdmissionLane, NodeAdmissionAttestation,
+};
+use zkpi_committee::proof_codec::{
+    decode_dvp_proofs, decode_quote_verification, decode_threshold_range, QuoteVerificationBundle,
+};
+use zkpi_proofs::opening_envelope::{EncryptedOpeningShare, OpeningEnvelope};
+use zkpi_proofs::price_limit::{from_threshold as threshold_price_limit, PriceLimitDirection};
+use zkpi_proofs::quote_proof::registered_policy_digest;
 
 use crate::{
     state::{
@@ -435,7 +435,7 @@ struct NoteOutputDto {
     one_time: String,
     value_commitment: String,
     ephemeral: String,
-    encrypted_opening: qomm_transport::standing_pool::NoteOpening,
+    encrypted_opening: zkpi_committee::standing_pool::NoteOpening,
     #[serde(rename = "lockID")]
     lock_id: String,
 }
@@ -2629,8 +2629,7 @@ fn redeem_note_claim(
     now: u64,
 ) -> Result<[u8; 32], String> {
     require_keys(params, &["redemption"])?;
-    let redemption: defmi::claim_redemption::NoteClaimRedemption =
-        field(params, "redemption")?;
+    let redemption: defmi::claim_redemption::NoteClaimRedemption = field(params, "redemption")?;
     if redemption.before_root != state.root()
         || state
             .operations
@@ -2824,7 +2823,7 @@ fn register_admission_committee(
 ) -> Result<[u8; 32], String> {
     require_keys(params, &["plan", "approval", "expectedBeforeRoot"])?;
     let dto: AdmissionCommitteeDto = field(params, "plan")?;
-    if dto.node_keys.len() > qomm_transport::order::COMMITTEE_NODES {
+    if dto.node_keys.len() > zkpi_committee::order::COMMITTEE_NODES {
         return Err("admission committee contains too many node keys".into());
     }
     let plan = AdmissionCommitteePlan {
@@ -3048,7 +3047,7 @@ fn register_admission_batch(
         .node_keys
         .iter()
         .map(|key| {
-            qomm_transport::application_crypto::VerifyingKey::from_bytes(key)
+            zkpi_committee::application_crypto::VerifyingKey::from_bytes(key)
                 .map_err(|_| "stored admission committee key is invalid".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -3059,7 +3058,7 @@ fn register_admission_batch(
     let mut certified = lane_dtos
         .into_iter()
         .map(|lane| {
-            if lane.len() != qomm_transport::order::COMMITTEE_NODES {
+            if lane.len() != zkpi_committee::order::COMMITTEE_NODES {
                 return Err("admission lane needs exactly seven attestations".to_string());
             }
             let attestations = lane
@@ -3077,7 +3076,7 @@ fn register_admission_batch(
                         claim_digest: hex_array(&dto.claim_digest, "admissionLanes.claimDigest")?,
                         batch_digest: hex_array(&dto.batch_digest, "admissionLanes.batchDigest")?,
                         order_digest: hex_array(&dto.order_digest, "admissionLanes.orderDigest")?,
-                        signature: qomm_transport::application_crypto::Signature::try_from(
+                        signature: zkpi_committee::application_crypto::Signature::try_from(
                             hex::decode(&dto.signature)
                                 .map_err(|_| "admission signature is not hexadecimal")?
                                 .as_slice(),
@@ -4333,8 +4332,8 @@ fn release_note_product_no_fill(
     mandate.verify_signature_at(timestamp)?;
     let mandate_digest = mandate.digest()?;
     let expected_direction = match mandate.direction {
-        qomm_transport::mandate::Direction::TakerBuys => 1,
-        qomm_transport::mandate::Direction::TakerSells => 2,
+        zkpi_committee::mandate::Direction::TakerBuys => 1,
+        zkpi_committee::mandate::Direction::TakerSells => 2,
     };
     if mandate_digest != binding.mandate_digest
         || mandate_digest != binding.authorization_digest
@@ -4386,7 +4385,7 @@ fn release_note_product_no_fill(
         .node_keys
         .iter()
         .map(|value| {
-            qomm_transport::application_crypto::VerifyingKey::from_bytes(value)
+            zkpi_committee::application_crypto::VerifyingKey::from_bytes(value)
                 .map_err(|_| "stored resident result key is invalid".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -5672,7 +5671,7 @@ fn verify_product_settlement_evidence(
         .node_keys
         .iter()
         .map(|value| {
-            qomm_transport::application_crypto::VerifyingKey::from_bytes(value)
+            zkpi_committee::application_crypto::VerifyingKey::from_bytes(value)
                 .map_err(|_| "stored resident execution key is invalid".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -6976,35 +6975,15 @@ mod tests {
     use std::collections::BTreeMap;
 
     use curve25519_dalek::{constants::RISTRETTO_BASEPOINT_POINT as G, scalar::Scalar};
-    use ed25519_dalek::SigningKey;
-    use merlin::Transcript;
     use defmi::facility::DefmiFacility;
     use defmi::note_chain::{
         note_ring_root, standing_note_pool_delegation_digest, standing_note_pool_id, NoteClaim,
         NoteClaimKind,
     };
-    use qomm_proofs::opening_envelope::{EncryptedOpeningShare, OpeningEnvelope};
-    use qomm_proofs::price_limit::{
-        from_threshold as threshold_price_limit, threshold_context as price_limit_context,
-    };
-    use qomm_proofs::quote_proof::{MakerWitness, QuoteCircuit, Registered};
-    use qomm_proofs::threshold_quote::{deal_quote_shares_with_qty_blinding, joint_prove_quote};
-    use qomm_proofs::threshold_range::{deal_bits, joint_prove_range_from_contributions};
-    use qomm_transport::dvp_issuer::{
-        DvpProofs, DVP_CASH_REMAINDER_CONTEXT, DVP_PRODUCT_CONTEXT,
-        DVP_SECURITIES_REMAINDER_CONTEXT,
-    };
-    use qomm_transport::order::{
-        decode_execution_attestations, encode_execution_attestations, NodeExecutionAttestation,
-    };
-    use qomm_transport::proof_codec::{
-        encode_dvp_proofs, encode_quote_verification, encode_threshold_range,
-        QuoteVerificationBundle,
-    };
-    use qomm_transport::standing_pool::{
-        standing_pool_reservation_metadata, threshold_range_proof_digest,
-        STANDING_POOL_REMAINDER_CONTEXT,
-    };
+    use ed25519_dalek::SigningKey;
+    use merlin::Transcript;
+    use rand_core::OsRng;
+    use serde_json::json;
     use zkfmi_zk::sigma::prove_product;
     use zkpi::typed::{
         AuthorizationScope, ExecutionContext, OperationKind, TradeDirection, TypedInstruction,
@@ -7013,8 +6992,28 @@ mod tests {
         asset_scalar, frost, PartialInstruction, AMOUNT_RANGE_CONTEXT, DEFAULT_DOMAIN,
         PRICE_RANGE_CONTEXT,
     };
-    use rand_core::OsRng;
-    use serde_json::json;
+    use zkpi_committee::dvp_issuer::{
+        DvpProofs, DVP_CASH_REMAINDER_CONTEXT, DVP_PRODUCT_CONTEXT,
+        DVP_SECURITIES_REMAINDER_CONTEXT,
+    };
+    use zkpi_committee::order::{
+        decode_execution_attestations, encode_execution_attestations, NodeExecutionAttestation,
+    };
+    use zkpi_committee::proof_codec::{
+        encode_dvp_proofs, encode_quote_verification, encode_threshold_range,
+        QuoteVerificationBundle,
+    };
+    use zkpi_committee::standing_pool::{
+        standing_pool_reservation_metadata, threshold_range_proof_digest,
+        STANDING_POOL_REMAINDER_CONTEXT,
+    };
+    use zkpi_proofs::opening_envelope::{EncryptedOpeningShare, OpeningEnvelope};
+    use zkpi_proofs::price_limit::{
+        from_threshold as threshold_price_limit, threshold_context as price_limit_context,
+    };
+    use zkpi_proofs::quote_proof::{MakerWitness, QuoteCircuit, Registered};
+    use zkpi_proofs::threshold_quote::{deal_quote_shares_with_qty_blinding, joint_prove_quote};
+    use zkpi_proofs::threshold_range::{deal_bits, joint_prove_range_from_contributions};
 
     #[test]
     fn application_note_reservation_verifies_full_proofs_and_survives_restart() {
@@ -7392,8 +7391,7 @@ mod tests {
         let keys = (0..3)
             .map(|index| {
                 let node = format!("node-{index}");
-                let key =
-                    defmi::governance::GovernanceSigner::generate(&node, 10, 200).unwrap();
+                let key = defmi::governance::GovernanceSigner::generate(&node, 10, 200).unwrap();
                 (node, key)
             })
             .collect::<BTreeMap<_, _>>();
@@ -7570,7 +7568,7 @@ mod tests {
         blinding: Scalar,
         bits: usize,
         context: &[u8],
-    ) -> qomm_proofs::threshold_range::ThresholdRangeProof {
+    ) -> zkpi_proofs::threshold_range::ThresholdRangeProof {
         let parties = [1_usize, 2, 3, 4, 5, 6, 7];
         let dealt = deal_bits(key, value, &blinding, bits, &parties, 2, &mut OsRng).unwrap();
         let quorum = [1_usize, 4, 7];
@@ -7968,7 +7966,7 @@ mod tests {
             one_time: (G * Scalar::from(seed * 3 + 1)).compress().to_bytes(),
             value_commitment,
             ephemeral: (G * Scalar::from(seed * 3 + 2)).compress().to_bytes(),
-            encrypted_opening: qomm_transport::standing_pool::NoteOpening::Recipient(
+            encrypted_opening: zkpi_committee::standing_pool::NoteOpening::Recipient(
                 zkfmi_crypto::test_support::note_envelope(),
             ),
             lock_id,
@@ -8316,7 +8314,7 @@ mod tests {
         let admission_order_digest = [133; 32];
         let admission_keys = (0u8..7)
             .map(|node| {
-                qomm_transport::application_crypto::SigningKey::from_bytes(&[151 + node; 64])
+                zkpi_committee::application_crypto::SigningKey::from_bytes(&[151 + node; 64])
             })
             .collect::<Vec<_>>();
         let execution_attestations = admission_keys
@@ -8336,7 +8334,7 @@ mod tests {
                     stderr_digest: [200 + node as u8; 32],
                     persistence_digest: [210 + node as u8; 32],
                     receipt_digest: ZERO,
-                    signature: qomm_transport::application_crypto::Signature::from_bytes(&[0; 64]),
+                    signature: zkpi_committee::application_crypto::Signature::from_bytes(&[0; 64]),
                 };
                 value.receipt_digest = value.recompute_receipt_digest().unwrap();
                 value.sign(key).unwrap()
@@ -8344,7 +8342,7 @@ mod tests {
             .collect::<Vec<_>>();
         let trusted_execution_keys = admission_keys
             .iter()
-            .map(qomm_transport::application_crypto::SigningKey::verifying_key)
+            .map(zkpi_committee::application_crypto::SigningKey::verifying_key)
             .collect::<Vec<_>>();
         let execution = verify_execution_lane(
             &execution_attestations,
@@ -10901,15 +10899,14 @@ mod tests {
             reason_digest: [138; 32],
             guarantor_signature: Vec::new(),
         };
-        activate_while_over_limit.guarantor_signature =
-            defmi::facility::sign_guarantor_message(
-                &guarantor_key,
-                &zkfmi_crypto::test_support::entity_pq_signer(&guarantor_key.to_bytes()),
-                &activate_while_over_limit
-                    .guarantor_message()
-                    .expect("activation message"),
-            )
-            .unwrap();
+        activate_while_over_limit.guarantor_signature = defmi::facility::sign_guarantor_message(
+            &guarantor_key,
+            &zkfmi_crypto::test_support::entity_pq_signer(&guarantor_key.to_bytes()),
+            &activate_while_over_limit
+                .guarantor_message()
+                .expect("activation message"),
+        )
+        .unwrap();
         let activation = authorized_transaction(
             &state,
             &authorizer,
@@ -11820,7 +11817,7 @@ mod tests {
         let mut state = State::default();
         let admission_keys = (0u8..7)
             .map(|node| {
-                qomm_transport::application_crypto::SigningKey::from_bytes(&[151 + node; 64])
+                zkpi_committee::application_crypto::SigningKey::from_bytes(&[151 + node; 64])
             })
             .collect::<Vec<_>>();
         let committee_plan = AdmissionCommitteePlan {
@@ -11884,7 +11881,7 @@ mod tests {
                             claim_digest: [186 + sequence as u8; 32],
                             batch_digest: node_batch_digests[node],
                             order_digest,
-                            signature: qomm_transport::application_crypto::Signature::from_bytes(
+                            signature: zkpi_committee::application_crypto::Signature::from_bytes(
                                 &[0; 64],
                             ),
                         }
@@ -12041,7 +12038,7 @@ mod tests {
                     claim_digest: [212; 32],
                     batch_digest: next_node_batches[node],
                     order_digest: next_order_digest,
-                    signature: qomm_transport::application_crypto::Signature::from_bytes(&[0; 64]),
+                    signature: zkpi_committee::application_crypto::Signature::from_bytes(&[0; 64]),
                 }
                 .sign(key)
                 .expect("next admission signature")

@@ -1,9 +1,9 @@
 use crate::application::ApplicationManifest;
 use crate::{SdkError, SdkResult};
-use qomm_transport::product_proof_coordinator::{
+use sha2::{Digest, Sha256};
+use zkpi_committee::product_proof_coordinator::{
     ExecutionAttestationInput, ProductExecutionRequest,
 };
-use sha2::{Digest, Sha256};
 
 const BINDING_DOMAIN: &[u8] = b"ZKPI:DEFMI:APPLICATION-EXECUTION:v1";
 const PRODUCT_COMMITTEE_NODES: usize = 7;

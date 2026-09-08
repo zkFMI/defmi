@@ -9,16 +9,16 @@
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use ed25519_dalek::Signer;
-use qomm_transport::external_signer::{
-    ExternalSignRequest, ExternalSignResponse, MAX_EXTERNAL_SIGN_REQUEST,
-};
-use qomm_transport::key_management::{EncryptedKeyStore, KeyKind};
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use zkpi_committee::external_signer::{
+    ExternalSignRequest, ExternalSignResponse, MAX_EXTERNAL_SIGN_REQUEST,
+};
+use zkpi_committee::key_management::{EncryptedKeyStore, KeyKind};
 
 fn required(arguments: &[String], name: &str) -> Result<String, String> {
     arguments

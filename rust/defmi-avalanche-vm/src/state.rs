@@ -18,10 +18,10 @@ use defmi::note_chain::{
     NoteClaimKind, NoteOutput,
 };
 use defmi::participant::ParticipantRegistry;
-use qomm_proofs::opening_envelope::{EncryptedOpeningShare, OpeningEnvelope};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use zkpi_proofs::opening_envelope::{EncryptedOpeningShare, OpeningEnvelope};
 
 use crate::{execution, id::Id, transaction::TransactionEnvelope};
 
@@ -85,7 +85,7 @@ pub struct NoteRecord {
     pub one_time: [u8; 32],
     pub value_commitment: [u8; 32],
     pub ephemeral: [u8; 32],
-    pub encrypted_opening: qomm_transport::standing_pool::NoteOpening,
+    pub encrypted_opening: zkpi_committee::standing_pool::NoteOpening,
     pub lock_id: [u8; 32],
 }
 
@@ -717,12 +717,12 @@ impl State {
                 return Err("state contains a malformed application reservation".into());
             }
             defmi::application_settlement::point(record.remaining())?;
-            let custody =
-                self.note_serials
-                    .get(&id_key(&defmi::note_chain::escrow_claim_serial(
-                        record.escrow_note_id,
-                        binding.hold_id,
-                    )));
+            let custody = self
+                .note_serials
+                .get(&id_key(&defmi::note_chain::escrow_claim_serial(
+                    record.escrow_note_id,
+                    binding.hold_id,
+                )));
             if record.sequence == 0 {
                 if record.remaining_commitment.is_some()
                     || record.last_receipt.is_some()
@@ -930,12 +930,12 @@ impl State {
                 || committee.valid_from == 0
                 || committee.valid_until < committee.valid_from
                 || committee.statement == ZERO
-                || committee.node_keys.len() != qomm_transport::order::COMMITTEE_NODES
+                || committee.node_keys.len() != zkpi_committee::order::COMMITTEE_NODES
                 || committee.node_keys.contains(&ZERO)
                 || committee.node_keys.iter().collect::<BTreeSet<_>>().len()
                     != committee.node_keys.len()
                 || committee.node_keys.iter().any(|node| {
-                    qomm_transport::application_crypto::VerifyingKey::from_bytes(node).is_err()
+                    zkpi_committee::application_crypto::VerifyingKey::from_bytes(node).is_err()
                 })
             {
                 return Err("state contains a malformed admission committee".into());

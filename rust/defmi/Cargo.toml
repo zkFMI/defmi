@@ -28,15 +28,15 @@ avalanche = ["dep:openssl", "dep:dekyx-core", "zkfmi-crypto/tls"]
 public-audit = ["dep:qomm-batch-audit"]
 
 [dependencies]
-qomm-batch-audit = { git = "https://github.com/zkFMI/zkpi.git", rev = "cc9cfa9c65ff3e065b926abdb08d0b7bfebb666c", optional = true }
+qomm-batch-audit = { git = "https://github.com/zkFMI/zkpi.git", rev = "fc9579070484859aff9110a927be79c1ffe22b70", optional = true }
 zkfmi-crypto.workspace = true
 zeroize = { version = "1.8", features = ["alloc"] }
 dekyx-core = { workspace = true, optional = true }
 clear_on_drop = { version = "0.2.5", features = ["no_cc"], optional = true }
 zkfmi-zk.workspace = true
 zkpi.workspace = true
-qomm-proofs.workspace = true
-qomm-transport.workspace = true
+zkpi-proofs.workspace = true
+zkpi-committee.workspace = true
 # Algorithm core is the unchanged upstream RingCT implementation. See
 # docs/NOTE_PROOF_SECURITY_REVIEW_20260905.md for provenance and audit limits.
 triptych = { git = "https://github.com/tari-project/triptych.git", rev = "bf0cb42fff55636a8bb037020411fb3a050af23f", default-features = false, features = ["std"] }

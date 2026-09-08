@@ -8,7 +8,6 @@ use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use merlin::Transcript;
-use zkfmi_zk::pedersen::Pedersen;
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -26,6 +25,7 @@ use zkfmi_crypto::{
     key::KeyPurpose,
     traits::{Signer as CryptoSigner, Verifier as CryptoVerifier},
 };
+use zkfmi_zk::pedersen::Pedersen;
 
 use crate::MAX_UNIX_TIME;
 
@@ -80,12 +80,12 @@ impl AdmissionCommitteePlan {
             || self.valid_from == 0
             || self.valid_until < self.valid_from
             || self.valid_until > MAX_UNIX_TIME
-            || self.node_keys.len() != qomm_transport::order::COMMITTEE_NODES
+            || self.node_keys.len() != zkpi_committee::order::COMMITTEE_NODES
             || [self.operation_id, self.venue_id].contains(&ZERO)
             || self.node_keys.contains(&ZERO)
             || self.node_keys.iter().collect::<BTreeSet<_>>().len() != self.node_keys.len()
             || self.node_keys.iter().any(|key| {
-                qomm_transport::application_crypto::VerifyingKey::from_bytes(key).is_err()
+                zkpi_committee::application_crypto::VerifyingKey::from_bytes(key).is_err()
             })
         {
             return Err("admission committee is incomplete, duplicated, or invalid".into());
@@ -106,11 +106,11 @@ impl AdmissionCommitteePlan {
 
     fn verifying_keys(
         &self,
-    ) -> Result<Vec<qomm_transport::application_crypto::VerifyingKey>, String> {
+    ) -> Result<Vec<zkpi_committee::application_crypto::VerifyingKey>, String> {
         self.node_keys
             .iter()
             .map(|key| {
-                qomm_transport::application_crypto::VerifyingKey::from_bytes(key)
+                zkpi_committee::application_crypto::VerifyingKey::from_bytes(key)
                     .map_err(|_| "admission committee key is not canonical".to_string())
             })
             .collect()
@@ -1831,7 +1831,7 @@ pub(crate) struct ReservationExecution<'a> {
     pub typed_instruction: &'a zkpi::typed::TypedInstruction,
     pub typed_venue: &'a zkpi::Venue,
     pub asset_link: &'a crate::asset_link::AssetLinkProof,
-    pub ordered_admission: Option<&'a qomm_transport::order::OrderedAdmission>,
+    pub ordered_admission: Option<&'a zkpi_committee::order::OrderedAdmission>,
     pub approval: &'a QuorumApproval,
     pub now: u64,
 }
@@ -3765,7 +3765,7 @@ impl DefmiFacility {
             .map(|row| {
                 let raw = hex::decode(row[1].as_deref().unwrap_or_default())
                     .map_err(|error| error.to_string())?;
-                if raw.len() != 32 * qomm_transport::order::COMMITTEE_NODES {
+                if raw.len() != 32 * zkpi_committee::order::COMMITTEE_NODES {
                     return Err("stored admission committee key set has the wrong size".into());
                 }
                 Ok(AdmissionCommitteePlan {
@@ -3990,7 +3990,7 @@ impl DefmiFacility {
     pub fn register_admission_batch(
         &self,
         plan: &AdmissionBatchPlan,
-        admission_lanes: &[Vec<qomm_transport::order::NodeAdmissionAttestation>],
+        admission_lanes: &[Vec<zkpi_committee::order::NodeAdmissionAttestation>],
         approval: &QuorumApproval,
         now: u64,
     ) -> Result<AdmissionBatchSnapshot, String> {
@@ -4012,7 +4012,7 @@ impl DefmiFacility {
             let keys = committee.verifying_keys()?;
             let mut certified = admission_lanes
                 .iter()
-                .map(|lane| qomm_transport::order::verify_admission_lane(lane, &keys))
+                .map(|lane| zkpi_committee::order::verify_admission_lane(lane, &keys))
                 .collect::<Result<Vec<_>, _>>()?;
             certified.sort_by_key(|lane| lane.sequence);
             if certified.len() != plan.admission_digests.len()
@@ -4208,7 +4208,7 @@ impl DefmiFacility {
 
     fn consume_ordered_admission(
         database: &Database,
-        admission: &qomm_transport::order::OrderedAdmission,
+        admission: &zkpi_committee::order::OrderedAdmission,
         operation_id: &[u8; 32],
         now: u64,
     ) -> Result<[u8; 32], String> {

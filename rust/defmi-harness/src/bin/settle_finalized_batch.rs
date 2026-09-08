@@ -8,7 +8,6 @@
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use ed25519_dalek::SigningKey;
 use defmi::asset_link::{prove as prove_asset_link, AssetLinkProof};
 use defmi::avalanche::{
     AvalancheClient, AvalancheNoteBridge, AvalancheRpcClient, FacilityAvalancheBridge,
@@ -36,24 +35,7 @@ use defmi::settlement::{
     account_of, build_threshold_package_from_proofs, Sides, ThresholdDvpPackage, CASH_RAIL,
     SECURITIES_RAIL,
 };
-use qomm_proofs::price_limit::{from_threshold as threshold_price_limit, PriceLimitProof};
-use qomm_transport::application_crypto::VerifyingKey;
-use qomm_transport::order::{
-    encode_execution_attestations, NodeExecutionAttestation, OrderedAdmission,
-};
-use qomm_transport::pretrade_authority::{
-    read_ack_private, read_authority_private, AcceptanceOpening, PretradeReservationBinding,
-    ReservationParty,
-};
-use qomm_transport::proof_codec::{
-    encode_dvp_proofs, encode_quote_verification, encode_threshold_range,
-};
-use qomm_transport::settlement_handoff::{
-    read_private as read_handoff, SettlementHandoff, SettlementHandoffBundle,
-};
-use zkfmi_zk::pedersen::Pedersen;
-use zkpi::typed::TradeDirection;
-use zkpi::{typed_wire, Bounds, Venue};
+use ed25519_dalek::SigningKey;
 use rand_core::OsRng;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -63,6 +45,24 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::typed::TradeDirection;
+use zkpi::{typed_wire, Bounds, Venue};
+use zkpi_committee::application_crypto::VerifyingKey;
+use zkpi_committee::order::{
+    encode_execution_attestations, NodeExecutionAttestation, OrderedAdmission,
+};
+use zkpi_committee::pretrade_authority::{
+    read_ack_private, read_authority_private, AcceptanceOpening, PretradeReservationBinding,
+    ReservationParty,
+};
+use zkpi_committee::proof_codec::{
+    encode_dvp_proofs, encode_quote_verification, encode_threshold_range,
+};
+use zkpi_committee::settlement_handoff::{
+    read_private as read_handoff, SettlementHandoff, SettlementHandoffBundle,
+};
+use zkpi_proofs::price_limit::{from_threshold as threshold_price_limit, PriceLimitProof};
 
 const PRICE_BITS: usize = 32;
 const AMOUNT_BITS: usize = 16;
@@ -78,11 +78,11 @@ fn hash(parts: &[&[u8]]) -> [u8; 32] {
 }
 
 // Public acceptance fixture, separate from CSD, guarantor and facility receipt keys.
-fn acknowledgement_key() -> qomm_transport::application_crypto::SigningKey {
+fn acknowledgement_key() -> zkpi_committee::application_crypto::SigningKey {
     let mut seed = [0; 64];
     seed[..32].copy_from_slice(&Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:ED:v2"));
     seed[32..].copy_from_slice(&Sha256::digest(b"QOMM:ACCEPTANCE:DEFMI-RECEIPT-KEY:PQ:v2"));
-    qomm_transport::application_crypto::SigningKey::from_bytes(&seed)
+    zkpi_committee::application_crypto::SigningKey::from_bytes(&seed)
 }
 
 fn receipt_key() -> SigningKey {
@@ -90,9 +90,9 @@ fn receipt_key() -> SigningKey {
     SigningKey::from_bytes(&seed)
 }
 
-fn trusted_kyb_issuer() -> qomm_proofs::kyb::KybIssuerKey {
+fn trusted_kyb_issuer() -> zkpi_proofs::kyb::KybIssuerKey {
     let seed: [u8; 32] = Sha256::digest(b"QOMM:ACCEPTANCE:KYB-ISSUER-KEY:v1").into();
-    qomm_proofs::kyb::KybIssuerKey::from_bytes(&zkfmi_crypto::traits::Signer::public_key(
+    zkpi_proofs::kyb::KybIssuerKey::from_bytes(&zkfmi_crypto::traits::Signer::public_key(
         zkfmi_crypto::test_support::hybrid_signer(&seed).as_ref(),
     ))
     .unwrap()
@@ -278,8 +278,8 @@ struct PreparedNoteSettlement {
 #[allow(clippy::too_many_arguments)]
 fn prepare_note_record(
     bridge: &AvalancheNoteBridge<'_, AvalancheRpcClient>,
-    authority: &qomm_transport::pretrade_authority::PretradeAuthorityBundle,
-    acknowledgement: &qomm_transport::pretrade_authority::PretradeAcknowledgement,
+    authority: &zkpi_committee::pretrade_authority::PretradeAuthorityBundle,
+    acknowledgement: &zkpi_committee::pretrade_authority::PretradeAcknowledgement,
     record: &SettlementHandoff,
     execution_attestations: &[NodeExecutionAttestation],
     admission_receipt_digest: [u8; 32],
@@ -394,7 +394,7 @@ fn prepare_note_record(
     {
         return Err("canonical note covenants do not match the acknowledged reserves".into());
     }
-    let claim_authorization = |opening: &qomm_proofs::opening_envelope::OpeningEnvelope,
+    let claim_authorization = |opening: &zkpi_proofs::opening_envelope::OpeningEnvelope,
                                asset: [u8; 32],
                                hold: [u8; 32],
                                kind: NoteClaimKind| {
@@ -581,8 +581,8 @@ fn prepare_note_record(
 #[allow(clippy::too_many_arguments)]
 fn prepare_record(
     facility: &DefmiFacility,
-    authority: &qomm_transport::pretrade_authority::PretradeAuthorityBundle,
-    acknowledgement: &qomm_transport::pretrade_authority::PretradeAcknowledgement,
+    authority: &zkpi_committee::pretrade_authority::PretradeAuthorityBundle,
+    acknowledgement: &zkpi_committee::pretrade_authority::PretradeAcknowledgement,
     handoff: &SettlementHandoffBundle,
     record: &SettlementHandoff,
     admission_receipt_digest: [u8; 32],
@@ -880,10 +880,10 @@ fn write_private_json(path: &Path, value: &serde_json::Value) -> Result<(), Stri
 
 #[allow(clippy::too_many_arguments)]
 fn settle_account_free_note_batch(
-    authority: &qomm_transport::pretrade_authority::PretradeAuthorityBundle,
-    acknowledgement: &qomm_transport::pretrade_authority::PretradeAcknowledgement,
+    authority: &zkpi_committee::pretrade_authority::PretradeAuthorityBundle,
+    acknowledgement: &zkpi_committee::pretrade_authority::PretradeAcknowledgement,
     handoff: &SettlementHandoffBundle,
-    certified: &[qomm_transport::order::CertifiedAdmissionLane],
+    certified: &[zkpi_committee::order::CertifiedAdmissionLane],
     venue: &Venue,
     governance: &BTreeMap<String, defmi::governance::GovernanceSigner>,
     authorizer: &QuorumAuthorizer,

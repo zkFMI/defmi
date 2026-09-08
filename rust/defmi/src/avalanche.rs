@@ -34,13 +34,6 @@ use base64::Engine;
 use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::scalar::Scalar;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
-use qomm_proofs::opening_envelope::{EncryptedOpeningShare, OpeningEnvelope};
-use qomm_proofs::price_limit::PriceLimitProof;
-use qomm_transport::mandate::{MakerPolicyMandate, TakerExecutionMandate};
-use qomm_transport::order::NodeAdmissionAttestation;
-use zkfmi_zk::pedersen::Pedersen;
-use zkpi::typed::TypedInstruction;
-use zkpi::Venue;
 use rand_core::{CryptoRng, RngCore};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -49,6 +42,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use zkfmi_zk::pedersen::Pedersen;
+use zkpi::typed::TypedInstruction;
+use zkpi::Venue;
+use zkpi_committee::mandate::{MakerPolicyMandate, TakerExecutionMandate};
+use zkpi_committee::order::NodeAdmissionAttestation;
+use zkpi_proofs::opening_envelope::{EncryptedOpeningShare, OpeningEnvelope};
+use zkpi_proofs::price_limit::PriceLimitProof;
 
 const MAX_RESPONSE: usize = 1_048_576;
 // Local Avalanche networks can legitimately take longer than one proposer
@@ -4305,7 +4305,7 @@ impl<'a, C: AvalancheClient> FacilityAvalancheBridge<'a, C> {
     pub fn register_admission_batch(
         &self,
         plan: &AdmissionBatchPlan,
-        admission_lanes: &[Vec<qomm_transport::order::NodeAdmissionAttestation>],
+        admission_lanes: &[Vec<zkpi_committee::order::NodeAdmissionAttestation>],
         approval: &QuorumApproval,
         now: u64,
     ) -> Result<(AdmissionBatchSnapshot, AcceptedTransition), String> {
@@ -4473,7 +4473,7 @@ impl<'a, C: AvalancheClient> FacilityAvalancheBridge<'a, C> {
         typed_instruction: &TypedInstruction,
         typed_venue: &Venue,
         asset_link: &crate::asset_link::AssetLinkProof,
-        ordered_admission: &qomm_transport::order::OrderedAdmission,
+        ordered_admission: &zkpi_committee::order::OrderedAdmission,
         mandate: &TakerExecutionMandate,
         identity: &crate::product::IdentityEvidence<'_>,
         approval: &QuorumApproval,
