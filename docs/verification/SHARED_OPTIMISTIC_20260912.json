@@ -1,0 +1,888 @@
+{
+  "schema": "zkfmi-shared-optimistic-observation/v1",
+  "recorded_at": "2026-09-12T09:23:47.889224+00:00",
+  "verdict": "smoke_only",
+  "scope": "Shared library integration, real services and native ledger on isolated softbank-l40s Docker; synthetic participants and assets",
+  "selection": {
+    "default": "joint_proof",
+    "qomm": "ZKPI_ASSURANCE_MODE=optimistic; ZKPI_OPTIMISTIC_POLICY_ID=<enrolled policy>",
+    "oclob": "OclobService::prepare_optimistic_submit + OptimisticAvalancheGateway"
+  },
+  "qomm": {
+    "joint": {
+      "artifact": "r12-qomm-default-restored.json",
+      "elapsed_ms": 36540,
+      "corporate_outbox": {
+        "attempt": 1,
+        "local_execution_fallback": false,
+        "request_digest": "57f97a0847f9bd0f0ff14835855251d4366de196546f304acde3762f020db0c7",
+        "request_id": "c18f152325b39113567c9e98429c309886f71c6279c211f03fe4d499ff2466fd",
+        "sequence": 4,
+        "state": "consumed"
+      },
+      "settlement": {
+        "automatic": true,
+        "state_root": "a348b37839e0fd069702e18cdcc44485b75110a4125e690791202221b26da47c",
+        "status": "settled"
+      },
+      "native": {
+        "after_state_root": "ecb7f0b6c268134a34dd77b6d22b3299d18f4fdc49be8f5953f288fe8dbad50b",
+        "application_execution_binding": "89ac34ba8e3e42d62fdbb3a402ae47d9c37174aa77ced57a187f9c1927de5718",
+        "application_id": "qomm",
+        "application_manifest_digest": "435eca7989f35d6226c26df06effa0474b7553e02d5d3364afff75f33f3ef542",
+        "before_state_root": "a2edc779a64c12f37f00cef7ac531290ad8e4b4b79f3d38fd2a8d182bea9c12f",
+        "block_id": "2XSPVCQKpMyjNtFypUcBKmRJAyZpT1xRtmnc2sMrHw4BSA4uRS",
+        "canonical_readback_count": 9,
+        "canonical_readback_digest": "30fdba15b5d203fab33129cd6d1733a2bea7134f68580dcd968805d82f8898ee",
+        "claim_ids": [
+          "15b4a25ccf830b08cc88ad4aff669e4109ee893eff21d28c5abdbcfbbbdd5661",
+          "3b2d4e5f26b7bebd04cd192794457a99e001ab7614d699b745dfbbcecce16ee9",
+          "48704e7b82034f66d782cb86495b4c230e26e81a88258b5ddd85caba374557b7",
+          "d9c944e6199bdf98dfe95163cbfe8af42a815a234268cbc2f2a37c1fc1d91073"
+        ],
+        "height": 193,
+        "maker_hold_id": "2eb27d9659371ecb5b5f09444fc037c75837cd0c5863d539e1233ab55327996d",
+        "post_match_maker_signature": false,
+        "post_match_taker_signature": false,
+        "sdk_finality_receipt_digest": "9652a31351bbab7b5629c79507c8a5a026ad15e9124f5c0e23eef9ccff1dc45f",
+        "statement": "d3f3b5376236968afd0d1807be5b8f1c439a431c28802fa13225970db9980e32",
+        "taker_hold_id": "7313961a2816b029850c35abfd64e43035d341ef89a19510ef1ea40d70eed4d5",
+        "transaction_id": "h4x2FkoPgEdEacvRnb2YU1TeWdRDdzy6BabcXxvBh2tU9sZsF"
+      }
+    },
+    "unchallenged": {
+      "artifact": "r12-qomm-optimistic.json",
+      "elapsed_ms": 46457,
+      "corporate_outbox": {
+        "attempt": 1,
+        "local_execution_fallback": false,
+        "request_digest": "b4e68aa60fb3412abd9e4e56993598c9db4bc55ad747a915435baa5a89bb587e",
+        "request_id": "6f7861934da79ccf2c0d67bbe8c1dea788b6318d1e905fe940d2793c219b2372",
+        "sequence": 2,
+        "state": "consumed"
+      },
+      "settlement": {
+        "automatic": true,
+        "state_root": "c3631b54ea6000eeddb9cb9e1244c3b33dcf5eddc12f140a4e326354541ed1b1",
+        "status": "settled"
+      },
+      "native": {
+        "after_state_root": "45f832a270d8461bf4da0293356fe37c659daf132aad021c30b58d6128c83911",
+        "application_execution_binding": "fbd2c0292c677e1bcb47993d3dbd2825093214b496e03ad1071861db08a69db4",
+        "application_id": "qomm",
+        "application_manifest_digest": "435eca7989f35d6226c26df06effa0474b7553e02d5d3364afff75f33f3ef542",
+        "before_state_root": "e8406573847b5e1dad06b6e474acee0d9cc25969d4c045eefeb283a257342f93",
+        "block_id": "VESDu2mrbCwGdyt5tPqdLTe8xESyxwLrnwULjAptLxLbkbZrL",
+        "canonical_readback_count": 9,
+        "canonical_readback_digest": "3876483db948fa1297cb081c9aaf1e5b626d0bef059738f8612df5b6a559967c",
+        "claim_ids": [
+          "22f21f1a4fdf562015c38a05af1116ffe3591237787bc4d8681f4419141e1471",
+          "9084d3c3c674e2bc610d032a2001684bd5f5d7132662171c551db682c2bcbf97",
+          "5c8116632e225ce90c7e6d2544883a3baa5bf63598115c83aa48db3b9e86b112",
+          "b1231cf1cd257ad2296de47ce55c0e7930c890825c1254268e8ae25611a5758a"
+        ],
+        "height": 149,
+        "maker_hold_id": "f1e7915dbef0bd484f30a2a03b4afd705dfdff20d7b035c87a48e7db96f1c434",
+        "post_match_maker_signature": false,
+        "post_match_taker_signature": false,
+        "sdk_finality_receipt_digest": "5abb047f868bda3523c1c6840cb3d0f710e8f23273276d89081305828ea3bbe1",
+        "statement": "dceb2a3ab14aa4218a3d7f1ac32035b89f0b128b1c4608ed0aa949bb84b38a29",
+        "taker_hold_id": "67c4e732c5b85cab4746412a2b77e760df96080a5f586d9eaf8a239f5fbd62e1",
+        "transaction_id": "3fskhgzcg5peiSpgCMEo6mkK9AeuQ1nMgHhLjw3qW3K1sJP8x"
+      }
+    },
+    "challenged": {
+      "artifact": "r13-qomm-challenged.json",
+      "elapsed_ms": 56960,
+      "corporate_outbox": {
+        "attempt": 1,
+        "local_execution_fallback": false,
+        "request_digest": "4c3b1e91fd2fc0d45436b7cd2a77bb624e14ade1907952b2220c25bb324c690d",
+        "request_id": "44515b3adc0a5c67bbdd40c87ad36ae361648bbb8096f338022f4c0ea117ce84",
+        "sequence": 3,
+        "state": "consumed"
+      },
+      "settlement": {
+        "automatic": true,
+        "state_root": "279047388ae9e6501bd90aa41da69884fc51eae708223f5ea073695fcfa5e53c",
+        "status": "settled"
+      },
+      "native": {
+        "after_state_root": "6063760b77aa06787a3a855371599478cf2bbfd112b023da002bcc003c2d94bb",
+        "application_execution_binding": "1d500c637d64e7f8f65b099c0727b94bebd034c5a0984baa4b0e362ec0969315",
+        "application_id": "qomm",
+        "application_manifest_digest": "435eca7989f35d6226c26df06effa0474b7553e02d5d3364afff75f33f3ef542",
+        "before_state_root": "d92bd328430695e980864406164b25fdb2954be6b646cd8db910db5c7872596b",
+        "block_id": "ChsAoRD9fGUag59SGy9j2LbJQEzGmBRoy3BS1akPMoHP93fKA",
+        "canonical_readback_count": 9,
+        "canonical_readback_digest": "abc06c5859dc4a96fcb69c9d98f30a71a20b3af59bca342568a45a6e3b2d9f19",
+        "claim_ids": [
+          "6626fe279aba098a8408518988c96bdfbc9598826f809039ecfdeab2a96cd2b1",
+          "186a6bd84cf2f32a78cf1509aa64e377c3fb80edb30070d4f4e36294c3f6d21f",
+          "d73c3a626bb986aabcd98712e1c9626a57bfd8b47a5671763c666fff82dc2e69",
+          "487498602cb9560910f8f60a48fb2a46b27aa44e4c4ee37588b8314e3748c72f"
+        ],
+        "height": 187,
+        "maker_hold_id": "70a0755e66d6c443b7fc52cc01bf8de7dfcdd5b8255889b18f80b6971a38caf1",
+        "post_match_maker_signature": false,
+        "post_match_taker_signature": false,
+        "sdk_finality_receipt_digest": "5640ef904ca407c6ea2f81aa061c936d2b3d76a63ec70d61b4f5a41a33d6a724",
+        "statement": "d404b7bff772fa11a00e694f866762a1c09db3baf77bac03c06624ec89a71dfa",
+        "taker_hold_id": "dcfc24cc46ef0d622e278cd2481d00ee327482359cca8da5c3a39a6bf2d41aef",
+        "transaction_id": "3NANf4i4J3EMropoWwa7L35wGhNbT2AsheqPHx3s18CXUs1u9"
+      }
+    },
+    "unchallenged_progress": {
+      "pending": {
+        "elapsed_ms": 18719,
+        "observed_at": 1789204234.9088063,
+        "claim_id": "21d15fbce0a13bf28edb86fc0e67050ae4beb257d5eeb52ea5e8656439dcf3eb",
+        "status": {
+          "status": "pending"
+        },
+        "challenge_deadline": 1789204254
+      },
+      "finalized": {
+        "elapsed_ms": 38249,
+        "observed_at": 1789204254.4390025,
+        "claim_id": "21d15fbce0a13bf28edb86fc0e67050ae4beb257d5eeb52ea5e8656439dcf3eb",
+        "status": {
+          "proof": null,
+          "status": "finalized"
+        },
+        "challenge_deadline": 1789204254
+      }
+    },
+    "challenged_progress": {
+      "pending": {
+        "elapsed_ms": 29401,
+        "observed_at": 1789204481.8596005,
+        "claim_id": "837e6f92261fa36ad7635141f31ff81b58a7a5011188eab61c980d6d8bc8fc00",
+        "status": {
+          "status": "pending"
+        },
+        "challenge_deadline": 1789204501
+      },
+      "challenged": {
+        "elapsed_ms": 32407,
+        "observed_at": 1789204484.864297,
+        "claim_id": "837e6f92261fa36ad7635141f31ff81b58a7a5011188eab61c980d6d8bc8fc00",
+        "status": {
+          "challenger": [
+            236,
+            14,
+            108,
+            60,
+            43,
+            58,
+            223,
+            35,
+            216,
+            133,
+            35,
+            76,
+            147,
+            72,
+            154,
+            93,
+            191,
+            51,
+            86,
+            224,
+            234,
+            50,
+            42,
+            21,
+            218,
+            241,
+            4,
+            23,
+            63,
+            6,
+            74,
+            144
+          ],
+          "response_deadline": 1789204602,
+          "status": "challenged"
+        },
+        "challenge_deadline": 1789204501
+      },
+      "proven": {
+        "elapsed_ms": 36914,
+        "observed_at": 1789204489.3719954,
+        "claim_id": "837e6f92261fa36ad7635141f31ff81b58a7a5011188eab61c980d6d8bc8fc00",
+        "status": {
+          "proof": [
+            129,
+            34,
+            201,
+            29,
+            112,
+            6,
+            226,
+            234,
+            78,
+            168,
+            199,
+            245,
+            153,
+            16,
+            137,
+            47,
+            63,
+            195,
+            161,
+            164,
+            100,
+            185,
+            88,
+            93,
+            72,
+            55,
+            133,
+            200,
+            65,
+            107,
+            53,
+            67
+          ],
+          "status": "proven"
+        },
+        "challenge_deadline": 1789204501
+      },
+      "finalized": {
+        "elapsed_ms": 48933,
+        "observed_at": 1789204501.3907611,
+        "claim_id": "837e6f92261fa36ad7635141f31ff81b58a7a5011188eab61c980d6d8bc8fc00",
+        "status": {
+          "proof": [
+            129,
+            34,
+            201,
+            29,
+            112,
+            6,
+            226,
+            234,
+            78,
+            168,
+            199,
+            245,
+            153,
+            16,
+            137,
+            47,
+            63,
+            195,
+            161,
+            164,
+            100,
+            185,
+            88,
+            93,
+            72,
+            55,
+            133,
+            200,
+            65,
+            107,
+            53,
+            67
+          ],
+          "status": "finalized"
+        },
+        "challenge_deadline": 1789204501
+      }
+    },
+    "restart": "r13-qomm-five-validator-restart-readback.json",
+    "durable_outbox": "r12-qomm-final-snapshot.json"
+  },
+  "oclob": {
+    "artifact": "r11-service/outcome.json",
+    "final_root": "368dbc9fbd00f49f28974ec1f5386973d4d0dc282441ad8cb05a007b5359bf69",
+    "orders": [
+      {
+        "order": 0,
+        "fills": [],
+        "challenge_proof_requested": false,
+        "early_account_rejection": "Avalanche RPC rejected the request: optimistic execution is not finalized for this settlement",
+        "native_settlement": {
+          "after_root": "be4f4ba7f9ba81af0503414a44076eb3ca704258f7496246239887c728cd53d0",
+          "block_id": "2X8xhFPLRH8WGNwY8nYug7WmKaYhZAXJ8rqtmYwNNqdt9ydhU3",
+          "height": 18,
+          "transaction_id": "TG8BL83xzUAGWjfLEdkq6acAAZbbf3aZWesNEWo4sjLwz5KNb"
+        }
+      },
+      {
+        "order": 1,
+        "fills": [
+          {
+            "maker_order": [
+              4,
+              137,
+              26,
+              51,
+              138,
+              46,
+              203,
+              149,
+              22,
+              61,
+              28,
+              38,
+              213,
+              183,
+              211,
+              186,
+              184,
+              36,
+              83,
+              235,
+              31,
+              0,
+              68,
+              131,
+              145,
+              146,
+              92,
+              87,
+              249,
+              91,
+              128,
+              96
+            ],
+            "price": 100,
+            "quantity": 40,
+            "taker_order": [
+              197,
+              119,
+              225,
+              91,
+              72,
+              153,
+              10,
+              236,
+              123,
+              230,
+              136,
+              255,
+              253,
+              34,
+              18,
+              202,
+              149,
+              70,
+              213,
+              14,
+              122,
+              79,
+              217,
+              24,
+              68,
+              18,
+              98,
+              244,
+              18,
+              246,
+              162,
+              31
+            ]
+          }
+        ],
+        "challenge_proof_requested": true,
+        "early_account_rejection": "Avalanche RPC rejected the request: optimistic execution is not finalized for this settlement",
+        "native_settlement": {
+          "after_root": "368dbc9fbd00f49f28974ec1f5386973d4d0dc282441ad8cb05a007b5359bf69",
+          "block_id": "2hHNU7yRdkdiogcqNYXqxjUtKUDY9m8zTYhFHhkEW1SjGf5LXp",
+          "height": 24,
+          "transaction_id": "YSMBB8ZzyXjCJa12Ptzt5UMRfecsovikQ7abRo5uu4fzJ3wzW"
+        }
+      }
+    ],
+    "restart": "r11-service/restart-readback.json"
+  },
+  "protocol": {
+    "artifact": "r11-protocol/outcome.json",
+    "cases": [
+      {
+        "application": "QOMM",
+        "case": "unchallenged",
+        "challenger": {
+          "available": 200,
+          "locked": 0
+        },
+        "claim": "6d6be8e3a9b92b6791034f109cbf86cefb5f8b17e08e2b2d05164e92f1316449",
+        "early_settlement": "rejected",
+        "funding_accounts_each": 800,
+        "proposer": {
+          "available": 200,
+          "locked": 0
+        },
+        "provisional_root": "75e1ce61c817c4c4f015b931f6a437e9844c5d5ff703ff5f07f707554e739a68",
+        "snapshot_readback": "same_root_and_locked_bond",
+        "status": {
+          "proof": null,
+          "status": "finalized"
+        }
+      },
+      {
+        "application": "OCLOB",
+        "case": "unchallenged",
+        "challenger": {
+          "available": 200,
+          "locked": 0
+        },
+        "claim": "17b78b7ea979cdd94ca646009e422c094ce3fee43e8f9e9611546756ae21e4a9",
+        "early_settlement": "rejected",
+        "funding_accounts_each": 800,
+        "proposer": {
+          "available": 200,
+          "locked": 0
+        },
+        "provisional_root": "e354a37dcfdf81a65814428d6bdb9ba6f2ffbf0d6b1204f0888247c4b550d711",
+        "snapshot_readback": "same_root_and_locked_bond",
+        "status": {
+          "proof": null,
+          "status": "finalized"
+        }
+      },
+      {
+        "application": "QOMM",
+        "case": "defended",
+        "challenger": {
+          "available": 190,
+          "locked": 0
+        },
+        "claim": "325439e3490c5b4b86c0e5e00fa62ff131207a2d9b9ff9fa86d7534abaaa576c",
+        "early_settlement": "rejected",
+        "funding_accounts_each": 800,
+        "proposer": {
+          "available": 210,
+          "locked": 0
+        },
+        "provisional_root": "c3f7a4d3d3eb9b9bbb666a78127496668aa9088b9ec47ba5c1287ab01fd8c9ee",
+        "snapshot_readback": "same_root_and_locked_bond",
+        "status": {
+          "proof": [
+            204,
+            220,
+            223,
+            202,
+            8,
+            34,
+            151,
+            37,
+            229,
+            251,
+            145,
+            200,
+            6,
+            3,
+            43,
+            254,
+            123,
+            74,
+            65,
+            83,
+            62,
+            86,
+            66,
+            178,
+            19,
+            113,
+            59,
+            180,
+            95,
+            51,
+            163,
+            173
+          ],
+          "status": "finalized"
+        }
+      },
+      {
+        "application": "OCLOB",
+        "case": "defended",
+        "challenger": {
+          "available": 190,
+          "locked": 0
+        },
+        "claim": "0776ff630a472a41561d7db82b821774cf92288fec72e68c29942cf50d838665",
+        "early_settlement": "rejected",
+        "funding_accounts_each": 800,
+        "proposer": {
+          "available": 210,
+          "locked": 0
+        },
+        "provisional_root": "ce91631c2b4ff59180488a113d7f023694858ab9f6396f335c3d822c7b444484",
+        "snapshot_readback": "same_root_and_locked_bond",
+        "status": {
+          "proof": [
+            162,
+            255,
+            53,
+            30,
+            100,
+            13,
+            102,
+            26,
+            73,
+            187,
+            246,
+            200,
+            139,
+            87,
+            227,
+            60,
+            226,
+            7,
+            147,
+            237,
+            101,
+            9,
+            240,
+            120,
+            132,
+            127,
+            120,
+            49,
+            212,
+            21,
+            8,
+            147
+          ],
+          "status": "finalized"
+        }
+      },
+      {
+        "application": "QOMM",
+        "case": "fraud",
+        "challenger": {
+          "available": 300,
+          "locked": 0
+        },
+        "claim": "753462fda5c58950d5a957c9292a8184f91b77079cac5f81ad832f1dd9502033",
+        "early_settlement": "rejected",
+        "funding_accounts_each": 800,
+        "proposer": {
+          "available": 100,
+          "locked": 0
+        },
+        "provisional_root": "c0f80a3544224d6616b59c97e22f8f6ff6e701ebb9886dadb65ef57620df33b4",
+        "snapshot_readback": "same_root_and_locked_bond",
+        "status": {
+          "challenger": [
+            160,
+            123,
+            97,
+            105,
+            91,
+            118,
+            255,
+            219,
+            202,
+            238,
+            80,
+            161,
+            191,
+            74,
+            239,
+            14,
+            180,
+            186,
+            117,
+            225,
+            43,
+            211,
+            106,
+            71,
+            254,
+            153,
+            226,
+            31,
+            68,
+            140,
+            200,
+            232
+          ],
+          "proof": [
+            204,
+            220,
+            223,
+            202,
+            8,
+            34,
+            151,
+            37,
+            229,
+            251,
+            145,
+            200,
+            6,
+            3,
+            43,
+            254,
+            123,
+            74,
+            65,
+            83,
+            62,
+            86,
+            66,
+            178,
+            19,
+            113,
+            59,
+            180,
+            95,
+            51,
+            163,
+            173
+          ],
+          "status": "rejected"
+        }
+      },
+      {
+        "application": "OCLOB",
+        "case": "fraud",
+        "challenger": {
+          "available": 300,
+          "locked": 0
+        },
+        "claim": "26ddd3a72673fc299ed0ffc93356ffd50612bd83d86537ce2e4280bafd63bf41",
+        "early_settlement": "rejected",
+        "funding_accounts_each": 800,
+        "proposer": {
+          "available": 100,
+          "locked": 0
+        },
+        "provisional_root": "bc20c678e1ceff948b973c87d8143a3185b0556adfa255087b85a547f1636d94",
+        "snapshot_readback": "same_root_and_locked_bond",
+        "status": {
+          "challenger": [
+            60,
+            149,
+            206,
+            132,
+            204,
+            37,
+            140,
+            192,
+            19,
+            160,
+            16,
+            224,
+            237,
+            11,
+            80,
+            167,
+            124,
+            71,
+            164,
+            22,
+            162,
+            235,
+            157,
+            134,
+            226,
+            91,
+            73,
+            103,
+            131,
+            250,
+            61,
+            254
+          ],
+          "proof": [
+            162,
+            255,
+            53,
+            30,
+            100,
+            13,
+            102,
+            26,
+            73,
+            187,
+            246,
+            200,
+            139,
+            87,
+            227,
+            60,
+            226,
+            7,
+            147,
+            237,
+            101,
+            9,
+            240,
+            120,
+            132,
+            127,
+            120,
+            49,
+            212,
+            21,
+            8,
+            147
+          ],
+          "status": "rejected"
+        }
+      },
+      {
+        "application": "QOMM",
+        "case": "timeout",
+        "challenger": {
+          "available": 300,
+          "locked": 0
+        },
+        "claim": "89830ee771714ccf3ab4dc8135e023896d30a500009c74c9c1b0ef0c5869b8c4",
+        "early_settlement": "rejected",
+        "funding_accounts_each": 800,
+        "proposer": {
+          "available": 100,
+          "locked": 0
+        },
+        "provisional_root": "c436bbecaffac5d08194f93d5e26e692d963dc12a2a1015ccfe4308408e04ef8",
+        "snapshot_readback": "same_root_and_locked_bond",
+        "status": {
+          "challenger": [
+            102,
+            128,
+            72,
+            200,
+            222,
+            230,
+            171,
+            169,
+            232,
+            83,
+            13,
+            56,
+            29,
+            46,
+            242,
+            230,
+            31,
+            169,
+            50,
+            133,
+            155,
+            17,
+            129,
+            216,
+            94,
+            23,
+            57,
+            190,
+            62,
+            129,
+            98,
+            194
+          ],
+          "proof": null,
+          "status": "rejected"
+        }
+      },
+      {
+        "application": "OCLOB",
+        "case": "timeout",
+        "challenger": {
+          "available": 300,
+          "locked": 0
+        },
+        "claim": "b95bc18a0b1c0ea6eb7e820ced3b3d1570d504c5f17052a3268180fa841c1f96",
+        "early_settlement": "rejected",
+        "funding_accounts_each": 800,
+        "proposer": {
+          "available": 100,
+          "locked": 0
+        },
+        "provisional_root": "c3f46f05d6d11f9126bda0448eb56427af765e1912cd7249c981fde1257030a3",
+        "snapshot_readback": "same_root_and_locked_bond",
+        "status": {
+          "challenger": [
+            45,
+            57,
+            141,
+            108,
+            46,
+            157,
+            210,
+            92,
+            215,
+            140,
+            244,
+            100,
+            10,
+            86,
+            178,
+            253,
+            229,
+            140,
+            130,
+            136,
+            194,
+            184,
+            217,
+            140,
+            51,
+            20,
+            238,
+            219,
+            244,
+            241,
+            177,
+            175
+          ],
+          "proof": null,
+          "status": "rejected"
+        }
+      }
+    ],
+    "restart": "r11-protocol/restart-readback.json"
+  },
+  "development_checks": {
+    "log": "development.log",
+    "purpose": "Development only; acceptance above uses real input, native transaction, persisted state and downstream outbox observations"
+  },
+  "versions": {
+    "images": "runtime-images.json",
+    "binaries": "runtime-binaries.json",
+    "native_protocol_service": "r10 implementation image; formatting-only and unused-import cleanup afterward",
+    "qomm": "r12 runtime fixes ProductSettlementEvidence shared authorization decode; r13 changes only development challenge helper",
+    "local_source": "local-source-sha256.json",
+    "native_embedded_source": "r10-embedded-source-sha256.txt"
+  },
+  "fixed_regressions": [
+    {
+      "problem": "optimistic state omitted from canonical state root",
+      "fix": "include nonempty shared state in State::root; preserve empty legacy state root",
+      "evidence": "r11-protocol/outcome.json and restart-readback.json"
+    },
+    {
+      "problem": "ProductSettlementEvidence still decoded only threshold quote format",
+      "fix": "use bounded shared QuoteAuthorization codec",
+      "failed": "r10-qomm-optimistic-failed.json",
+      "fixed": "r12-qomm-optimistic.json",
+      "recovered_old_outbox_sequence": 1,
+      "recovery": "r12-qomm-final-snapshot.json"
+    },
+    {
+      "problem": "restart observer read before RPC readiness",
+      "fix": "bounded retry of exact root/readback after restart",
+      "evidence": "r11-service/restart-readback.json"
+    }
+  ],
+  "limits": [
+    "Single-host isolated research smoke, not independent operators or a statistical performance comparison.",
+    "Default/optimistic selection is through configuration and library APIs. Existing QOMM HTTP waits for settlement; WebSocket sends provisional claim metadata. Public OCLOB HTTP selector is not wired.",
+    "QOMM mathematical price-selection proof and OCLOB existing 5-of-7 signed transition boundary remain different verification mechanisms.",
+    "No production collateral economics, challenger service, key-custody deployment or independent cryptographic review.",
+    "A stopped coordinator can leave a pending claim requiring a later advance transaction. In this interrupted fixture, proposer readback is 110 available plus 100 locked; challenger is 190. Shared isolated cases with completed drivers end with no locked balance.",
+    "MPC proof inputs are not made resumable across node restart; response unavailability can forfeit the bond.",
+    "Local sibling-checkout Cargo patches are used; this work is uncommitted and unpublished."
+  ],
+  "cleanup": "Only isolated task QOMM services stopped after completion; durable volumes and evidence retained."
+}

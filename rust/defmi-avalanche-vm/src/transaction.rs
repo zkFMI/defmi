@@ -6,6 +6,14 @@ use crate::id::Id;
 pub const MAX_JSON_DEPTH: usize = 64;
 
 pub const ISSUE_METHODS: &[&str] = &[
+    "defmivm.issueOptimisticPolicy",
+    "defmivm.issueOptimisticExecution",
+    "defmivm.issueOptimisticBond",
+    "defmivm.issueOptimisticProposal",
+    "defmivm.issueOptimisticChallenge",
+    "defmivm.issueOptimisticAnswer",
+    "defmivm.issueOptimisticAdvance",
+    "defmivm.issueOptimisticAccountSettlement",
     "defmivm.issueApplication",
     "defmivm.issueAsset",
     "defmivm.issueCSDIssuer",

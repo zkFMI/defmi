@@ -443,6 +443,8 @@ pub enum NoteProofVersion {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct State {
+    #[serde(default, skip_serializing_if = "zkpi_committee::optimistic::OptimisticState::is_empty")]
+    pub optimistic: zkpi_committee::optimistic::OptimisticState,
     pub note_proof_version: NoteProofVersion,
     #[serde(default, skip_serializing_if = "ConfidentialState::is_empty")]
     pub confidential: ConfidentialState,
@@ -568,6 +570,7 @@ impl State {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.optimistic.validate(&zkpi_committee::optimistic::ApplicationAuthentication)?;
         if let Some(policy) = &self.deployment_crypto_policy {
             policy.validate().map_err(|error| error.to_string())?;
             if policy.mode == zkfmi_crypto::mode::PqcMode::On && !self.confidential.is_empty() {
@@ -1140,7 +1143,7 @@ impl State {
         if self.deployment_crypto_policy.as_ref() != authorizer.deployment_crypto_policy() {
             return Err("state deployment crypto policy differs from governance authority".into());
         }
-        application.validate_state(self)?;
+        crate::application::validate_host_state(application, self)?;
         let transaction = TransactionEnvelope::decode(bytes)?;
         let transaction_id = transaction.id()?;
         if self.applied_transactions.contains(&transaction_id.0) {
@@ -1156,7 +1159,7 @@ impl State {
             .checked_add(1)
             .ok_or_else(|| "state transition counter overflow".to_string())?;
         next.validate()?;
-        application.validate_state(&next)?;
+        crate::application::validate_host_state(application, &next)?;
         let after_root = next.root();
         *self = next;
         Ok(TransitionReceipt {
@@ -1170,6 +1173,15 @@ impl State {
     pub fn root(&self) -> [u8; 32] {
         let mut hash = Sha256::new();
         hash.update(STATE_DOMAIN);
+        // The dispute lifecycle and escrow are consensus state. Preserve the
+        // established root for networks that have never enabled this mode.
+        if !self.optimistic.is_empty() {
+            hash.update(b"optimistic-execution:v1");
+            let encoded = serde_json::to_vec(&self.optimistic)
+                .expect("validated optimistic state serializes");
+            hash.update((encoded.len() as u64).to_be_bytes());
+            hash.update(encoded);
+        }
         if !self.confidential.is_empty() {
             hash.update(b"confidential-assets:v1");
             let encoded = serde_json::to_vec(&self.confidential).expect("validated confidential state serializes");

@@ -1470,7 +1470,8 @@ impl From<&CreditFacilityTransition> for CreditHoldSnapshot {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StateLeg {
     pub handle: [u8; 32],
     pub asset_id: [u8; 32],
@@ -1491,7 +1492,8 @@ impl StateLeg {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SettlementOrder {
     pub operation_id: [u8; 32],
     pub nullifier: [u8; 32],

@@ -13,8 +13,10 @@ use zkpi_committee::mpc_result::{
 };
 use zkpi_committee::order::{decode_execution_attestations, encode_execution_attestations};
 use zkpi_committee::proof_codec::{
-    decode_dvp_proofs, decode_quote_verification, decode_threshold_range, encode_dvp_proofs,
-    encode_quote_verification, encode_threshold_range,
+    decode_dvp_proofs, decode_threshold_range, encode_dvp_proofs, encode_threshold_range,
+};
+use zkpi_committee::quote_authorization::{
+    decode_quote_authorization, encode_quote_authorization,
 };
 
 const MAX_TYPED_BYTES: usize = 512 * 1024;
@@ -124,7 +126,7 @@ impl ProductSettlementEvidence {
         bounded(
             &self.quote_verification,
             MAX_QUOTE_BYTES,
-            "complete quote proof",
+            "quote authorization",
         )?;
         bounded(
             &self.price_limit_proof,
@@ -138,9 +140,9 @@ impl ProductSettlementEvidence {
             return Err("typed zkPI evidence is not canonically encoded".into());
         }
 
-        let quote = decode_quote_verification(&self.quote_verification)?;
-        if encode_quote_verification(&quote)? != self.quote_verification {
-            return Err("complete quote proof is not canonically encoded".into());
+        let quote = decode_quote_authorization(&self.quote_verification)?;
+        if encode_quote_authorization(&quote)? != self.quote_verification {
+            return Err("quote authorization is not canonically encoded".into());
         }
 
         let limit = decode_threshold_range(&self.price_limit_proof)?;

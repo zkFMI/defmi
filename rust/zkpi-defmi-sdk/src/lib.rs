@@ -12,6 +12,7 @@ pub mod admission;
 pub mod application;
 pub mod execution;
 pub mod finality;
+pub mod optimistic;
 pub mod reservation;
 
 /// Durable legal-entity request queue. Applications use this facade instead
@@ -29,6 +30,7 @@ pub mod product {
     pub use zkpi_committee::product_proof_coordinator::{
         authorize_standing_pool_allocation, complete_product_proof, complete_quote_request,
         finalize_product_settlement, prove_complete_quote, prove_product_settlement,
+        propose_optimistic_quote, prove_prepared_quote, PreparedQuote,
         CompleteQuotePublicInput, CompleteQuoteRequest, ProductSettlementProof,
         ProductSettlementRequest, RegisteredPolicyOpening,
     };

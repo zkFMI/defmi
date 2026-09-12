@@ -563,7 +563,7 @@ fn prepare_note_record(
         order,
         evidence: ProductSettlementEvidence {
             typed_instruction: typed_wire::encode(&typed),
-            quote_verification: encode_quote_verification(&record.quote_verification)?,
+            quote_verification: zkpi_committee::quote_authorization::encode_quote_authorization(&record.quote_verification)?,
             price_limit_proof: encode_threshold_range(&record.price_limit_proof)?,
             dvp_proofs: encode_dvp_proofs(&record.dvp_proofs)?,
             mpc_execution_attestations: encode_execution_attestations(execution_attestations)?,

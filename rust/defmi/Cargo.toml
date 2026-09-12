@@ -31,7 +31,7 @@ public-audit = ["dep:qomm-batch-audit"]
 pqc-notes-research = ["zkfmi-crypto/private-proof-witness"]
 
 [dependencies]
-qomm-batch-audit = { git = "https://github.com/zkFMI/zkpi.git", rev = "fc9579070484859aff9110a927be79c1ffe22b70", optional = true }
+qomm-batch-audit = { git = "https://github.com/zkFMI/zkpi.git", rev = "12c4407dab771572a40f3e6e516f4e35f48218f0", optional = true }
 zkfmi-crypto.workspace = true
 zeroize = { version = "1.8", features = ["alloc"] }
 dekyx-core = { workspace = true, optional = true }

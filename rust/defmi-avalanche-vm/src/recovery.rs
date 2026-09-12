@@ -140,7 +140,7 @@ impl CheckpointStatement {
         application: &dyn ApplicationRuntime,
     ) -> Result<Self, String> {
         let decoded = decode_snapshot(summary, snapshot)?;
-        application.validate_state(&decoded.state)?;
+        crate::application::validate_host_state(application, &decoded.state)?;
         if archive.is_empty() || archive.len() > MAX_ARCHIVE_BYTES {
             return Err("archived records must contain 1..=64 MiB".into());
         }
@@ -339,6 +339,6 @@ pub fn restore(
         return Err("recovery requires historical and fresh PQ quorum authorization".into());
     }
     let decoded = decode_snapshot(&summary, snapshot)?;
-    application.validate_state(&decoded.state)?;
+    crate::application::validate_host_state(application, &decoded.state)?;
     Ok(decoded)
 }

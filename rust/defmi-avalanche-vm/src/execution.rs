@@ -57,7 +57,7 @@ use zkpi_committee::order::{
     verify_admission_lane, verify_execution_lane, CertifiedAdmissionLane, NodeAdmissionAttestation,
 };
 use zkpi_committee::proof_codec::{
-    decode_dvp_proofs, decode_quote_verification, decode_threshold_range, QuoteVerificationBundle,
+    decode_dvp_proofs, decode_threshold_range,
 };
 use zkpi_proofs::opening_envelope::{EncryptedOpeningShare, OpeningEnvelope};
 use zkpi_proofs::price_limit::{from_threshold as threshold_price_limit, PriceLimitDirection};
@@ -79,6 +79,7 @@ mod application_reservation;
 mod application_settlement;
 mod confidential;
 mod participant;
+mod optimistic;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -998,6 +999,13 @@ pub(crate) fn execute(
         .as_object()
         .ok_or_else(|| "transaction parameters must be an object".to_string())?;
     match transaction.method.as_str() {
+        "defmivm.issueOptimisticPolicy" => optimistic::enroll(state, params, authorizer, application),
+        "defmivm.issueOptimisticExecution" => optimistic::register(state, params, authorizer),
+        "defmivm.issueOptimisticBond" => optimistic::bond(state, params, authorizer),
+        "defmivm.issueOptimisticProposal" => optimistic::propose(state, params, timestamp),
+        "defmivm.issueOptimisticChallenge" => optimistic::challenge(state, params, timestamp),
+        "defmivm.issueOptimisticAnswer" => optimistic::answer(state, params, timestamp, application),
+        "defmivm.issueOptimisticAdvance" => optimistic::advance(state, params, timestamp),
         "defmivm.issueApplication" => application.execute(state, params, authorizer, timestamp),
         "defmivm.issueAsset" => register_asset(state, params, authorizer),
         "defmivm.issueCSDIssuer" => register_csd_issuer(state, params, authorizer, timestamp),
@@ -1007,7 +1015,7 @@ pub(crate) fn execute(
         "defmivm.issueConfidentialNote" => confidential::issue(state, params, authorizer, timestamp),
         "defmivm.issueConfidentialNoteTransfer" => confidential::transfer(state, params, authorizer, timestamp),
         "defmivm.issueConfidentialNoteReservation" => confidential::reserve(state, params, authorizer, timestamp),
-        "defmivm.issueConfidentialNoteFill" => application_settlement::confidential_fill(state, params, timestamp),
+        "defmivm.issueConfidentialNoteFill" => application_settlement::confidential_fill(state, params, timestamp, application),
         "defmivm.issueStandingNotePool" => {
             register_standing_note_pool(state, params, authorizer, timestamp)
         }
@@ -1042,10 +1050,10 @@ pub(crate) fn execute(
             application_reservation::reserve(state, params, authorizer, timestamp)
         }
         "defmivm.issueApplicationNoteFill" => {
-            application_settlement::fill(state, params, timestamp)
+            application_settlement::fill(state, params, timestamp, application)
         }
         "defmivm.issueApplicationNoteFillBatch" => {
-            application_settlement::fill_batch(state, params, timestamp)
+            application_settlement::fill_batch(state, params, timestamp, application)
         }
         "defmivm.issueApplicationNoteRelease" => {
             application_settlement::release(state, params, timestamp)
@@ -1077,6 +1085,16 @@ pub(crate) fn execute(
         "defmivm.issueCreditControl" => control_credit(state, params, authorizer, timestamp),
         "defmivm.issueCreditAmendment" => amend_credit(state, params, authorizer, timestamp),
         "defmivm.issueSettlement" => settle(state, params, authorizer, timestamp),
+        "defmivm.issueOptimisticAccountSettlement" => {
+            require_keys(params, &["settlement", "approval", "expectedBeforeRoot"])?;
+            let settlement:defmi::application_settlement::OptimisticAccountSettlement=field(params,"settlement")?;
+            let statement=settlement.statement()?;
+            authorize(state,params,statement,authorizer)?;
+            let reference=&settlement.reference;
+            state.optimistic.require_finalized(reference.claim,&reference.context,reference.output_root)?;
+            application.verify_optimistic_transition(reference)?;
+            apply_settlement_order(state,&settlement.order,timestamp,statement)
+        }
         "defmivm.issueCrossDomainDomain" => register_cross_domain_domain(state, params, authorizer),
         "defmivm.issueCrossDomainCommittee" => {
             register_cross_domain_committee(state, params, authorizer)
@@ -5611,13 +5629,14 @@ fn verify_quote_evidence(
     raw: &[u8],
     order: &ProductNoteSettlementOrder,
     timestamp: u64,
-) -> Result<QuoteVerificationBundle, String> {
+) -> Result<zkpi_committee::quote_authorization::QuoteAuthorization, String> {
     let verifier = settlement_verifier_for(state, order, timestamp)?;
-    let evidence = decode_quote_verification(raw)?;
+    let evidence = zkpi_committee::quote_authorization::decode_quote_authorization(raw)?;
     let digest = evidence.verify()?;
-    if evidence.eligibility_bits != usize::from(verifier.quote_eligibility_bits)
-        || evidence.span_bits != usize::from(verifier.quote_span_bits)
-        || evidence.public.registry_digest != verifier.quote_registry_digest
+    evidence.require_finalized(&state.optimistic)?;
+    if evidence.eligibility_bits() != usize::from(verifier.quote_eligibility_bits)
+        || evidence.span_bits() != usize::from(verifier.quote_span_bits)
+        || evidence.public().registry_digest != verifier.quote_registry_digest
     {
         return Err("complete quote proof differs from the governance-pinned circuit".into());
     }
@@ -5625,22 +5644,22 @@ fn verify_quote_evidence(
         return Err("complete quote proof does not match the settlement digest".into());
     }
     let winning_policy = evidence
-        .public
+        .public()
         .registry
-        .get(evidence.proof.winner_index)
+        .get(evidence.winner_index())
         .ok_or_else(|| "complete quote proof has no winning policy".to_string())?;
-    if registered_policy_digest(evidence.proof.winner_index, winning_policy)
+    if registered_policy_digest(evidence.winner_index(), winning_policy)
         != order.maker_policy_digest
     {
         return Err("complete quote proof winner differs from the signed Maker policy".into());
     }
-    if evidence.public.market_digest != order.settlement.market_statement_digest {
+    if evidence.public().market_digest != order.settlement.market_statement_digest {
         return Err("complete quote proof names another market statement".into());
     }
-    if evidence.public.slot != order.admission_sequence {
+    if evidence.public().slot != order.admission_sequence {
         return Err("complete quote proof names another admission sequence".into());
     }
-    let quote_time = u64::try_from(evidence.public.now)
+    let quote_time = u64::try_from(evidence.public().now)
         .map_err(|_| "complete quote proof has a negative market time".to_string())?;
     if quote_time > timestamp || timestamp - quote_time > verifier.max_horizon {
         return Err("complete quote proof is future-dated or stale".into());
@@ -5702,8 +5721,8 @@ fn verify_product_settlement_evidence(
         typed::TradeDirection::TakerSells => 1,
     };
     if direction != context_direction
-        || quote.public.direction != quote_direction
-        || quote.public.qty_commitment != instruction.payment.amount_commitment
+        || quote.public().direction != quote_direction
+        || quote.public().qty_commitment != instruction.payment.amount_commitment
     {
         return Err("reserved request, Quote proof and typed zkPI are inconsistent".into());
     }
@@ -5755,7 +5774,12 @@ fn verify_product_settlement_evidence(
             .map_err(|_| "settlement MPC lane is outside usize".to_string())?,
         execution.digest,
     )?;
-    if quote.context != complete_quote_context(job_id, order.taker_mandate_digest) {
+    if let zkpi_committee::quote_authorization::QuoteAuthorization::Optimistic(q) = &quote {
+        if q.proposal.context.job != job_id || q.policy.application != order.venue_id {
+            return Err("optimistic quote names another executed job or venue".into());
+        }
+    }
+    if quote.context() != complete_quote_context(job_id, order.taker_mandate_digest) {
         return Err(
             "complete quote proof is not bound to the signed MPC execution receipts".into(),
         );
@@ -6885,6 +6909,12 @@ fn settle(
     order.body()?;
     let statement = order.statement()?;
     authorize(state, params, statement, authorizer)?;
+    apply_settlement_order(state,&order,timestamp,statement)
+}
+
+fn apply_settlement_order(
+    state:&mut State, order:&SettlementOrder, timestamp:u64, statement:[u8;32],
+) -> Result<[u8;32],String> {
     if timestamp > order.deadline {
         return Err("payment instruction has expired".into());
     }

@@ -170,6 +170,37 @@ impl ApplicationSpendHead {
 /// orders are not present. The signed zkPI carries pseudonymous recipients.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OptimisticSettlementReference {
+    pub claim: [u8; 32],
+    pub context: zkpi_committee::optimistic::ExecutionContext,
+    pub output_root: [u8; 32],
+    /// Application-public output statement. The installed application verifier
+    /// binds its digest and the fill's MPC result; this never carries a witness.
+    pub public_output: Vec<u8>,
+}
+
+/// Existing governance-authorized account settlement with a mandatory,
+/// inseparable optimistic transition reference. This is a distinct endpoint;
+/// its approval cannot authorize the ordinary unwrapped settlement.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptimisticAccountSettlement {
+    pub order: crate::facility::SettlementOrder,
+    pub reference: OptimisticSettlementReference,
+}
+impl OptimisticAccountSettlement {
+    pub fn statement(&self) -> Result<[u8;32],String> {
+        self.order.body()?;
+        if self.reference.claim==ZERO || self.reference.output_root==ZERO
+            || self.reference.output_root!=self.order.market_statement_digest
+            || self.reference.public_output.is_empty() || self.reference.public_output.len()>MAX_PROOF_BYTES
+        { return Err("account settlement differs from its optimistic transition".into()); }
+        zkpi_committee::optimistic::command_digest("account_settlement",self)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApplicationNoteFill {
     pub version: u16,
     pub scope: ApplicationReserveScope,
@@ -195,6 +226,8 @@ pub struct ApplicationNoteFill {
     /// unchanged. A signed group member cannot execute through that endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch: Option<ApplicationFillBatchBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimistic: Option<OptimisticSettlementReference>,
 }
 
 impl ApplicationNoteFill {
@@ -204,6 +237,13 @@ impl ApplicationNoteFill {
         self.cash.validate()?;
         if let Some(batch) = &self.batch {
             batch.validate()?;
+        }
+        if let Some(reference) = &self.optimistic {
+            if reference.claim == ZERO || reference.output_root == ZERO
+                || reference.public_output.is_empty() || reference.public_output.len() > MAX_PROOF_BYTES
+                || reference.context.application != self.scope.venue_id
+                || reference.context.network != self.scope.defmi_id
+            { return Err("optimistic application settlement has another scope or an empty output".into()); }
         }
         if !matches!(self.version, 2 | 3)
             || [

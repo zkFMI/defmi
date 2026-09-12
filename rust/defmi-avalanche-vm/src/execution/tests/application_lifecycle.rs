@@ -451,6 +451,7 @@ impl Fixture {
             pq_committee: self.pq_committee.clone(),
             pq_authorization: None,
             batch: None,
+            optimistic: None,
             scope: self.scope.clone(),
             before_root: self.state.root(),
             operation_id: [tag + 40; 32],

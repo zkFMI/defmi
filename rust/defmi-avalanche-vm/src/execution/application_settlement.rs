@@ -6,6 +6,16 @@ use defmi::application_settlement::{
 };
 use defmi::note_chain::NoteClaimKind;
 
+fn verify_optimistic(
+    state: &State, fill: &ApplicationNoteFill, application: &dyn crate::application::ApplicationRuntime,
+) -> Result<(), String> {
+    if let Some(reference) = &fill.optimistic {
+        state.optimistic.require_finalized(reference.claim, &reference.context, reference.output_root)?;
+        application.verify_optimistic_settlement(reference, fill.mpc_result_digest)?;
+    }
+    Ok(())
+}
+
 fn consume_covenant(
     state: &mut State,
     record: &crate::state::ApplicationReservationRecord,
@@ -71,19 +81,22 @@ pub(super) fn fill(
     state: &mut State,
     params: &Map<String, Value>,
     now: u64,
+    application: &dyn crate::application::ApplicationRuntime,
 ) -> Result<[u8; 32], String> {
     require_keys(params, &["fill"])?;
     let order: ApplicationNoteFill = field(params, "fill")?;
+    verify_optimistic(state, &order, application)?;
     if order.batch.is_some() {
         return Err("a signed batch member cannot settle individually".into());
     }
     apply_fill(state, &order, state.root(), now)
 }
 
-pub(super) fn confidential_fill(state: &mut State, params: &Map<String, Value>, now: u64)
+pub(super) fn confidential_fill(state: &mut State, params: &Map<String, Value>, now: u64, application: &dyn crate::application::ApplicationRuntime)
     -> Result<[u8; 32], String> {
     require_keys(params, &["fill"])?;
     let order: defmi::confidential_notes::ConfidentialFill = field(params, "fill")?;
+    verify_optimistic(state, &order.fill, application)?;
     let scope = state.application_reserve_scopes.get(&id_key(&order.fill.scope.key()?))
         .ok_or("confidential fill scope is not registered")?.clone();
     let identities = [order.fill.securities_asset, order.fill.cash_asset].map(|asset|
@@ -110,6 +123,7 @@ pub(super) fn fill_batch(
     state: &mut State,
     params: &Map<String, Value>,
     now: u64,
+    application: &dyn crate::application::ApplicationRuntime,
 ) -> Result<[u8; 32], String> {
     require_keys(params, &["batch"])?;
     let batch: ApplicationNoteFillBatch = field(params, "batch")?;
@@ -120,6 +134,7 @@ pub(super) fn fill_batch(
     }
     let mut candidate = state.clone();
     for fill in &batch.fills {
+        verify_optimistic(state, fill, application)?;
         apply_fill(&mut candidate, fill, parent, now)?;
     }
     // No member, claim, nullifier, hold or facility mutation survives a failure.

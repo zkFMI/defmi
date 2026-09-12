@@ -391,7 +391,7 @@ impl QommVm {
                 "stored block deployment crypto policy differs from genesis",
             ));
         }
-        self.application.validate_state(&state).map_err(internal)?;
+        crate::application::validate_host_state(self.application.as_ref(), &state).map_err(internal)?;
         Ok(VerifiedBlock { state, ..parsed })
     }
 
@@ -585,7 +585,7 @@ impl QommVm {
         if decoded.state.deployment_crypto_policy != deployment_crypto_policy {
             return Err("state-sync deployment crypto policy differs from genesis".into());
         }
-        self.application.validate_state(&decoded.state)?;
+        crate::application::validate_host_state(self.application.as_ref(), &decoded.state)?;
         let staged_state = stage_state(&db, &decoded.state, None)
             .await
             .map_err(|error| error.to_string())?;
@@ -748,6 +748,21 @@ impl QommVm {
             .map_err(|error| error.to_string())?
         {
             return Ok(id);
+        }
+        if gossip && matches!(transaction.method.as_str(),
+            "defmivm.issueOptimisticAdvance" | "defmivm.issueOptimisticAnswer" | "defmivm.issueOptimisticAccountSettlement")
+        {
+            // Reject a premature/invalid public request before gossip can
+            // repeatedly requeue it until its original failure disappears.
+            // This is admission only: consensus re-executes the transaction
+            // against its actual parent and block timestamp before acceptance.
+            let (mut candidate,authorizer,timestamp) = {
+                let guard=self.inner.read().await;
+                let runtime=guard.as_ref().ok_or("VM is not initialized")?;
+                (runtime.last_accepted.state.clone(),runtime.authorizer.clone(),
+                 now_seconds()?.max(runtime.last_accepted.block.timestamp) as u64)
+            };
+            candidate.apply_with_application(&bytes,&authorizer,timestamp,self.application.as_ref())?;
         }
         {
             let mut guard = self.inner.write().await;
@@ -926,6 +941,10 @@ impl QommVm {
                 if matches!(
                     query,
                     "defmivm.asset"
+                        | "defmivm.account"
+                        | "defmivm.optimisticClaim"
+                        | "defmivm.optimisticPolicy"
+                        | "defmivm.optimisticBond"
                         | "defmivm.guarantor"
                         | "defmivm.creditFacility"
                         | "defmivm.cSDIssuer"
@@ -1076,6 +1095,11 @@ fn canonical_state_snapshot(
 ) -> Result<Value, RpcFailure> {
     let state_root = hex::encode(state.root());
     match method {
+        "defmivm.account" => {
+            let (handle,key)=snapshot_id(params,"handle")?;
+            let account=state.accounts.get(&key).ok_or_else(||RpcFailure::Application("account was not found".into()))?;
+            Ok(json!({"stateRoot":state_root,"acceptedHeight":accepted_height,"handle":hex::encode(handle),"assetID":hex::encode(account.asset_id),"commitment":hex::encode(account.commitment),"sequence":account.sequence}))
+        }
         "defmivm.asset" => {
             let (asset_id, key) = snapshot_id(params, "assetID")?;
             let record = state
@@ -1272,6 +1296,21 @@ fn canonical_state_snapshot(
             }))
         }
         "defmivm.listNotes" => note_page_snapshot(state, params, &state_root),
+        "defmivm.optimisticClaim" => {
+            let (id, _) = snapshot_id(params, "claimID")?;
+            let claim = state.optimistic.claim(&id).ok_or_else(|| RpcFailure::Application("optimistic claim was not found".into()))?;
+            Ok(json!({"stateRoot": state_root, "acceptedHeight": accepted_height, "claim": claim}))
+        }
+        "defmivm.optimisticPolicy" => {
+            let (id, _) = snapshot_id(params, "policyID")?;
+            let policy = state.optimistic.policy(&id).ok_or_else(|| RpcFailure::Application("optimistic policy was not found".into()))?;
+            Ok(json!({"stateRoot": state_root, "acceptedHeight": accepted_height, "policy": policy}))
+        }
+        "defmivm.optimisticBond" => {
+            let (asset, _) = snapshot_id(params, "assetID")?;
+            let (owner, _) = snapshot_id(params, "ownerID")?;
+            Ok(json!({"stateRoot": state_root, "acceptedHeight": accepted_height, "bond": state.optimistic.bond(asset, owner)}))
+        }
         "defmivm.applicationReserveScope" => {
             let (_, key) = snapshot_id(params, "scopeID")?;
             let scope = state.application_reserve_scopes.get(&key).ok_or_else(|| {
@@ -2300,7 +2339,7 @@ impl Vm for QommVm {
                         "persisted deployment crypto policy differs from genesis",
                     ));
                 }
-                self.application.validate_state(&state).map_err(internal)?;
+                crate::application::validate_host_state(self.application.as_ref(), &state).map_err(internal)?;
                 VerifiedBlock { state, ..parsed }
             }
         };

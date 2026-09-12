@@ -885,6 +885,7 @@ fn make_fill(
         signature: vec![],
         pq_authorization: None,
         batch: None,
+        optimistic: None,
     };
     let securities_asset_link = AssetProof::prove(
         &key,
