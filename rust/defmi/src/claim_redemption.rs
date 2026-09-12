@@ -257,6 +257,52 @@ pub fn redeem_claim<R: RngCore + CryptoRng>(
     valid_at: u64,
     rng: &mut R,
 ) -> Result<NoteClaimRedemption, String> {
+    redeem_claim_inner(claim, key, amount_bits, recipient_secret, recipient_key, destination,
+        quorum, domain, before_root, operation_id, authorization, valid_at, None, rng)
+}
+
+/// Recover the actual asset from its recipient-only ciphertext, validate its
+/// opening against the canonical tag (also at value zero), and carry that
+/// metadata into the new recipient note. The public entitlement stays fixed.
+#[allow(clippy::too_many_arguments)]
+pub fn redeem_confidential_claim<R: RngCore + CryptoRng>(
+    claim: &NoteClaim,
+    identity: &crate::confidential_notes::AssetIdentity,
+    asset_opening: &zkfmi_crypto::sealed::SealedMessage,
+    amount_bits: usize,
+    recipient_secret: &Scalar,
+    recipient_key: &zkfmi_crypto::hybrid::kem::HybridKemKey,
+    destination: &Address,
+    quorum: &[usize],
+    domain: &str,
+    before_root: [u8; 32],
+    operation_id: [u8; 32],
+    authorization: &NoteClaimAuthorization,
+    valid_at: u64,
+    rng: &mut R,
+) -> Result<NoteClaimRedemption, String> {
+    identity.validate()?;
+    if claim.asset_id != identity.commitment { return Err("claim has another confidential asset identity".into()); }
+    let payload = asset_opening.open(recipient_key, zkfmi_crypto::sealed::SealingPurpose::NoteOpening,
+        &crate::confidential_notes::asset_opening_context(&claim.claim_id), 64).map_err(err)?;
+    let asset_id: [u8; 32] = payload[..32].try_into().map_err(err)?;
+    let gamma = crate::confidential_assets::scalar(&payload[32..].try_into().map_err(err)?)?;
+    let key = crate::confidential_notes::key();
+    let generator = crate::confidential_assets::generator(&asset_id);
+    if (generator + key.h * gamma).compress().to_bytes() != identity.tag {
+        return Err("decrypted claim asset differs from its canonical tag".into());
+    }
+    redeem_claim_inner(claim, &key.with_value_generator(generator), amount_bits, recipient_secret,
+        recipient_key, destination, quorum, domain, before_root, operation_id, authorization, valid_at,
+        Some((&asset_id, &gamma)), rng)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn redeem_claim_inner<R: RngCore + CryptoRng>(claim: &NoteClaim, key: &Pedersen, amount_bits: usize,
+    recipient_secret: &Scalar, recipient_key: &zkfmi_crypto::hybrid::kem::HybridKemKey,
+    destination: &Address, quorum: &[usize], domain: &str, before_root: [u8; 32], operation_id: [u8; 32],
+    authorization: &NoteClaimAuthorization, valid_at: u64, asset: Option<(&[u8; 32], &Scalar)>,
+    rng: &mut R) -> Result<NoteClaimRedemption, String> {
     claim.validate()?;
     let signer = frost::SigningKey::deserialize(&recipient_secret.to_bytes()).map_err(err)?;
     let public = frost::VerifyingKey::from(&signer)
@@ -276,7 +322,9 @@ pub fn redeem_claim<R: RngCore + CryptoRng>(
         return Err("decrypted claim differs from its canonical value commitment".into());
     }
     let ledger = NoteLedger::new(key.clone(), amount_bits);
-    let note = ledger.build_note(destination, amount, commitment, &blind, &mut *rng)?;
+    let note = if let Some((id, gamma)) = asset {
+        ledger.build_confidential_note(destination, amount, commitment, &blind, id, gamma, &mut *rng)?
+    } else { ledger.build_note(destination, amount, commitment, &blind, &mut *rng)? };
     let mut redemption = NoteClaimRedemption {
         version: VERSION,
         domain: domain.into(),

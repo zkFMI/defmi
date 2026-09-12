@@ -322,7 +322,14 @@ impl NoteOutput {
         {
             return Err("note output has an empty public field".into());
         }
-        self.encrypted_opening.validate(&self.lock_id)?;
+        match &self.encrypted_opening {
+            zkpi_committee::standing_pool::NoteOpening::Recipient(envelope)
+                if envelope.ciphertext.len() == 108 => {
+                envelope.validate(zkfmi_crypto::sealed::SealingPurpose::NoteOpening, 108)
+                    .map_err(|error| error.to_string())?;
+            }
+            _ => self.encrypted_opening.validate(&self.lock_id)?,
+        }
         if self.derived_id()? != self.note_id {
             return Err("note identifier differs from its contents".into());
         }

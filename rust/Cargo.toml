@@ -49,6 +49,9 @@ zkpi-defmi-sdk = { path = "zkpi-defmi-sdk" }
 qomm-audit = { git = "https://github.com/zkFMI/zkpi.git", rev = "fc9579070484859aff9110a927be79c1ffe22b70" }
 
 # Unpublished integration overlay; see zkfmi-crypto/docs/INTEGRATION_SOURCES.json.
+[patch."https://github.com/zkFMI/zkfmi-crypto.git"]
+zkfmi-crypto = { path = "../../zkfmi-crypto" }
+
 [patch."https://github.com/zkFMI/defmi.git"]
 defmi = { path = "defmi" }
 zkpi-defmi-sdk = { path = "zkpi-defmi-sdk" }

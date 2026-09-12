@@ -9,6 +9,9 @@ pub mod application_reservation;
 pub mod application_settlement;
 pub mod asset_link;
 pub mod assets;
+pub mod confidential_assets;
+#[cfg(feature = "avalanche")]
+pub mod confidential_notes;
 #[cfg(feature = "avalanche")]
 pub mod avalanche;
 pub mod ccp;
@@ -30,6 +33,8 @@ pub mod note_chain;
 mod note_membership;
 pub mod note_settlement;
 pub mod notes;
+#[cfg(feature = "pqc-notes-research")]
+pub mod pqc_notes;
 pub mod participant;
 #[cfg(feature = "avalanche")]
 pub mod product;

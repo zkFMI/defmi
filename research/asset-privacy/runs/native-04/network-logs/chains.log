@@ -1,0 +1,7 @@
+[09-11|21:32:40.608] INFO client/client.go:433 list blockchains
+[09-11|21:32:40.609] INFO ux/output.go:13 
+[09-11|21:32:40.609] INFO ux/output.go:13 [0;32mBlockchain ID: XgL1J2iaJF8SzRobPwiT6HRd7B7CtDYhxobvWF7U56Yr2cXmd[0;0m
+[09-11|21:32:40.609] INFO ux/output.go:13 [0;32m    VM Name: defmivm[0;0m
+[09-11|21:32:40.609] INFO ux/output.go:13 [0;32m    VM ID: mDV3RhDBqCL8Vt7msBmMzNP2gAMjFXUktxEZsD66p7GGMiqa8[0;0m
+[09-11|21:32:40.609] INFO ux/output.go:13 [0;32m    Subnet ID: 99qx6GvmNDqvtLVdVkzBJs2qrjVJ94gZKmauAUWJGJDMdHA41[0;0m
+[09-11|21:32:40.609] INFO ux/output.go:13 

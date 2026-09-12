@@ -23,6 +23,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use zkfmi_crypto::{
     hybrid::signature::{HybridSigner, HybridVerifier},
     key::KeyPurpose,
+    mode::DeploymentCryptoPolicy,
     traits::{Signer as CryptoSigner, Verifier as CryptoVerifier},
 };
 use zkfmi_zk::pedersen::Pedersen;
@@ -2199,12 +2200,17 @@ pub struct QuorumAuthorizer {
     epoch: u64,
     domain: String,
     committee_digest: [u8; 32],
+    deployment_crypto_policy: Option<DeploymentCryptoPolicy>,
     execution_time: Option<u64>,
 }
 
 impl QuorumAuthorizer {
     pub fn domain(&self) -> &str {
         &self.domain
+    }
+
+    pub fn deployment_crypto_policy(&self) -> Option<&DeploymentCryptoPolicy> {
+        self.deployment_crypto_policy.as_ref()
     }
 
     /// A bridge used only for reads or independently authorized wallet actions.
@@ -2216,6 +2222,7 @@ impl QuorumAuthorizer {
             epoch: 0,
             domain: "read-only".into(),
             committee_digest: ZERO,
+            deployment_crypto_policy: None,
             execution_time: None,
         }
     }
@@ -2226,11 +2233,39 @@ impl QuorumAuthorizer {
         epoch: u64,
         domain: impl Into<String>,
     ) -> Result<Self, String> {
+        Self::new_inner(nodes, threshold, epoch, domain.into(), None)
+    }
+
+    pub fn new_for_deployment(
+        nodes: BTreeMap<String, zkfmi_crypto::key::KeyRecord>,
+        threshold: usize,
+        epoch: u64,
+        domain: impl Into<String>,
+        deployment_crypto_policy: DeploymentCryptoPolicy,
+    ) -> Result<Self, String> {
+        deployment_crypto_policy
+            .validate()
+            .map_err(|error| error.to_string())?;
+        Self::new_inner(
+            nodes,
+            threshold,
+            epoch,
+            domain.into(),
+            Some(deployment_crypto_policy),
+        )
+    }
+
+    fn new_inner(
+        nodes: BTreeMap<String, zkfmi_crypto::key::KeyRecord>,
+        threshold: usize,
+        epoch: u64,
+        domain: String,
+        deployment_crypto_policy: Option<DeploymentCryptoPolicy>,
+    ) -> Result<Self, String> {
         use zkfmi_crypto::{
             key::KeyPurpose,
             suite::{Suite, SuiteId},
         };
-        let domain = domain.into();
         if nodes.is_empty()
             || nodes.len() > 64
             || !(1..=nodes.len()).contains(&threshold)
@@ -2252,9 +2287,14 @@ impl QuorumAuthorizer {
         let mut classical = BTreeSet::new();
         let mut pq = BTreeSet::new();
         let mut key_ids = BTreeSet::new();
+        let expected_suite = deployment_crypto_policy
+            .as_ref()
+            .map_or(Suite::new(SuiteId::Ed25519MlDsa65), |policy| {
+                policy.signing_suite()
+            });
         for (node, key) in &nodes {
             key.validate().map_err(|e| e.to_string())?;
-            if key.suite != Suite::new(SuiteId::Ed25519MlDsa65)
+            if key.suite != expected_suite
                 || key.purpose != KeyPurpose::Governance
                 || key.participant_id.as_str() != node
                 || !key_ids.insert(key.key_id.clone())
@@ -2264,25 +2304,46 @@ impl QuorumAuthorizer {
             let ed: [u8; 32] = key.public_key[..32]
                 .try_into()
                 .map_err(|_| "invalid governance key")?;
-            if ed == ZERO
-                || VerifyingKey::from_bytes(&ed).is_err()
-                || key.public_key[32..].iter().all(|byte| *byte == 0)
-                || !classical.insert(ed)
-                || !pq.insert(key.public_key[32..].to_vec())
-            {
-                return Err("governance identities must use distinct valid key components".into());
+            let valid_distinct_ed =
+                ed != ZERO && VerifyingKey::from_bytes(&ed).is_ok() && classical.insert(ed);
+            if expected_suite.id == SuiteId::Ed25519MlDsa65 {
+                let valid_distinct_pq = !key.public_key[32..].iter().all(|byte| *byte == 0)
+                    && pq.insert(key.public_key[32..].to_vec());
+                if !valid_distinct_ed || !valid_distinct_pq {
+                    let message = if deployment_crypto_policy.is_none() {
+                        "governance identities must use distinct valid key components"
+                    } else {
+                        "hybrid governance identities must use distinct valid Ed25519 and ML-DSA-65 keys"
+                    };
+                    return Err(message.into());
+                }
+            } else if !valid_distinct_ed {
+                return Err("governance identities must use distinct valid Ed25519 keys".into());
             }
         }
-        let committee_digest = digest(
-            b"QOMM:DEFMI:GOVERNANCE-COMMITTEE:v2",
-            &json!({"nodes": nodes, "threshold": threshold, "epoch": epoch, "domain": domain}),
-        )?;
+        let committee_digest = match &deployment_crypto_policy {
+            Some(policy) => digest(
+                b"QOMM:DEFMI:GOVERNANCE-COMMITTEE:v3",
+                &json!({
+                    "nodes": nodes,
+                    "threshold": threshold,
+                    "epoch": epoch,
+                    "domain": domain,
+                    "deployment_crypto_policy": policy,
+                }),
+            )?,
+            None => digest(
+                b"QOMM:DEFMI:GOVERNANCE-COMMITTEE:v2",
+                &json!({"nodes": nodes, "threshold": threshold, "epoch": epoch, "domain": domain}),
+            )?,
+        };
         Ok(Self {
             nodes,
             threshold,
             epoch,
             domain,
             committee_digest,
+            deployment_crypto_policy,
             execution_time: None,
         })
     }
@@ -2316,10 +2377,8 @@ impl QuorumAuthorizer {
         approval: &QuorumApproval,
     ) -> bool {
         use zkfmi_crypto::{
-            hybrid::signature::HybridVerifier,
             key::KeyPurpose,
             suite::{Suite, SuiteId},
-            traits::Verifier as _,
         };
         let Some(now) = self.execution_time else {
             return false;
@@ -2328,7 +2387,13 @@ impl QuorumAuthorizer {
             || approval.before_root != *before_root
             || approval.domain != self.domain
             || approval.signer_epoch != self.epoch
-            || approval.suite != Suite::new(SuiteId::Ed25519MlDsa65)
+            || approval.suite
+                != self
+                    .deployment_crypto_policy
+                    .as_ref()
+                    .map_or(Suite::new(SuiteId::Ed25519MlDsa65), |policy| {
+                        policy.signing_suite()
+                    })
             || approval.committee_digest != self.committee_digest
             || approval.approvals.len() > self.nodes.len()
             || approval.approvals.len() < self.threshold
@@ -2339,15 +2404,28 @@ impl QuorumAuthorizer {
         approval.approvals.iter().all(|signed| {
             seen.insert(signed.node_id.clone())
                 && self.nodes.get(&signed.node_id).is_some_and(|key| {
-                    key.valid_at(now).is_ok()
-                        && HybridVerifier
+                    if key.valid_at(now).is_err() {
+                        return false;
+                    }
+                    let body = self.signing_body(expected, before_root, &signed.node_id);
+                    match &self.deployment_crypto_policy {
+                        Some(policy) => policy
                             .verify(
                                 KeyPurpose::Governance,
                                 &key.public_key,
-                                &self.signing_body(expected, before_root, &signed.node_id),
+                                &body,
                                 &signed.signature,
                             )
-                            .is_ok()
+                            .is_ok(),
+                        None => HybridVerifier
+                            .verify(
+                                KeyPurpose::Governance,
+                                &key.public_key,
+                                &body,
+                                &signed.signature,
+                            )
+                            .is_ok(),
+                    }
                 })
         })
     }
@@ -2384,13 +2462,22 @@ impl QuorumAuthorizer {
             }
             approvals.push(NodeApproval {
                 node_id: node.clone(),
-                signature: key.sign(&self.signing_body(&statement, &before_root, node))?,
+                signature: match &self.deployment_crypto_policy {
+                    Some(policy) => key.sign_for_deployment(
+                        policy,
+                        &self.signing_body(&statement, &before_root, node),
+                    )?,
+                    None => key.sign(&self.signing_body(&statement, &before_root, node))?,
+                },
             });
         }
         Ok(QuorumApproval {
             statement,
             signer_epoch: self.epoch,
-            suite: zkfmi_crypto::suite::Suite::new(zkfmi_crypto::suite::SuiteId::Ed25519MlDsa65),
+            suite: self.deployment_crypto_policy.as_ref().map_or(
+                zkfmi_crypto::suite::Suite::new(zkfmi_crypto::suite::SuiteId::Ed25519MlDsa65),
+                |policy| policy.signing_suite(),
+            ),
             committee_digest: self.committee_digest,
             domain: self.domain.clone(),
             before_root,

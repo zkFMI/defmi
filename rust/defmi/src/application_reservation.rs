@@ -354,6 +354,12 @@ pub struct ApplicationNoteReservation {
 
 impl ApplicationNoteReservation {
     pub fn body(&self) -> Result<Value, String> {
+        self.body_with_confidential_value(false)
+    }
+
+    // Only the confidential wrapper may use this shape. It separately proves
+    // equality of the tagged escrow value and the normalized credit amount.
+    pub(crate) fn body_with_confidential_value(&self, confidential: bool) -> Result<Value, String> {
         let mandate = &self.binding;
         mandate.validate()?;
         if self.relation_proof.is_empty()
@@ -385,7 +391,7 @@ impl ApplicationNoteReservation {
             .collect::<Vec<_>>();
         if locked.len() != 1
             || locked[0].note_id != self.escrow.escrow_note_id
-            || locked[0].value_commitment != mandate.amount_commitment
+            || (!confidential && locked[0].value_commitment != mandate.amount_commitment)
             || self
                 .escrow
                 .spend

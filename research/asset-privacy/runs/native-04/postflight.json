@@ -1,0 +1,21 @@
+{
+  "verdict": "smoke_only",
+  "contract_id": "asset-privacy-native-five-validator-v1-unfilled-cohort4",
+  "contract_sha256": "bdf78bf6e29597c73c5c805788b0ca133436cfeb2edf612858b292372f75a651",
+  "manifest_sha256": "0ea55582838efb8986fdb0428b31d4e3d6a4b55a368894fa91d27c16cf178801",
+  "receipt_sha256": "ce8f107081cb557914b888ee510f1fb4af65d2be65bb8f4a1117bb6df21d9a00",
+  "outcome_sha256": "1c8ef447c3fd1f654c0b2e559fff37a3e9683409451fb655a332956903b5e2a1",
+  "disclosure_check_sha256": "12b43bd1efd699224699236dd33b7372794dfd6ebe8c85a992e6d953e75c4006",
+  "restart_readback_sha256": "92e26c38319c867e0e4adb0577eeeebe22b870f6c22f503079dc1d164c2694a9",
+  "sealed_sources_match_local_worktree": true,
+  "installed_vm_sha256_readback": "5b91ca129e40f4055590682a3d558f593d5b4ba36bb5a8ed69fd51c8fb815e9a",
+  "installed_vm_matches_build": true,
+  "development_checks": {
+    "command": "env -u MP_SPDZ_ROOT cargo test --locked --release -j16 -p defmi -p defmi-avalanche-vm -p zkpi-defmi-sdk",
+    "exit_code": 0,
+    "log_sha256": "9b106cbf40368e801b107d98cb72ef41dffedef1c095f3115040dd0882aec021",
+    "acceptance_evidence": false
+  },
+  "earliest_unresolved_integration_gate": "Private DeKYX-approved venue and independently operated distributed proof-generation integration",
+  "production_promotion": false
+}

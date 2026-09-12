@@ -41,9 +41,9 @@ use avalanche_rpcchainvm_qomm::{
     plugin::{spawn_http_server, HttpServerHandle},
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use prost_types::Timestamp;
 use defmi::facility::QuorumAuthorizer;
 use defmi::settlement_verifier::settlement_verifier_key;
+use prost_types::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, Notify, RwLock};
@@ -54,6 +54,7 @@ use crate::{
     genesis::Genesis,
     id::Id,
     state::{id_key, State, TransitionReceipt},
+    state_store::{load_state, stage_state, PersistedStateError},
     state_sync::{build_summary, decode_snapshot, ChunkRequest, ChunkResponse, StateSummary},
     transaction::TransactionEnvelope,
     VERSION,
@@ -246,6 +247,13 @@ fn db_error(error: DbError) -> Status {
     }
 }
 
+fn persisted_state_error(error: PersistedStateError) -> Status {
+    match error {
+        PersistedStateError::Database(error) => db_error(error),
+        PersistedStateError::Invalid(message) => internal(message),
+    }
+}
+
 #[derive(Debug)]
 struct ParseError(String);
 
@@ -353,7 +361,7 @@ impl QommVm {
     }
 
     async fn load_block(&self, id: Id) -> Result<VerifiedBlock, Status> {
-        let db = {
+        let (db, deployment_crypto_policy) = {
             let guard = self.inner.read().await;
             let runtime = guard
                 .as_ref()
@@ -364,15 +372,25 @@ impl QommVm {
             if let Some(block) = runtime.verified.get(&id) {
                 return Ok(block.clone());
             }
-            runtime.db.clone()
+            (
+                runtime.db.clone(),
+                runtime.genesis.deployment_crypto_policy.clone(),
+            )
         };
         let bytes = db.get(&block_key(id)).await.map_err(db_error)?;
         let parsed = parse_block_bytes(bytes)?;
         if parsed.id != id {
             return Err(internal("stored block ID does not match its key"));
         }
-        let state =
-            State::decode(&db.get(&state_key(id)).await.map_err(db_error)?).map_err(internal)?;
+        let state_head = db.get(&state_key(id)).await.map_err(db_error)?;
+        let state = load_state(&db, &state_head)
+            .await
+            .map_err(persisted_state_error)?;
+        if state.deployment_crypto_policy != deployment_crypto_policy {
+            return Err(failed(
+                "stored block deployment crypto policy differs from genesis",
+            ));
+        }
         self.application.validate_state(&state).map_err(internal)?;
         Ok(VerifiedBlock { state, ..parsed })
     }
@@ -483,7 +501,7 @@ impl QommVm {
     }
 
     async fn install_state_summary(&self, summary: StateSummary) -> Result<(), String> {
-        let (db, peers) = {
+        let (db, peers, deployment_crypto_policy) = {
             let guard = self.inner.read().await;
             let runtime = guard
                 .as_ref()
@@ -491,6 +509,7 @@ impl QommVm {
             (
                 runtime.db.clone(),
                 runtime.peers.iter().cloned().collect::<Vec<_>>(),
+                runtime.genesis.deployment_crypto_policy.clone(),
             )
         };
         if peers.is_empty() {
@@ -563,8 +582,13 @@ impl QommVm {
             return Err("assembled state snapshot has the wrong length".into());
         }
         let decoded = decode_snapshot(&summary, &snapshot)?;
+        if decoded.state.deployment_crypto_policy != deployment_crypto_policy {
+            return Err("state-sync deployment crypto policy differs from genesis".into());
+        }
         self.application.validate_state(&decoded.state)?;
-        let state_bytes = decoded.state.encode()?;
+        let staged_state = stage_state(&db, &decoded.state, None)
+            .await
+            .map_err(|error| error.to_string())?;
         let mut operations = vec![
             BatchOp::Put {
                 key: KEY_LAST_ACCEPTED.to_vec(),
@@ -576,7 +600,7 @@ impl QommVm {
             },
             BatchOp::Put {
                 key: state_key(summary.block_id),
-                value: state_bytes,
+                value: staged_state.head,
             },
             BatchOp::Put {
                 key: height_key(summary.height),
@@ -840,7 +864,7 @@ impl QommVm {
                 let runtime = guard
                     .as_ref()
                     .ok_or_else(|| RpcFailure::Application("VM is not initialized".into()))?;
-                Ok(json!({"genesis": {
+                let mut genesis = json!({
                     "timestamp": runtime.genesis.timestamp,
                     "committee": {
                         "epoch": runtime.genesis.epoch,
@@ -850,7 +874,14 @@ impl QommVm {
                             "key": member.key,
                         })).collect::<Vec<_>>()
                     }
-                }}))
+                });
+                if let Some(policy) = &runtime.genesis.deployment_crypto_policy {
+                    genesis
+                        .as_object_mut()
+                        .expect("genesis RPC object")
+                        .insert("deployment_crypto_policy".into(), json!(policy));
+                }
+                Ok(json!({"genesis": genesis}))
             }
             "defmivm.stateRoot" => {
                 let guard = self.inner.read().await;
@@ -903,6 +934,9 @@ impl QommVm {
                         | "defmivm.note"
                         | "defmivm.noteSerial"
                         | "defmivm.listNotes"
+                        | "defmivm.listConfidentialNotes"
+                        | "defmivm.confidentialAssetIdentity"
+                        | "defmivm.confidentialNoteClaim"
                         | "defmivm.noteReservation"
                         | "defmivm.applicationNoteReservation"
                         | "defmivm.applicationReserveScope"
@@ -1202,6 +1236,25 @@ fn canonical_state_snapshot(
                 "updatedSequence": record.updated_sequence,
             }))
         }
+        "defmivm.confidentialAssetIdentity" => {
+            let (_, key) = snapshot_id(params, "assetCommitment")?;
+            let identity = state.confidential.identities.get(&key)
+                .ok_or_else(|| RpcFailure::Application("confidential asset identity was not found".into()))?;
+            Ok(json!({"stateRoot":state_root,"acceptedHeight":accepted_height,"identity":identity}))
+        }
+        "defmivm.listConfidentialNotes" => confidential_note_page_snapshot(state, params, &state_root),
+        "defmivm.confidentialNoteClaim" => {
+            let (claim_id, key) = snapshot_id(params, "claimID")?;
+            let record = state.note_claims.get(&key)
+                .ok_or_else(|| RpcFailure::Application("confidential claim was not found".into()))?;
+            let identity = state.confidential.identities.get(&id_key(&record.asset_id))
+                .ok_or_else(|| RpcFailure::Application("claim is not asset-confidential".into()))?;
+            let asset_opening = state.confidential.claim_assets.get(&key)
+                .ok_or_else(|| RpcFailure::Application("confidential claim asset opening was not found".into()))?;
+            Ok(json!({"stateRoot":state_root,"acceptedHeight":accepted_height,
+                "claim":note_claim_snapshot(&state_root, claim_id, record),
+                "identity":identity,"assetOpening":asset_opening}))
+        }
         "defmivm.note" => {
             let (note_id, key) = snapshot_id(params, "noteID")?;
             let record = state
@@ -1453,9 +1506,7 @@ fn canonical_state_snapshot(
                         shortfall += 1
                     }
                     defmi::central_bank_liquidity::ParticipantStatus::Overdue => overdue += 1,
-                    defmi::central_bank_liquidity::ParticipantStatus::Suspended => {
-                        suspended += 1
-                    }
+                    defmi::central_bank_liquidity::ParticipantStatus::Suspended => suspended += 1,
                 }
             }
             Ok(json!({
@@ -1818,6 +1869,39 @@ fn note_snapshot(state_root: &str, note_id: [u8; 32], record: &crate::state::Not
     })
 }
 
+/// A wallet must not reveal its selected asset merely to obtain ring members.
+/// Return all confidential notes in canonical order, without an asset filter.
+fn confidential_note_page_snapshot(state: &State, params: &Value, state_root: &str)
+    -> Result<Value, RpcFailure> {
+    let object = params.as_object().ok_or_else(|| RpcFailure::InvalidParams("params must be an object".into()))?;
+    if object.keys().any(|key| key != "after" && key != "limit") {
+        return Err(RpcFailure::InvalidParams("confidential note queries accept only after and limit".into()));
+    }
+    let after = match object.get("after") {
+        None => None,
+        Some(Value::String(value)) if value.is_empty() => None,
+        Some(_) => Some(snapshot_id(params, "after")?.1),
+    };
+    let limit = match object.get("limit") {
+        None => 64,
+        Some(value) => value.as_u64().filter(|value| (1..=256).contains(value))
+            .ok_or_else(|| RpcFailure::InvalidParams("limit must be an integer between 1 and 256".into()))? as usize,
+    };
+    let mut page = Vec::with_capacity(limit);
+    let mut last = None;
+    for name in &state.confidential.notes {
+        if after.as_ref().is_some_and(|cursor| name <= cursor) { continue; }
+        let record = &state.notes[name];
+        let note_id = hex::decode(name).expect("validated note ID").try_into().expect("32-byte note ID");
+        let identity = &state.confidential.identities[&id_key(&record.asset_id)];
+        page.push(json!({"note":note_snapshot(state_root, note_id, record),"identity":identity}));
+        last = Some(name.clone());
+        if page.len() == limit { break; }
+    }
+    Ok(json!({"stateRoot":state_root,"notes":page,
+        "next":last.filter(|_| page.len()==limit).unwrap_or_default()}))
+}
+
 fn note_page_snapshot(
     state: &State,
     params: &Value,
@@ -2148,7 +2232,13 @@ impl Vm for QommVm {
                 };
                 let bytes = block.encode().map_err(internal)?;
                 let id = block.id().map_err(internal)?;
-                let state = State::default();
+                let state = State {
+                    deployment_crypto_policy: genesis.deployment_crypto_policy.clone(),
+                    ..State::default()
+                };
+                let staged_state = stage_state(&db, &state, None)
+                    .await
+                    .map_err(persisted_state_error)?;
                 db.write_batch(&[
                     BatchOp::Put {
                         key: KEY_GENESIS_HASH.to_vec(),
@@ -2168,7 +2258,7 @@ impl Vm for QommVm {
                     },
                     BatchOp::Put {
                         key: state_key(id),
-                        value: state.encode().map_err(internal)?,
+                        value: staged_state.head,
                     },
                     BatchOp::Put {
                         key: height_key(0),
@@ -2201,8 +2291,15 @@ impl Vm for QommVm {
                 if parsed.id != last_id {
                     return Err(internal("stored last accepted block has the wrong ID"));
                 }
-                let state = State::decode(&db.get(&state_key(last_id)).await.map_err(db_error)?)
-                    .map_err(internal)?;
+                let state_head = db.get(&state_key(last_id)).await.map_err(db_error)?;
+                let state = load_state(&db, &state_head)
+                    .await
+                    .map_err(persisted_state_error)?;
+                if state.deployment_crypto_policy != genesis.deployment_crypto_policy {
+                    return Err(failed(
+                        "persisted deployment crypto policy differs from genesis",
+                    ));
+                }
                 self.application.validate_state(&state).map_err(internal)?;
                 VerifiedBlock { state, ..parsed }
             }
@@ -2949,6 +3046,18 @@ impl Vm for QommVm {
                 "accepted block does not extend the last accepted block",
             ));
         }
+        let previous_state_head = runtime
+            .db
+            .get(&state_key(runtime.last_accepted.id))
+            .await
+            .map_err(db_error)?;
+        let staged_state = stage_state(
+            &runtime.db,
+            &block.state,
+            Some((&runtime.last_accepted.state, &previous_state_head)),
+        )
+        .await
+        .map_err(persisted_state_error)?;
         let mut operations = vec![
             BatchOp::Put {
                 key: KEY_LAST_ACCEPTED.to_vec(),
@@ -2960,7 +3069,7 @@ impl Vm for QommVm {
             },
             BatchOp::Put {
                 key: state_key(id),
-                value: block.state.encode().map_err(internal)?,
+                value: staged_state.head,
             },
             BatchOp::Put {
                 key: height_key(block.block.height),
@@ -3132,9 +3241,9 @@ mod tests {
     #[test]
     fn settlement_verifier_snapshot_returns_the_canonical_restart_anchor() {
         use defmi::settlement_verifier::SettlementVerifierConfig;
-        use zkpi::deal_quorum;
         use rand_core::OsRng;
         use sha2::Digest;
+        use zkpi::deal_quorum;
 
         let (_, public) = deal_quorum(7, 3, &mut OsRng).expect("FROST group");
         let config = SettlementVerifierConfig {
@@ -3349,11 +3458,11 @@ mod tests {
     fn participant_snapshots_expose_capabilities_but_not_canonical_balances() {
         use std::collections::BTreeSet;
 
-        use ed25519_dalek::SigningKey;
         use defmi::participant::{
             ParticipantKeys, ParticipantRecord, ParticipantRole, ParticipantStatus, PurposeKey,
             RegisterParticipant, RegistryConfiguration,
         };
+        use ed25519_dalek::SigningKey;
 
         let key = |value: u8| PurposeKey {
             pq_public_key: zkfmi_crypto::traits::Signer::public_key(

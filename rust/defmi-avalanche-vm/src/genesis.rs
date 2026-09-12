@@ -3,8 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use defmi::facility::QuorumAuthorizer;
 use serde::{Deserialize, Serialize};
 use zkfmi_crypto::key::KeyRecord;
+use zkfmi_crypto::mode::DeploymentCryptoPolicy;
 
-const MAGIC: &[u8; 8] = b"QOMMGEN2";
+const MAGIC_V2: &[u8; 8] = b"QOMMGEN2";
+const MAGIC_V3: &[u8; 8] = b"QOMMGEN3";
 pub const MAX_GENESIS_BYTES: usize = 1 << 20;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -19,6 +21,7 @@ pub struct Genesis {
     pub epoch: u64,
     pub threshold: u16,
     pub members: Vec<CommitteeMember>,
+    pub deployment_crypto_policy: Option<DeploymentCryptoPolicy>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -26,6 +29,8 @@ pub struct Genesis {
 pub struct GenesisConfig {
     pub timestamp: i64,
     pub committee: CommitteeConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_crypto_policy: Option<DeploymentCryptoPolicy>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -65,6 +70,7 @@ impl GenesisConfig {
             epoch: self.committee.epoch,
             threshold: self.committee.threshold,
             members,
+            deployment_crypto_policy: self.deployment_crypto_policy,
         };
         genesis.validate()?;
         Ok(genesis)
@@ -104,6 +110,19 @@ impl Genesis {
             }
             previous = Some(member.node_id.clone());
         }
+        if let Some(policy) = &self.deployment_crypto_policy {
+            policy.validate().map_err(|error| error.to_string())?;
+            if self
+                .members
+                .iter()
+                .any(|member| member.key.suite != policy.signing_suite())
+            {
+                return Err(
+                    "fresh genesis governance key suite differs from its deployment crypto policy"
+                        .into(),
+                );
+            }
+        }
         self.authorizer("genesis-validation")?;
         for member in &self.members {
             member
@@ -117,7 +136,11 @@ impl Genesis {
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         self.validate()?;
         let mut encoded = Vec::new();
-        encoded.extend_from_slice(MAGIC);
+        encoded.extend_from_slice(if self.deployment_crypto_policy.is_some() {
+            MAGIC_V3
+        } else {
+            MAGIC_V2
+        });
         encoded.extend_from_slice(&self.timestamp.to_be_bytes());
         encoded.extend_from_slice(&self.epoch.to_be_bytes());
         encoded.extend_from_slice(&self.threshold.to_be_bytes());
@@ -130,6 +153,11 @@ impl Genesis {
             encoded.extend_from_slice(&(key.len() as u32).to_be_bytes());
             encoded.extend_from_slice(&key);
         }
+        if let Some(policy) = &self.deployment_crypto_policy {
+            let policy = serde_json::to_vec(policy).map_err(|error| error.to_string())?;
+            encoded.extend_from_slice(&(policy.len() as u32).to_be_bytes());
+            encoded.extend_from_slice(&policy);
+        }
         if encoded.len() > MAX_GENESIS_BYTES {
             return Err("genesis exceeds the one-MiB limit".into());
         }
@@ -141,9 +169,12 @@ impl Genesis {
             return Err("genesis size is outside 1..=1 MiB".into());
         }
         let mut reader = Reader::new(encoded);
-        if reader.take(8)? != MAGIC {
-            return Err("genesis magic or version is unsupported".into());
-        }
+        let magic = reader.take(8)?;
+        let has_deployment_crypto_policy = match magic {
+            value if value == MAGIC_V2 => false,
+            value if value == MAGIC_V3 => true,
+            _ => return Err("genesis magic or version is unsupported".into()),
+        };
         let timestamp = i64::from_be_bytes(reader.array()?);
         let epoch = u64::from_be_bytes(reader.array()?);
         let threshold = u16::from_be_bytes(reader.array()?);
@@ -168,6 +199,22 @@ impl Genesis {
             }
             members.push(CommitteeMember { node_id, key });
         }
+        let deployment_crypto_policy = if has_deployment_crypto_policy {
+            let length = u32::from_be_bytes(reader.array()?) as usize;
+            if length == 0 || length > 4096 {
+                return Err("genesis deployment crypto policy is oversized".into());
+            }
+            let bytes = reader.take(length)?;
+            let policy: DeploymentCryptoPolicy =
+                serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+            policy.validate().map_err(|error| error.to_string())?;
+            if serde_json::to_vec(&policy).map_err(|error| error.to_string())? != bytes {
+                return Err("genesis deployment crypto policy encoding is not canonical".into());
+            }
+            Some(policy)
+        } else {
+            None
+        };
         if !reader.is_empty() {
             return Err("genesis contains trailing bytes".into());
         }
@@ -176,6 +223,7 @@ impl Genesis {
             epoch,
             threshold,
             members,
+            deployment_crypto_policy,
         };
         genesis.validate()?;
         Ok(genesis)
@@ -187,12 +235,21 @@ impl Genesis {
             .iter()
             .map(|member| (member.node_id.clone(), member.key.clone()))
             .collect::<BTreeMap<_, _>>();
-        QuorumAuthorizer::new(
-            nodes,
-            usize::from(self.threshold),
-            self.epoch,
-            domain.to_owned(),
-        )
+        match &self.deployment_crypto_policy {
+            Some(policy) => QuorumAuthorizer::new_for_deployment(
+                nodes,
+                usize::from(self.threshold),
+                self.epoch,
+                domain.to_owned(),
+                policy.clone(),
+            ),
+            None => QuorumAuthorizer::new(
+                nodes,
+                usize::from(self.threshold),
+                self.epoch,
+                domain.to_owned(),
+            ),
+        }
     }
 }
 
@@ -242,6 +299,7 @@ mod tests {
                 key: defmi::governance::public_development_keys().unwrap()["node-0"]
                     .verifying_key(),
             }],
+            deployment_crypto_policy: None,
         }
     }
 
@@ -249,6 +307,7 @@ mod tests {
     fn genesis_wire_round_trip_is_exact() {
         let genesis = fixture();
         let encoded = genesis.encode().expect("encode");
+        assert_eq!(&encoded[..8], b"QOMMGEN2");
         assert_eq!(Genesis::decode(&encoded).expect("decode"), genesis);
         let mut legacy = encoded;
         legacy[..8].copy_from_slice(b"QOMMGEN1");
@@ -258,6 +317,45 @@ mod tests {
             zkfmi_crypto::suite::Suite::new(zkfmi_crypto::suite::SuiteId::Ed25519);
         classical.members[0].key.public_key.truncate(32);
         assert!(classical.validate().is_err());
+    }
+
+    #[test]
+    fn fresh_policy_uses_qommgen3_and_binds_its_governance_suite() {
+        use zkfmi_crypto::{mode::PqcMode, suite::Version};
+
+        for mode in [PqcMode::Off, PqcMode::On] {
+            let policy = DeploymentCryptoPolicy {
+                version: Version::V1,
+                deployment_id: format!("fresh-{mode:?}"),
+                mode,
+            };
+            let keys = defmi::governance::public_development_keys_for_policy(&policy)
+                .expect("public lab fixtures");
+            let genesis = Genesis {
+                timestamp: 0,
+                epoch: 1,
+                threshold: 3,
+                members: keys
+                    .iter()
+                    .take(5)
+                    .map(|(node_id, signer)| CommitteeMember {
+                        node_id: node_id.clone(),
+                        key: signer.verifying_key(),
+                    })
+                    .collect(),
+                deployment_crypto_policy: Some(policy.clone()),
+            };
+            let encoded = genesis.encode().expect("fresh encode");
+            assert_eq!(&encoded[..8], b"QOMMGEN3");
+            assert_eq!(Genesis::decode(&encoded).expect("fresh decode"), genesis);
+
+            let mut changed = genesis.clone();
+            changed.deployment_crypto_policy.as_mut().unwrap().mode = match mode {
+                PqcMode::Off => PqcMode::On,
+                PqcMode::On => PqcMode::Off,
+            };
+            assert!(changed.validate().is_err());
+        }
     }
 
     #[test]
@@ -294,6 +392,7 @@ mod tests {
             });
             let config: GenesisConfig = serde_json::from_value(value).expect("config");
             assert_eq!(config.committee.members[0].node_id, "node-0");
+            assert!(config.deployment_crypto_policy.is_none());
         }
     }
 }

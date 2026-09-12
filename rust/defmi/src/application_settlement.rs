@@ -205,7 +205,7 @@ impl ApplicationNoteFill {
         if let Some(batch) = &self.batch {
             batch.validate()?;
         }
-        if self.version != 2
+        if !matches!(self.version, 2 | 3)
             || [
                 self.before_root,
                 self.operation_id,
@@ -270,7 +270,44 @@ impl ApplicationNoteFill {
         now: u64,
         archived: bool,
     ) -> Result<VerifiedApplicationFill, String> {
+        if self.version != 2 {
+            return Err("confidential application fill requires its full confidential wrapper".into());
+        }
         let statement = self.signing_message()?;
+        self.verify_certificate_and_body(expected_scope, now, archived, statement, false)
+    }
+
+    /// Only the asset-confidential wrapper computes this outer statement and
+    /// verifies its additional asset/value links. Legacy public entry points
+    /// cannot dispatch a v3 certificate without those proofs.
+    pub(crate) fn verify_confidential(
+        &self, expected_scope: &ApplicationReserveScope, now: u64, statement: [u8; 32],
+    ) -> Result<VerifiedApplicationFill, String> {
+        if self.version != 3 || self.batch.is_some()
+            || self.asset_link_announcement != ZERO || self.asset_link_response != ZERO {
+            return Err("confidential fill has a legacy link, batch or version".into());
+        }
+        self.signing_message()?;
+        self.verify_certificate_and_body(expected_scope, now, false, statement, true)
+    }
+
+    pub(crate) fn verify_unsigned_confidential(
+        &self, expected_scope: &ApplicationReserveScope, now: u64, statement: [u8; 32],
+    ) -> Result<VerifiedApplicationFill, String> {
+        if self.version != 3 || self.batch.is_some() || !self.signature.is_empty()
+            || self.pq_authorization.is_some() || &self.scope != expected_scope
+            || self.asset_link_announcement != ZERO || self.asset_link_response != ZERO {
+            return Err("unsigned confidential fill has another scope, legacy link or certificate".into());
+        }
+        self.signing_message()?;
+        let public = expected_scope.verify_committee(&self.committee_public, &self.pq_committee)?;
+        self.verify_body(statement, public, now, false, true)
+    }
+
+    fn verify_certificate_and_body(
+        &self, expected_scope: &ApplicationReserveScope, now: u64, archived: bool,
+        statement: [u8; 32], confidential: bool,
+    ) -> Result<VerifiedApplicationFill, String> {
         if &self.scope != expected_scope {
             return Err("application fill committee or scope is not the pre-authorized one".into());
         }
@@ -292,7 +329,7 @@ impl ApplicationNoteFill {
             self.pq_committee.verify(approval, &statement, now)
         }
         .map_err(|error| format!("application fill PQ authorization is invalid: {error}"))?;
-        self.verify_body(statement, public, now, archived)
+        self.verify_body(statement, public, now, archived, confidential)
     }
 
     /// Check a candidate before the authorized MPC nodes sign it. This does
@@ -305,14 +342,14 @@ impl ApplicationNoteFill {
         now: u64,
     ) -> Result<(), String> {
         let statement = self.signing_message()?;
-        if !self.signature.is_empty()
+        if self.version != 2 || !self.signature.is_empty()
             || self.pq_authorization.is_some()
             || &self.scope != expected_scope
         {
             return Err("unsigned application fill has another scope, key, or a signature".into());
         }
         let public = expected_scope.verify_committee(&self.committee_public, &self.pq_committee)?;
-        self.verify_body(statement, public, now, false).map(|_| ())
+        self.verify_body(statement, public, now, false, false).map(|_| ())
     }
 
     fn verify_body(
@@ -321,6 +358,7 @@ impl ApplicationNoteFill {
         public: frost::keys::PublicKeyPackage,
         now: u64,
         archived: bool,
+        confidential: bool,
     ) -> Result<VerifiedApplicationFill, String> {
         let instruction =
             zkpi::wire::decode(&self.instruction).map_err(|error| error.to_string())?;
@@ -345,17 +383,14 @@ impl ApplicationNoteFill {
             venue.verify(&instruction, now)
         }
         .map_err(str::to_string)?;
-        let link = AssetLinkProof {
-            announcement: point(self.asset_link_announcement)?,
-            response: scalar(self.asset_link_response)?,
-        };
-        if !asset_link::verify(
-            &key,
-            &self.securities_asset,
-            &instruction.asset_commitment,
-            &link,
-        ) {
-            return Err("application zkPI asset differs from its canonical securities rail".into());
+        if !confidential {
+            let link = AssetLinkProof {
+                announcement: point(self.asset_link_announcement)?,
+                response: scalar(self.asset_link_response)?,
+            };
+            if !asset_link::verify(&key, &self.securities_asset, &instruction.asset_commitment, &link) {
+                return Err("application zkPI asset differs from its canonical securities rail".into());
+            }
         }
         let securities_delta = scalar(self.securities.reserve_reblinding)?;
         let cash_delta = scalar(self.cash.reserve_reblinding)?;

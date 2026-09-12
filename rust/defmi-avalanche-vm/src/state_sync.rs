@@ -23,7 +23,13 @@ const SNAPSHOT_DOMAIN: &[u8] = b"QOMM:STATE-SYNC:SNAPSHOT:v1";
 /// Small enough to remain below Avalanche application-message limits while
 /// large enough to avoid excessive request overhead on WAN deployments.
 pub const CHUNK_BYTES: usize = 512 * 1024;
+#[cfg(not(feature = "research-cocode"))]
 pub const MAX_SNAPSHOT_BYTES: usize = 66 * 1024 * 1024;
+/// A research proof may be 256 MiB before canonical base64 state encoding.
+/// This larger recovery envelope exists only in the opt-in research build;
+/// transaction and block limits remain unchanged.
+#[cfg(feature = "research-cocode")]
+pub const MAX_SNAPSHOT_BYTES: usize = 512 * 1024 * 1024;
 pub const MAX_MERKLE_DEPTH: usize = 32;
 
 const SUMMARY_BYTES: usize = 8 + 2 + 4 + 7 * 32 + 8 + 8 + 8 + 4 + 4;
@@ -558,6 +564,14 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_limit_is_scoped_to_the_build_mode() {
+        #[cfg(not(feature = "research-cocode"))]
+        assert_eq!(MAX_SNAPSHOT_BYTES, 66 * 1024 * 1024);
+        #[cfg(feature = "research-cocode")]
+        assert_eq!(MAX_SNAPSHOT_BYTES, 512 * 1024 * 1024);
+    }
 
     fn fixture() -> (StateSummary, Vec<u8>) {
         let block = Block {

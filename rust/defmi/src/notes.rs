@@ -168,6 +168,17 @@ pub struct Opening {
     pub serial: Scalar,
 }
 
+/// Recipient-only asset metadata. In particular, a zero-valued note still
+/// has an unambiguous asset: guessing a generator from its value would not.
+pub struct ConfidentialOpening {
+    pub asset_id: [u8; 32],
+    pub tag_blinding: Scalar,
+    pub opening: Opening,
+}
+
+const CONFIDENTIAL_OPENING_MAGIC: &[u8; 4] = b"DCA3";
+const CONFIDENTIAL_OPENING_BYTES: usize = 108;
+
 /// Stable, unlinkable linking tag. A valid secret must be nonzero; the
 /// membership verifier rejects the identity produced for a zero secret.
 pub fn note_nullifier(serial: &Scalar) -> RistrettoPoint {
@@ -512,6 +523,27 @@ impl NoteLedger {
         effective_blinding: &Scalar,
         rng: &mut R,
     ) -> Result<Note, &'static str> {
+        self.build_note_inner(address, value, value_commitment, effective_blinding, None, rng)
+    }
+
+    /// Encrypt the actual asset ID and tag opening to the one-time recipient.
+    /// Neither secret is added to the public note or its consensus projection.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_confidential_note<R: RngCore + CryptoRng>(&self, address: &Address,
+        value: u64, value_commitment: RistrettoPoint, effective_blinding: &Scalar,
+        asset_id: &[u8; 32], tag_blinding: &Scalar, rng: &mut R) -> Result<Note, &'static str> {
+        if *asset_id == [0; 32] || self.key.with_value_generator(crate::confidential_assets::generator(asset_id))
+            .commit_u64(value, effective_blinding) != value_commitment {
+            return Err("confidential note opening names another asset or value");
+        }
+        self.build_note_inner(address, value, value_commitment, effective_blinding,
+            Some((asset_id, tag_blinding)), rng)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_note_inner<R: RngCore + CryptoRng>(&self, address: &Address,
+        value: u64, value_commitment: RistrettoPoint, effective_blinding: &Scalar,
+        asset: Option<(&[u8; 32], &Scalar)>, rng: &mut R) -> Result<Note, &'static str> {
         let ephemeral_secret = Scalar::random(rng);
         let ephemeral = G * ephemeral_secret;
         let shared = scalar_from(
@@ -520,9 +552,14 @@ impl NoteLedger {
         );
         let one_time = self.one_time_point(address, &shared);
         let context = opening_context(&one_time, &value_commitment, &ephemeral);
-        let mut payload = zeroize::Zeroizing::new([0; 40]);
-        payload[..8].copy_from_slice(&value.to_be_bytes());
-        payload[8..].copy_from_slice(effective_blinding.as_bytes());
+        let mut payload = zeroize::Zeroizing::new(Vec::with_capacity(CONFIDENTIAL_OPENING_BYTES));
+        if let Some((id, gamma)) = asset {
+            payload.extend_from_slice(CONFIDENTIAL_OPENING_MAGIC);
+            payload.extend_from_slice(id);
+            payload.extend_from_slice(gamma.as_bytes());
+        }
+        payload.extend_from_slice(&value.to_be_bytes());
+        payload.extend_from_slice(effective_blinding.as_bytes());
         let encrypted_opening = SealedMessage::seal(
             &address.opening_public,
             SealingPurpose::NoteOpening,
@@ -636,20 +673,58 @@ impl NoteLedger {
                 let NoteOpening::Recipient(envelope) = &note.encrypted_opening else {
                     return None;
                 };
+                let payload_bytes = envelope.ciphertext.len();
+                if payload_bytes != 40 && payload_bytes != CONFIDENTIAL_OPENING_BYTES { return None; }
                 let payload = envelope
-                    .open(&view.opening_key, SealingPurpose::NoteOpening, &context, 40)
+                    .open(
+                        view.opening_key.as_ref(),
+                        SealingPurpose::NoteOpening,
+                        &context,
+                        payload_bytes,
+                    )
                     .ok()?;
-                let value = u64::from_be_bytes(payload[..8].try_into().ok()?);
+                let body = if payload.len() == CONFIDENTIAL_OPENING_BYTES
+                    && &payload[..4] == CONFIDENTIAL_OPENING_MAGIC {
+                    let asset: [u8; 32] = payload[4..36].try_into().ok()?;
+                    if asset_key.g != crate::confidential_assets::generator(&asset) { return None; }
+                    &payload[68..]
+                } else if payload.len() == 40 { payload.as_slice() } else { return None; };
+                let value = u64::from_be_bytes(body[..8].try_into().ok()?);
                 if self.bits < 64 && value >= (1_u64 << self.bits) {
                     return None;
                 }
                 let blinding = Option::<Scalar>::from(Scalar::from_canonical_bytes(
-                    payload[8..].try_into().ok()?,
+                    body[8..].try_into().ok()?,
                 ))?;
                 (asset_key.commit_u64(value, &blinding) == note.value_commitment)
                     .then_some((index, value, blinding))
             })
             .collect()
+    }
+
+    /// `tags` comes from the canonical asset identities attached to each note,
+    /// in exactly ledger order. Authenticated decryption plus the tag opening
+    /// identifies the asset even at value zero and rejects mismatched metadata.
+    pub fn scan_confidential(&self, wallet: &Wallet, tags: &[[u8; 32]]) -> Vec<(usize, ConfidentialOpening)> {
+        if tags.len() != self.notes.len() { return Vec::new(); }
+        self.notes.iter().zip(tags).enumerate().filter_map(|(index, (note, tag))| {
+            if self.one_time_point(&wallet.address, &wallet.shared(&note.ephemeral)) != note.one_time { return None; }
+            let NoteOpening::Recipient(envelope) = &note.encrypted_opening else { return None; };
+            let context = opening_context(&note.one_time, &note.value_commitment, &note.ephemeral);
+            let payload = envelope.open(wallet.opening_key.as_ref(), SealingPurpose::NoteOpening,
+                &context, CONFIDENTIAL_OPENING_BYTES).ok()?;
+            if payload.len() != CONFIDENTIAL_OPENING_BYTES || &payload[..4] != CONFIDENTIAL_OPENING_MAGIC { return None; }
+            let asset_id: [u8; 32] = payload[4..36].try_into().ok()?;
+            let tag_blinding = Option::<Scalar>::from(Scalar::from_canonical_bytes(payload[36..68].try_into().ok()?))?;
+            let value = u64::from_be_bytes(payload[68..76].try_into().ok()?);
+            let blinding = Option::<Scalar>::from(Scalar::from_canonical_bytes(payload[76..108].try_into().ok()?))?;
+            if asset_id == [0; 32] || (self.bits < 64 && value >= (1u64 << self.bits)) { return None; }
+            let generator = crate::confidential_assets::generator(&asset_id);
+            if (generator + self.key.h * tag_blinding).compress().to_bytes() != *tag
+                || self.key.with_value_generator(generator).commit_u64(value, &blinding) != note.value_commitment { return None; }
+            Some((index, ConfidentialOpening { asset_id, tag_blinding,
+                opening: Opening { value, blinding, serial: wallet.serial(&note.ephemeral) } }))
+        }).collect()
     }
 
     fn membership_context(
@@ -746,6 +821,7 @@ impl NoteLedger {
             &[],
             eligibility,
             context,
+            None,
             rng,
         )
     }
@@ -782,8 +858,22 @@ impl NoteLedger {
             output_blindings,
             eligibility,
             context,
+            None,
             rng,
         )
+    }
+
+    /// The standard spend core with recipient-encrypted asset metadata.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_confidential_spend<R: RngCore + CryptoRng>(&self, ring: &[usize], index: usize,
+        opening: &Opening, asset_id: &[u8; 32], tag: &RistrettoPoint, gamma: &Scalar,
+        outputs: &[(Address, u64)], eligibility: &[bool], context: &[u8], rng: &mut R)
+        -> Result<Spend, &'static str> {
+        if *tag != crate::confidential_assets::generator(asset_id) + self.key.h * gamma {
+            return Err("confidential spend asset and tag differ");
+        }
+        self.build_spend_constrained_inner(ring, index, opening, tag, gamma, outputs,
+            &[], eligibility, context, Some(asset_id), rng)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -798,6 +888,7 @@ impl NoteLedger {
         output_blindings: &[Scalar],
         eligibility: &[bool],
         context: &[u8],
+        asset_id: Option<&[u8; 32]>,
         rng: &mut R,
     ) -> Result<Spend, &'static str> {
         if ring.len() != eligibility.len() || ring.iter().any(|i| *i >= self.notes.len()) {
@@ -850,11 +941,12 @@ impl NoteLedger {
         let mut commitments = Vec::with_capacity(outputs.len());
         for ((address, value), blinding) in outputs.iter().zip(blindings.iter()) {
             let commitment = tagged.commit_u64(*value, blinding);
-            notes.push(self.build_note(
+            notes.push(self.build_note_inner(
                 address,
                 *value,
                 commitment,
                 &(gamma * Scalar::from(*value) + blinding),
+                asset_id.map(|id| (id, gamma)),
                 rng,
             )?);
             commitments.push(commitment);

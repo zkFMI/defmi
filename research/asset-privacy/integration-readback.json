@@ -1,0 +1,33 @@
+{
+  "task_source_files": [
+    "docs/CONFIDENTIAL_ASSETS.md",
+    "docs/CONFIDENTIAL_ASSETS_ACCEPTANCE_2026-09-12.md",
+    "research/asset-privacy/check-disclosure.py",
+    "research/asset-privacy/contract.json",
+    "research/asset-privacy/native-contract.json",
+    "research/asset-privacy/run-native.sh",
+    "research/asset-privacy/run.py",
+    "rust/defmi-avalanche-vm/examples/confidential-assets-acceptance.rs",
+    "rust/defmi-avalanche-vm/examples/confidential-assets/native.rs",
+    "rust/defmi-avalanche-vm/src/execution.rs",
+    "rust/defmi-avalanche-vm/src/execution/application_settlement.rs",
+    "rust/defmi-avalanche-vm/src/execution/confidential.rs",
+    "rust/defmi-avalanche-vm/src/state.rs",
+    "rust/defmi-avalanche-vm/src/transaction.rs",
+    "rust/defmi-avalanche-vm/src/vm.rs",
+    "rust/defmi/src/application_reservation.rs",
+    "rust/defmi/src/application_settlement.rs",
+    "rust/defmi/src/avalanche.rs",
+    "rust/defmi/src/avalanche/confidential.rs",
+    "rust/defmi/src/claim_redemption.rs",
+    "rust/defmi/src/confidential_assets.rs",
+    "rust/defmi/src/confidential_notes.rs",
+    "rust/defmi/src/confidential_notes/application.rs",
+    "rust/defmi/src/lib.rs",
+    "rust/defmi/src/note_chain.rs",
+    "rust/defmi/src/notes.rs"
+  ],
+  "baseline_preserved": true,
+  "installed_source_hashes_match_native_manifest": true,
+  "manifest_sha256": "0ea55582838efb8986fdb0428b31d4e3d6a4b55a368894fa91d27c16cf178801"
+}

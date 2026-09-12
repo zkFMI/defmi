@@ -1,0 +1,49 @@
+{
+  "id": "asset-privacy-native-five-validator-v1-unfilled-cohort4",
+  "milestone": "RUN_ROUGH_END_TO_END_AND_OBSERVE_FINAL_METRIC",
+  "population": "One synthetic two-asset lifecycle on five live AvalancheGo validators on one remote Linux host, using native RPC and recipient wallet reads; four registered assets with two securities and two cash assets",
+  "primary_metric": "confidential_reserve_fill_expiry_redeem_reuse_balances_match",
+  "expected_balances": [
+    [
+      57,
+      600
+    ],
+    [
+      53,
+      410
+    ]
+  ],
+  "hard_gates": [
+    "Both partial fills accepted",
+    "Both remainders released at expiry",
+    "All six claims redeemed",
+    "Delivered note reused",
+    "Zero-value asset identified from recipient ciphertext",
+    "Persisted roots match receipts",
+    "Signed invalid asset and value links rejected with state bytes unchanged",
+    "Ciphertext mutation, legacy downgrade, fill and claim replay rejected",
+    "Spent nullifier rejected despite fresh operation and governance approval",
+    "All five validator roots match exact accepted-block replay at every transition",
+    "Mixed-asset notes and encrypted claims fetched through SDK RPC reads",
+    "Final wallet scan after node3 restart",
+    "State-changing RPC rejections or idempotent replay preserve canonical root",
+    "Unfilled cancellation and unfilled expiry restore both decoy-owner asset balances to 25"
+  ],
+  "promotion": "smoke_only; private DeKYX service, independently operated proof parties, venue integration and cryptographic review remain separate gates",
+  "references": [
+    {
+      "url": "https://elementsproject.org/features/issued-assets/investigation",
+      "use": "Confidential asset generator and asset legitimacy construction; no code imported"
+    },
+    {
+      "url": "https://ir.cwi.nl/pub/1456/1456D.pdf",
+      "use": "CDS OR composition adapted to same-branch asset commitment and generator knowledge; no code imported"
+    },
+    {
+      "repository": "https://github.com/tari-project/triptych",
+      "revision": "bf0cb42fff55636a8bb037020411fb3a050af23f",
+      "license": "BSD-3-Clause",
+      "use": "Existing pinned ownership/value ring proof, unchanged"
+    }
+  ]
+}

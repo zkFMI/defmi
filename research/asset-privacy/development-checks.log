@@ -1,0 +1,549 @@
+   Compiling zkpi-defmi-sdk v0.1.0 (/workspace/defmi/rust/zkpi-defmi-sdk)
+   Compiling defmi v0.1.0 (/workspace/defmi/rust/defmi)
+   Compiling defmi-avalanche-vm v0.1.0 (/workspace/defmi/rust/defmi-avalanche-vm)
+    Finished `release` profile [optimized] target(s) in 19.40s
+     Running unittests src/lib.rs (/var/cache/defmi/target/release/deps/defmi-d029522fb3b27469)
+
+running 21 tests
+test central_bank_liquidity::tests::collateral_return_respects_all_other_common_collateral_uses ... ok
+test central_bank_liquidity::tests::concurrent_reservations_cannot_exceed_entity_wide_surplus ... ok
+test central_bank_liquidity::tests::accepted_funds_repay_overdraft_once_and_enable_the_next_business_day ... ok
+test central_bank_liquidity::tests::values_jgb_using_price_index_and_boj_valuation_rate ... ok
+test central_bank_liquidity::tests::failed_atomic_dvp_leaves_every_record_unchanged ... ok
+test central_bank_liquidity::tests::receipt_pledge_draw_payment_and_seller_repayment_are_atomic ... ok
+test central_bank_liquidity::tests::revaluation_shortfall_blocks_new_credit_and_eod_marks_overdue ... ok
+test cross_domain_finality::tests::canonical_snapshot_parser_requires_the_exact_accepted_block ... ok
+test central_bank_liquidity::tests::expired_reservation_can_cure_a_temporary_shortfall ... ok
+test cross_domain_finality::tests::signer_refuses_unprovisioned_stale_or_unclaimed_events ... ok
+test participant::tests::one_legal_entity_cannot_count_as_two_mpc_trust_domains ... ok
+test participant::tests::entity_approval_requires_both_components_and_the_enrolled_purpose ... ok
+test settlement_verifier::tests::config_is_canonical_and_keyed_by_venue_epoch ... ok
+test cross_domain_finality::tests::independent_hybrid_shares_aggregate_to_one_destination_receipt ... ok
+test governance::tests::governance_requires_both_components_and_a_current_host_clock ... ok
+test participant::tests::wrong_entity_signature_and_stale_key_epoch_are_rejected ... ok
+test governance::tests::fresh_deployment_modes_bind_real_governance_signatures ... ok
+test product_evidence::tests::hybrid_execution_bundle_fits_only_its_exact_fixed_bound ... ok
+test participant::tests::seven_independent_operators_can_serve_a_bound_automatic_mandate ... ok
+test facility::schema_tests::populated_legacy_verifier_is_preserved_without_implicit_pq_enrollment ... ok
+test facility::schema_tests::legacy_guarantor_table_requires_explicit_pq_enrollment_without_deleting_rows ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running unittests src/bin/settle_wasm.rs (/var/cache/defmi/target/release/deps/settle_wasm-21b8705b84e28b08)
+     Running tests/application_reservation.rs (/var/cache/defmi/target/release/deps/application_reservation-9f0af34729d7c516)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test dekyx_mandate_and_note_proofs_bind_without_a_circular_dependency ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/atomic_transfer.rs (/var/cache/defmi/target/release/deps/atomic_transfer-67044494cf133f4a)
+
+running 2 tests
+test an_unknown_payee_is_refused_before_state_changes ... ok
+     Running tests/avalanche.rs (/var/cache/defmi/target/release/deps/avalanche-f0e7b8cae47d5166)
+test one_checked_transfer_settles_and_an_exact_replay_is_refused ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 6 tests
+test rpc_requires_tls_except_explicit_local_test ... ok
+test wait_accepted_treats_unknown_as_transient_consensus_state ... ok
+test rpc_reads_one_root_consistent_account_free_authoring_snapshot ... ok
+test authoritative_bridge_retries_exact_accepted_transaction_after_root_moves ... ok
+test bridge_registers_opens_and_settles_without_projection_drift ... ok
+test bridge_stops_when_roots_differ_and_recovers_after_l1_acceptance ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.29s
+
+     Running tests/ccp.rs (/var/cache/defmi/target/release/deps/ccp-82f6fbf828cabd91)
+
+running 22 tests
+test the_providers_capital_sits_where_the_standards_put_it ... ok
+test both_parties_have_to_have_signed ... ok
+test a_graph_that_mixes_assets_is_refused_at_the_start ... ok
+test an_amount_changed_on_the_way_through_is_caught ... ok
+test a_novation_attributed_to_another_house_is_caught ... ok
+test what_a_house_can_still_do_is_leave_a_trade_out ... ok
+test the_same_trades_in_a_different_cycle_do_not_share_an_attestation ... ok
+test an_attestation_over_a_different_trade_set_is_caught ... ok
+test an_edge_that_does_not_touch_the_house_is_caught ... ok
+test a_provider_is_not_admitted_on_a_margin_that_proves_nothing ... ok
+test a_provider_with_no_tranche_of_its_own_is_not_admitted ... ok
+test the_provider_tranche_is_identified_by_position_and_not_by_its_name ... ok
+test a_provider_is_not_admitted_on_somebody_elses_margin ... ok
+test a_member_cleared_at_two_houses_has_two_positions_and_no_netted_one ... ok
+test every_edge_goes_through_the_house_and_the_book_is_flat ... ok
+test a_party_that_is_not_known_to_the_room_is_refused ... ok
+test a_house_cannot_novate_a_trade_nobody_agreed_to ... ok
+test an_unadmitted_provider_is_refused ... ok
+test net_positions_accumulate_without_a_proof ... ok
+test each_house_resolves_its_own_default_in_its_own_waterfall ... ok
+test a_whole_cleared_cycle_checks_out ... ok
+test the_flat_book_needs_no_proof_at_any_size ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/chain.rs (/var/cache/defmi/target/release/deps/chain-2e4e60be96a5d1ff)
+
+running 11 tests
+test a_rejected_settlement_leaves_no_trace ... ok
+test a_settlement_writes_five_slots ... ok
+test stored_bytes_track_what_is_held ... ok
+test an_expired_instruction_is_refused ... ok
+test the_root_separates_a_handle_from_the_key_after_it ... ok
+test an_expired_nullifier_is_safe_to_forget ... ok
+test settlements_that_move_one_account_do_not_commute ... ok
+test the_same_instruction_cannot_settle_twice ... ok
+test nodes_agree_whatever_order_settlements_arrived_in ... ok
+test an_expired_escrow_goes_back_to_its_payer ... ok
+test pruning_bounds_the_nullifier_set ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/credit.rs (/var/cache/defmi/target/release/deps/credit-6b03f94edd64d131)
+
+running 15 tests
+test a_shortfall_larger_than_the_waterfall_is_refused ... ok
+test a_cap_the_collateral_does_not_support_is_refused ... ok
+test a_member_cannot_value_its_pledge_at_a_price_no_quorum_signed ... ok
+test a_pledge_is_valued_at_a_price_the_member_did_not_choose ... ok
+test a_valuation_moved_to_another_price_is_refused ... ok
+test an_opening_that_is_not_the_value_that_was_proved_is_refused ... ok
+test a_cap_covered_by_collateral_is_underwritten ... ok
+test a_line_granted_against_a_valued_pledge_underwrites_the_same_way ... ok
+test a_backing_proof_from_another_line_does_not_transfer ... ok
+test the_tranches_after_a_resolution_are_still_commitments ... ok
+test skipping_a_tranche_is_caught_by_the_ordering_proof ... ok
+test a_resolution_is_written_down_once ... ok
+test two_resolutions_of_the_same_shortfall_drawing_differently_are_different ... ok
+test the_waterfall_consumes_tranches_in_order ... ok
+test a_resolution_proved_against_a_fuller_book_does_not_verify_against_a_drawn_one ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/cross_domain.rs (/var/cache/defmi/target/release/deps/cross_domain-4c629724d17fbd35)
+
+running 7 tests
+test prepare_with_missing_private_event_binding_never_enters_state ... ok
+test split_or_delayed_delivery_refunds_deterministically ... ok
+test completes_across_two_independent_books_and_records_only_local_ids ... ok
+test armed_leg_cannot_refund_and_remains_claimable_after_the_operational_deadline ... ok
+test observes_remote_claim_once_and_rejects_future_receipt ... ok
+test rejects_replay_wrong_order_and_wrong_destination ... ok
+test rejects_bad_quorum_epoch_signature_and_release_witness ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/dvp.rs (/var/cache/defmi/target/release/deps/dvp-43e2a4e00fdf65f3)
+
+running 21 tests
+test accounts_are_a_function_of_the_handle_and_the_rail ... ok
+test an_authorisation_does_not_carry_to_another_amount ... ok
+test the_unchecked_opening_is_closed_once_a_ledger_has_an_issuer - should panic ... ok
+test an_issued_opening_is_admitted_once_and_not_twice ... ok
+test issuance_carries_a_proof_that_the_asset_is_listed ... ok
+test a_ledger_under_an_issuer_refuses_an_unsigned_opening ... ok
+test a_stale_range_proof_on_a_bounded_amount_is_refused ... ok
+test an_expired_instruction_does_not_settle ... ok
+test a_tag_for_the_wrong_asset_cannot_move_the_balance ... ok
+test a_tagged_cash_leg_moved_to_another_currency_is_refused ... ok
+test a_tagged_cash_leg_over_untagged_balances_is_refused ... ok
+test nothing_moves_when_a_leg_fails ... ok
+test paying_the_wrong_amount_is_rejected ... ok
+test the_reference_the_product_is_about_cannot_be_swapped ... ok
+test a_tagged_cash_rail_settles_the_same_way ... ok
+test a_valid_delivery_versus_payment_settles ... ok
+test delivering_the_wrong_quantity_is_rejected ... ok
+test an_instruction_settles_at_most_once ... ok
+test an_untagged_cash_rail_still_settles_and_the_package_is_the_same_shape ... ok
+test a_package_cannot_name_accounts_the_instruction_does_not ... ok
+test the_package_looks_the_same_whatever_the_asset ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/facility.rs (/var/cache/defmi/target/release/deps/facility-aead1c45c2fb4253)
+
+running 21 tests
+test product_batch_statement_matches_the_avalanche_consensus_domain ... ok
+test zero_identifiers_are_rejected_before_authorization ... ok
+test product_batch_rejects_every_cross_order_double_spend_surface ... ok
+test consensus_timestamps_fit_sqlites_signed_integer_domain ... ok
+test credit_relation_proof_wire_round_trips_and_rejects_malformed_frames ... ok
+test quorum_is_bound_to_unique_keys_domain_and_before_root ... ok
+test asset_and_account_retries_are_idempotent_but_conflicts_fail ... ok
+test one_guarantor_cannot_split_an_entity_cap_across_two_facility_ids ... ok
+test guarantor_control_requires_both_components_and_rejects_wrong_purpose_without_mutation ... ok
+test stale_later_leg_rolls_back_every_leg_and_nullifier ... ok
+test quorum_expiry_replay_nullifier_and_wrong_asset_fail_closed ... ok
+test admission_batches_force_every_real_or_cover_lane_through_the_signed_order ... ok
+test persistence_backup_cost_meter_and_chain_survive_restart ... ok
+test frozen_facility_refuses_new_rfqs_but_existing_hold_can_expire ... ok
+test consuming_a_hold_moves_actual_debt_and_returns_the_unused_maximum ... ok
+test credit_holds_are_private_atomic_and_cannot_overdraw_the_cap ... ok
+test one_state_machine_settles_security_fx_fund_and_carbon ... ok
+test reducing_a_facility_below_existing_usage_freezes_without_erasing_exposure ... ok
+test expired_product_reservation_restores_asset_and_credit_atomically_without_owner_signature ... ok
+test simultaneous_rfqs_enforce_one_cap_for_ccp_bank_credit_provider_and_self_guarantee ... ok
+test product_reserve_and_threshold_dvp_support_ccp_bank_credit_provider_and_self_guarantee ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.03s
+
+     Running tests/netting.rs (/var/cache/defmi/target/release/deps/netting-42546b5130674279)
+
+running 15 tests
+test a_batch_attestation_only_makes_sense_when_both_rails_net ... ok
+test a_book_cannot_be_rebased_after_trades_have_been_admitted ... ok
+test an_order_past_the_signed_range_cannot_prove_itself_covered ... ok
+test headroom_wider_than_the_proof_is_refused_rather_than_wrapped ... ok
+test an_attestation_does_not_move_between_cycles_that_end_the_same_way ... ok
+test a_cap_past_the_signed_range_still_covers_what_it_covers ... ok
+test a_gross_rail_refuses_a_delivery_it_cannot_cover_yet ... ok
+test a_leg_cannot_pay_itself ... ok
+test an_instruction_settles_once_per_cycle ... ok
+test a_position_beyond_its_cap_fails_at_the_close ... ok
+test an_attestation_for_other_positions_is_refused ... ok
+test a_batch_attestation_signed_by_nobody_is_refused ... ok
+test a_cap_lets_a_net_position_go_below_zero_and_no_further ... ok
+test a_net_rail_lets_the_offsetting_pair_through_in_either_order ... ok
+test every_mode_settles_and_conserves ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/note_chain.rs (/var/cache/defmi/target/release/deps/note_chain-0b6ac9dd715c3b63)
+
+running 7 tests
+test note_consolidation_preserves_the_exact_commitment_sum ... ok
+test account_free_note_statements_match_the_pinned_consensus_vectors ... ok
+test exact_reserve_accepts_a_zero_refund_but_not_a_zero_delivery ... ok
+test note_issuance_must_be_signed_during_csd_validity ... ok
+test recipient_recovers_and_materializes_a_final_claim_without_revealing_its_opening ... ok
+test delegated_claim_statements_match_the_pinned_consensus_vectors ... ok
+test account_free_consensus_timestamps_fit_sqlites_signed_integer_domain ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/note_security.rs (/var/cache/defmi/target/release/deps/note_security-8275da314d7becc8)
+
+running 7 tests
+test native_security_regression_linear_check_enforces_the_claimed_constant ... ok
+test native_security_regression_issuer_signature_binds_the_note_decomposition ... ok
+test native_security_regression_legacy_wire_and_changed_output_binding_fail_closed ... ok
+test native_security_regression_destination_swap_is_rejected_without_state_change ... ok
+test native_security_regression_serial_shift_cannot_inflate_a_note ... ok
+test native_security_regression_nullifier_does_not_identify_the_public_input_key ... ok
+test native_security_regression_new_destinations_cannot_change_the_nullifier ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/note_settlement.rs (/var/cache/defmi/target/release/deps/note_settlement-247d2046662b1d54)
+
+running 8 tests
+test nothing_is_applied_when_a_leg_fails ... ok
+test a_cash_leg_for_the_wrong_value_is_refused ... ok
+test an_honest_settlement_moves_both_rails_and_signs_a_receipt ... ok
+test a_receipt_is_signed_over_what_it_says ... ok
+test two_payments_to_one_address_share_no_bytes ... ok
+test the_same_instruction_cannot_settle_twice ... ok
+test verified_wallet_dvp_and_typed_zkpi_project_only_to_a_non_product_note_order ... ok
+test threshold_dvp_projects_to_predelegated_claims_without_a_post_quote_wallet_spend ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.71s
+
+     Running tests/notes.rs (/var/cache/defmi/target/release/deps/notes-227a6d39e54fffcd)
+
+running 20 tests
+test a_recent_ring_holds_the_note_and_stays_inside_the_pool ... ok
+test a_recent_ring_rejects_what_the_uniform_one_rejects ... ok
+test a_ring_has_to_be_a_power_of_two_and_fit_the_pool ... ok
+test a_recent_ring_draws_from_the_window_and_widens_to_reach_the_note ... ok
+test the_unchecked_append_is_closed_once_a_note_ledger_has_an_issuer - should panic ... ok
+test a_note_ledger_under_an_issuer_refuses_an_unsigned_note ... ok
+test a_prover_cannot_select_an_ineligible_decoy ... ok
+test outputs_must_sum_to_the_note ... ok
+test scanning_finds_only_your_own ... ok
+test two_payments_to_one_address_are_unlinkable ... ok
+test the_state_root_is_a_function_of_what_the_ledger_holds ... ok
+test a_note_spends_once ... ok
+test the_state_root_moves_on_every_change_and_agrees_across_ledgers ... ok
+test a_hidden_input_can_be_bound_to_one_reservation_lock_class ... ok
+test verifier_complete_spend_proof_round_trips_canonically ... ok
+test a_spend_verifies_and_the_payee_finds_its_note ... ok
+test the_pool_keeps_spent_notes ... ok
+test a_reblinded_serial_cannot_stand_in_for_a_fresh_one ... ok
+test a_tag_for_the_wrong_asset_cannot_spend ... ok
+test the_spend_looks_the_same_wherever_the_real_note_sits ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/pvp.rs (/var/cache/defmi/target/release/deps/pvp-c4e03ebaa6e1091e)
+
+running 10 tests
+test a_counterparty_that_stops_after_preparing_costs_nobody_anything ... ok
+test a_stranger_cannot_release_an_escrow_by_signing_with_their_own_key ... ok
+test the_second_mover_is_safe_exactly_while_the_window_is_open ... ok
+test the_two_published_signatures_have_nothing_in_common_to_join_on ... ok
+test an_escrow_cannot_be_claimed_twice_or_claimed_and_then_unwound ... ok
+test nobody_can_release_a_leg_without_the_secret ... ok
+test money_held_in_escrow_is_still_on_the_books ... ok
+test both_legs_settle_and_neither_ledger_learns_of_the_other ... ok
+test a_leg_name_cannot_be_reused ... ok
+test a_leg_name_cannot_be_used_twice ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/recipient_delivery.rs (/var/cache/defmi/target/release/deps/recipient_delivery-4498fa511d630612)
+
+running 1 test
+test canonical_delivery_roundtrip_requires_the_independent_recipient_key ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/reconcile.rs (/var/cache/defmi/target/release/deps/reconcile-252514c197220306)
+
+running 10 tests
+test the_wrong_asset_generator_does_not_verify ... ok
+test a_register_that_holds_only_a_total_cannot_localise ... ok
+test a_different_set_of_positions_is_refused_rather_than_reinterpreted ... ok
+test the_proof_is_about_this_account_at_this_moment ... ok
+test the_committed_balances_reconcile_without_any_of_them_opening ... ok
+test a_break_is_pass_or_fail_and_says_nothing_about_where ... ok
+test only_the_right_total_verifies ... ok
+test an_unsigned_attestation_is_only_as_good_as_the_number_it_carries ... ok
+test a_register_with_a_figure_per_position_localises_and_discloses_nothing ... ok
+test finding_a_break_costs_about_two_log_n_and_reports_it ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/reconcile_forgery.rs (/var/cache/defmi/target/release/deps/reconcile_forgery-11edbd70bb5b1665)
+
+running 1 test
+test a_dishonest_total_is_refused ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/register.rs (/var/cache/defmi/target/release/deps/register-ac06f1f18dfcacbf)
+
+running 18 tests
+test a_position_file_reads_as_it_was_sent ... ok
+test a_file_that_lost_its_last_rows_is_refused_rather_than_reconciled ... ok
+test a_different_number_of_positions_is_a_break_before_any_arithmetic ... ok
+test a_line_with_no_quantity_is_a_refusal_and_not_a_zero ... ok
+test a_break_cannot_be_hidden_by_halves_that_do_not_add_up ... ok
+test a_quantity_that_is_not_a_number_is_refused ... ok
+test a_header_that_is_not_four_fields_is_refused ... ok
+test a_ledger_that_agrees_says_so_and_opens_nothing ... ok
+test an_empty_file_is_not_a_statement_of_zero_holdings ... ok
+test a_register_that_sends_only_a_total_cannot_say_where ... ok
+test nothing_follows_the_end_line ... ok
+test an_end_line_that_disagrees_with_the_rows_is_refused ... ok
+test a_register_that_cannot_answer_a_sub_range_says_so_rather_than_guessing ... ok
+test a_register_that_sends_positions_names_the_ones_that_break ... ok
+test a_total_is_blind_to_reordering_and_the_positions_are_not ... ok
+test two_errors_that_cancel_are_caught_by_the_positions_and_not_the_total ... ok
+test a_break_can_be_localised_when_the_register_answers_sub_ranges ... ok
+test a_signed_statement_is_checked_against_the_registrar ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/vetting.rs (/var/cache/defmi/target/release/deps/vetting-7a5cef674a59047c)
+
+running 15 tests
+test a_handle_that_is_g_to_the_secret_is_what_the_envelope_commits_to ... ok
+test a_seal_cut_before_the_group_moved_is_refused_rather_than_checked ... ok
+test the_group_size_is_a_power_of_two_because_the_proof_needs_one ... ok
+test the_default_crowd_is_the_one_the_measurement_supports ... ok
+test the_roll_a_verifier_checks_against_is_one_it_can_identify ... ok
+test a_proof_does_not_travel_between_rounds ... ok
+test a_decoy_seat_cannot_be_used_by_anyone ... ok
+test a_membership_proof_at_a_group_of_sixteen_is_one_thousand_and_four_bytes ... ok
+test a_handle_nobody_vetted_cannot_prove_anything ... ok
+test cohorts_do_not_share_a_group ... ok
+test one_vetting_yields_one_handle_and_not_a_family_of_them ... ok
+test a_vetted_handle_proves_it_without_saying_which_entry_it_is ... ok
+test the_roll_says_how_big_the_crowd_is ... ok
+test a_crowd_of_a_hundred_and_twenty_eight_costs_what_the_document_says ... ok
+test every_firm_in_a_full_group_proves_against_the_same_sixteen ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/viewing.rs (/var/cache/defmi/target/release/deps/viewing-9be7a3e2410ede7b)
+
+running 26 tests
+test a_schedule_with_no_period_cannot_be_built ... ok
+test a_scope_key_says_nothing_about_a_sibling_or_the_seed ... ok
+test a_period_past_the_end_of_the_clock_saturates_rather_than_wrapping ... ok
+test a_grant_can_be_well_formed_and_no_longer_the_scope_money_goes_into ... ok
+test a_scope_that_rolls_gives_a_different_address_each_period ... ok
+test a_grant_ends_when_its_period_does ... ok
+test a_grant_is_signed_twice_and_neither_half_alone_is_enough ... ok
+test an_unsigned_grant_is_a_key_somebody_wrote_down ... ok
+test a_grant_is_signed_current_and_about_the_address_it_names ... ok
+test a_payer_using_a_stale_address_puts_the_note_in_a_stale_scope ... ok
+test the_identity_is_two_keys_and_the_signature_is_two_signatures ... ok
+test a_wallet_rebuilt_from_its_seeds_has_the_same_hybrid_identity ... ok
+test a_disclosure_naming_a_spend_the_ledger_never_saw_is_refused ... ok
+test rolling_does_not_make_an_old_key_stop_working ... ok
+test a_grant_with_one_honest_half_is_refused ... ok
+test a_rolling_grant_expires_exactly_when_its_period_does ... ok
+test a_disclosure_with_one_half_or_one_honest_half_is_refused ... ok
+test giving_one_party_both_disclosures_gives_it_the_wallet ... ok
+test a_view_key_recovers_no_serial_so_it_cannot_spend ... ok
+test an_unsigned_or_misattributed_disclosure_is_refused ... ok
+test the_wallet_can_still_spend_what_it_let_an_auditor_read ... ok
+test revocation_is_the_next_scope_and_not_a_message ... ok
+test a_scope_reconciles_against_a_figure_without_opening_a_note ... ok
+test a_scope_sees_its_own_notes_and_no_others ... ok
+test a_wallet_can_say_what_it_spent_and_sign_it ... ok
+test what_a_disclosure_cannot_do_is_be_complete ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (/var/cache/defmi/target/release/deps/defmi_avalanche_vm-3a72672193b707a8)
+
+running 67 tests
+test block::tests::block_round_trip_and_id_are_canonical ... ok
+test block::tests::rejects_trailing_bytes ... ok
+test execution::tests::fixed_width_hex_parser_rejects_wrong_width ... ok
+test execution::tests::fresh_pqc_on_transaction_allowlist_is_exact_and_fail_closed ... ok
+test execution::tests::top_level_action_shape_is_closed ... ok
+test id::tests::cb58_round_trip_and_checksum_rejection ... ok
+test state::tests::default_build_rejects_research_transactions_without_changing_state ... ok
+test id::tests::vm_id_is_stable ... ok
+test state::tests::empty_root_matches_the_cross_runtime_contract ... ok
+test state::tests::state_encoding_is_canonical_and_rejects_bad_keys ... ok
+test state::tests::legacy_note_state_cannot_silently_restart_under_new_nullifier_rules ... ok
+test state::tests::state_root_commits_boj_and_participant_registry_books ... ok
+test state_store::tests::default_build_stages_exact_legacy_head_without_chunk_io ... ok
+test state_store::tests::canonical_state_and_legacy_state_restore_exactly ... ok
+test execution::tests::expired_reservation_releases_without_maker_or_taker_signature ... ok
+test state_store::tests::multiple_historical_heads_remain_independently_loadable ... ok
+test state_sync::tests::chunk_request_and_response_reject_trailing_or_wrong_data ... ok
+test state_sync::tests::snapshot_tampering_is_rejected ... ok
+test state_sync::tests::snapshot_limit_is_scoped_to_the_build_mode ... ok
+test state_sync::tests::summary_and_snapshot_round_trip_are_canonical ... ok
+test transaction::tests::rejects_float_and_non_issue_method ... ok
+test transaction::tests::canonicalizes_object_key_order ... ok
+test vm::tests::json_rpc_parse_errors_have_the_standard_code ... ok
+test transaction::tests::accepts_atomic_standing_pool_product_settlement_method ... ok
+test vm::tests::admission_cursor_returns_the_next_canonical_venue_epoch_sequence ... ok
+test genesis::tests::genesis_wire_round_trip_is_exact ... ok
+test vm::tests::participant_snapshots_expose_capabilities_but_not_canonical_balances ... ok
+test vm::tests::note_claim_pages_filter_by_source_or_recipient_and_advance_the_cursor ... ok
+test execution::tests::concurrent_holds_cannot_both_consume_one_facility_sequence ... ok
+test execution::tests::vm_rejects_legacy_or_invalid_hybrid_governance_without_changing_state ... ok
+test vm::tests::storage_keys_are_binary_and_prefix_stable ... ok
+test vm::tests::textual_ids_accept_cb58_and_hex ... ok
+test genesis::tests::genesis_config_accepts_avalanche_and_camel_case_node_ids ... ok
+test vm::tests::settlement_verifier_snapshot_returns_the_canonical_restart_anchor ... ok
+test state::tests::fresh_state_rejects_a_governance_authority_from_another_crypto_policy ... ok
+test state_sync::tests::merkle_chunks_verify_independently ... ok
+test genesis::tests::fresh_policy_uses_qommgen3_and_binds_its_governance_suite ... ok
+test genesis::tests::rejects_trailing_and_unsorted_members ... ok
+test execution::tests::maker_and_taker_reservations_are_atomic_and_need_no_post_quote_signature ... ok
+test execution::tests::credit_amendment_and_control_require_current_state_and_guarantor_authority ... ok
+test state_store::tests::malformed_manifest_count_is_rejected_before_reads ... ok
+test execution::cross_domain_tests::refunds_local_reserve_after_remote_partition ... ok
+test execution::tests::boj_common_collateral_reservation_and_simultaneous_dvp_are_consensus_atomic ... ok
+test execution::participant_tests::vm_registers_entity_module_and_auto_consumes_without_a_second_entity_signature ... ok
+test state_store::tests::missing_short_and_tampered_state_chunks_are_rejected ... ok
+test execution::cross_domain_tests::executes_cash_against_securities_across_two_vm_states ... ok
+test execution::tests::csd_note_lifecycle_is_signed_account_free_and_replay_safe ... ok
+test execution::tests::application_lifecycle::public_expiry_returns_unfilled_note_to_original_wallet_without_signatures ... ok
+test execution::tests::application_note_reservation_verifies_full_proofs_and_survives_restart ... ok
+test state_store::tests::state_larger_than_rpc_limit_crosses_boundary_in_bounded_calls ... ok
+test execution::tests::settlement_verifier_trust_anchor_has_the_same_native_and_vm_root ... ok
+test execution::tests::rust_vm_state_matches_the_native_facility_through_settlement ... ok
+test execution::tests::seven_node_admission_order_matches_native_defmi_and_cannot_skip_a_lane ... ok
+test execution::tests::application_lifecycle::closing_one_order_does_not_release_the_counterpartys_remaining_reserve ... ok
+test execution::tests::application_lifecycle::native_recipient_redeems_final_refund_without_governance_or_destination_keys ... ok
+test execution::tests::application_lifecycle::partial_expiry_and_ordered_cancellation_release_exact_current_head ... ok
+test execution::tests::application_lifecycle::expired_pq_keys_block_new_execution_but_preserve_accepted_fill_integrity ... ok
+test execution::tests::application_lifecycle::unsigned_candidate_verification_never_authorizes_native_execution ... ok
+test execution::tests::application_lifecycle::native_claim_redemption_rejects_rebinding_and_legacy_approval_bypass ... ok
+test execution::tests::application_lifecycle::claim_authorization_keys_are_fresh_per_claim_and_cannot_be_reused ... ok
+test execution::tests::application_lifecycle::application_bridge_retries_exact_certified_bytes_and_checks_finality_receipt ... ok
+test execution::tests::application_lifecycle::successive_partial_fills_keep_only_remainders_locked_and_recover_after_restart ... ok
+test execution::tests::application_lifecycle::native_hybrid_fill_and_cancel_reject_missing_corrupt_or_substituted_approval ... ok
+test execution::tests::application_lifecycle::atomic_native_batch_updates_cumulative_holds_once_and_survives_state_reopen ... ok
+test execution::tests::application_lifecycle::native_monetary_and_head_checks_reject_even_freshly_committee_signed_forgery ... ok
+test execution::tests::anonymous_reservations_settle_without_post_quote_signatures_and_batch_safely ... ok
+test execution::tests::application_lifecycle::native_batch_rejects_extraction_omission_reorder_and_rolls_back_a_bad_second_fill ... ok
+
+test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.74s
+
+     Running unittests src/bin/defmi_network.rs (/var/cache/defmi/target/release/deps/defmi_network-dee19282f4e48f37)
+
+running 2 tests
+test tests::decodes_chunked_avalanche_json_with_extensions_and_trailers ... ok
+test tests::rejects_a_truncated_chunk ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/var/cache/defmi/target/release/deps/qomm_avalanche_vm-34d9c34901f171ec)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/application_boundary.rs (/var/cache/defmi/target/release/deps/application_boundary-71b508a593033fe1)
+
+running 4 tests
+test retired_embedded_application_state_and_rpc_names_are_rejected ... ok
+test default_host_rejects_application_requests_and_stored_application_state ... ok
+test application_error_or_failed_post_validation_rolls_back_every_change ... ok
+test application_state_is_committed_roundtrips_and_cannot_replay ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/recovery.rs (/var/cache/defmi/target/release/deps/recovery-beb7c53920850e71)
+
+running 2 tests
+test expired_archival_keys_need_a_fresh_quorum_and_preserve_replay_state ... ok
+test recovery_cli_prepares_seals_and_restores_a_real_vm_snapshot_without_overwrite ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running unittests src/lib.rs (/var/cache/defmi/target/release/deps/zkpi_defmi_sdk-55f5a02a448b97f3)
+
+running 12 tests
+test application::tests::qomm_and_oclob_are_distinct_applications ... ok
+test application::tests::rejects_ambiguous_ids_and_committees ... ok
+test execution::tests::binds_application_and_exact_execution ... ok
+test execution::tests::refuses_partial_execution_committee ... ok
+test finality::tests::canonical_finality_requires_matching_readbacks ... ok
+test finality::tests::signed_facility_finality_rejects_another_key ... ok
+test reservation::tests::issues_only_from_matching_active_canonical_note_reservation ... ok
+test reservation::tests::rejects_tampering_expiry_and_cross_application_replay ... ok
+test reservation::tests::signed_private_permit_round_trips ... ok
+test reservation::tests::reservation_evidence_rejects_either_signature_component_and_wrong_purpose ... ok
+test reservation::tests::admission_omits_ledger_references_and_tags_reissued_holds ... ok
+test reservation::tests::issues_application_permits_only_for_the_signed_finalized_note_hold ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests defmi
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests defmi_avalanche_vm
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests zkpi_defmi_sdk
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+DEVELOPMENT_EXIT=0

@@ -6,8 +6,13 @@ license.workspace = true
 publish = false
 description = "Non-EVM Avalanche custom VM for QOMM and DeFMI"
 
+[features]
+default = []
+research-cocode = ["dep:zkfmi-cosnark-trial"]
+
 [dependencies]
 zkfmi-crypto.workspace = true
+zkfmi-cosnark-trial = { path = "../../../zkfmi-crypto/research/cosnark-trial", default-features = false, optional = true }
 avalanche-rpcchainvm-qomm = { path = "../vendor/avalanche-rs-qomm/crates/avalanche-rpcchainvm" }
 defmi.workspace = true
 zkpi-committee.workspace = true
@@ -38,3 +43,8 @@ merlin.workspace = true
 [[bin]]
 name = "qomm-avalanche-vm"
 path = "src/main.rs"
+
+[[bin]]
+name = "cocode-canonical-acceptance"
+path = "src/bin/cocode-canonical-acceptance.rs"
+required-features = ["research-cocode"]

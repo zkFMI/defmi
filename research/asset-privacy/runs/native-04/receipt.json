@@ -1,0 +1,9 @@
+{
+  "contract_id": "asset-privacy-native-five-validator-v1-unfilled-cohort4",
+  "contract_sha256": "bdf78bf6e29597c73c5c805788b0ca133436cfeb2edf612858b292372f75a651",
+  "manifest_sha256": "0ea55582838efb8986fdb0428b31d4e3d6a4b55a368894fa91d27c16cf178801",
+  "outcome_sha256": "1c8ef447c3fd1f654c0b2e559fff37a3e9683409451fb655a332956903b5e2a1",
+  "verdict": "smoke_only",
+  "elapsed_seconds": 162.88764548301697,
+  "exit_code": 0
+}

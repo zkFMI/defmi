@@ -1,5 +1,8 @@
 //! Fail-closed Avalanche custom-VM JSON-RPC client and projection bridge.
 
+mod confidential;
+pub use confidential::{CanonicalConfidentialClaim, CanonicalConfidentialNotePage};
+
 use crate::application_reservation::{
     ApplicationNoteReservation, ApplicationReservationBinding, ApplicationReserveScope,
     VerifiedApplicationNoteReservation,

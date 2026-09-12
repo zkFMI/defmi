@@ -1,3 +1,7 @@
+use defmi::{
+    facility::{AssetDefinition, AssetKind, QuorumApproval, QuorumAuthorizer},
+    governance::GovernanceSigner,
+};
 use defmi_avalanche_vm::{
     application::NoApplications,
     block::Block,
@@ -9,10 +13,6 @@ use defmi_avalanche_vm::{
     state::State,
     state_sync::{build_summary, StateSummary},
     transaction::TransactionEnvelope,
-};
-use defmi::{
-    facility::{AssetDefinition, AssetKind, QuorumApproval, QuorumAuthorizer},
-    governance::GovernanceSigner,
 };
 use serde_json::json;
 use std::{
@@ -70,6 +70,7 @@ fn committee(
                 key: key.verifying_key(),
             })
             .collect(),
+        deployment_crypto_policy: None,
     };
     let authority = genesis.authorizer(domain).unwrap();
     (genesis, authority, keys)

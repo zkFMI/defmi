@@ -80,6 +80,32 @@ pub(super) fn fill(
     apply_fill(state, &order, state.root(), now)
 }
 
+pub(super) fn confidential_fill(state: &mut State, params: &Map<String, Value>, now: u64)
+    -> Result<[u8; 32], String> {
+    require_keys(params, &["fill"])?;
+    let order: defmi::confidential_notes::ConfidentialFill = field(params, "fill")?;
+    let scope = state.application_reserve_scopes.get(&id_key(&order.fill.scope.key()?))
+        .ok_or("confidential fill scope is not registered")?.clone();
+    let identities = [order.fill.securities_asset, order.fill.cash_asset].map(|asset|
+        state.confidential.identities.get(&id_key(&asset)).cloned().ok_or("confidential fill asset identity is absent"));
+    let [securities, cash] = identities;
+    let securities = securities?;
+    let cash = cash?;
+    let verified = order.verify(&scope, [&securities, &cash], now)?;
+    let statement = apply_fill_inner(state, &order.fill, state.root(), now, Some(verified.verified))?;
+    for (index, claim) in verified.all_claims.iter().enumerate() {
+        if index % 2 == 0 || if index < 2 { order.fill.securities.close } else { order.fill.cash.close } {
+            state.confidential.claim_assets.insert(id_key(&claim.claim_id), order.conversions[index].asset_opening.clone());
+        }
+    }
+    for (head, refund) in [&order.fill.securities, &order.fill.cash].into_iter().zip(verified.refunds) {
+        let id = id_key(&head.hold_id);
+        if head.close { state.confidential.refunds.remove(&id); }
+        else { state.confidential.refunds.insert(id, refund); }
+    }
+    Ok(statement)
+}
+
 pub(super) fn fill_batch(
     state: &mut State,
     params: &Map<String, Value>,
@@ -107,6 +133,13 @@ fn apply_fill(
     expected_parent: [u8; 32],
     now: u64,
 ) -> Result<[u8; 32], String> {
+    apply_fill_inner(state, order, expected_parent, now, None)
+}
+
+fn apply_fill_inner(
+    state: &mut State, order: &ApplicationNoteFill, expected_parent: [u8; 32], now: u64,
+    confidential: Option<defmi::application_settlement::VerifiedApplicationFill>,
+) -> Result<[u8; 32], String> {
     if order.before_root != expected_parent
         || state.operations.contains_key(&id_key(&order.operation_id))
     {
@@ -121,6 +154,9 @@ fn apply_fill(
     let mut records = Vec::new();
     for index in 0..2 {
         let head = heads[index];
+        if state.confidential.reservation_values.contains_key(&id_key(&head.hold_id)) != confidential.is_some() {
+            return Err("application fill endpoint differs from the reservation privacy version".into());
+        }
         let record = state
             .application_reservations
             .get(&id_key(&head.hold_id))
@@ -141,7 +177,7 @@ fn apply_fill(
     }
     // Verifies the pre-authorized committee certificate, zkPI signature,
     // asset link, threshold amount/price ranges, product and both remainders.
-    let verified = order.verify(scope, now)?;
+    let verified = match confidential { Some(verified) => verified, None => order.verify(scope, now)? };
     if state.nullifiers.contains_key(&id_key(&verified.nullifier)) {
         return Err("application zkPI was already settled".into());
     }
@@ -296,7 +332,8 @@ pub(super) fn release(
             .output(record.escrow_note_id);
         output.lock_id = ZERO;
         output.note_id = output.derived_id()?;
-        insert_note(state, &output)?;
+        let confidential = state.confidential.reservation_values.contains_key(&hold_key);
+        insert_note_with_confidentiality(state, &output, confidential)?;
     } else {
         let opening = record
             .remaining_opening
@@ -305,15 +342,21 @@ pub(super) fn release(
         // The retained one-time key was authorized for the original fill
         // nullifier carried by this opening. The release operation identifier
         // authorizes this transition; it must not rebind the recipient claim.
-        let claim = application_claim(
-            record.binding.asset_id,
-            order.hold_id,
-            record.remaining(),
-            NoteClaimKind::Refund,
-            opening,
-        )?;
+        let claim = if state.confidential.reservation_values.contains_key(&hold_key) {
+            let refund = state.confidential.refunds.get(&hold_key)
+                .ok_or("confidential remainder recovery data is absent")?;
+            let identity = state.confidential.identities.get(&id_key(&record.binding.asset_id))
+                .ok_or("confidential refund asset identity is absent")?;
+            refund.conversion.verify(&record.remaining(), &identity.tag, &refund.context)?;
+            let claim = refund.conversion.claim(record.binding.asset_id, order.hold_id, NoteClaimKind::Refund)?;
+            state.confidential.claim_assets.insert(id_key(&claim.claim_id), refund.conversion.asset_opening.clone());
+            claim
+        } else {
+            application_claim(record.binding.asset_id, order.hold_id, record.remaining(), NoteClaimKind::Refund, opening)?
+        };
         insert_claim(state, &claim, statement)?;
     }
+    state.confidential.refunds.remove(&hold_key);
     consume_covenant(state, &record, statement)?;
     hold.status = "released".into();
     hold.settlement_digest = ZERO;

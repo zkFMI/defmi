@@ -29,6 +29,11 @@ pub const ISSUE_METHODS: &[&str] = &[
     "defmivm.issueNoteProductNoFillRelease",
     "defmivm.issueAccount",
     "defmivm.issueNote",
+    "defmivm.issueConfidentialAssetIdentity",
+    "defmivm.issueConfidentialNote",
+    "defmivm.issueConfidentialNoteTransfer",
+    "defmivm.issueConfidentialNoteReservation",
+    "defmivm.issueConfidentialNoteFill",
     "defmivm.issueNoteClaimMaterialization",
     "defmivm.issueNoteClaimRedemption",
     "defmivm.issueGuarantor",
@@ -73,6 +78,16 @@ pub const ISSUE_METHODS: &[&str] = &[
     "defmivm.issueMandateReservationTransition",
     "defmivm.issueParticipantProductReservation",
     "defmivm.issueParticipantNoteProductReservation",
+    #[cfg(feature = "research-cocode")]
+    "defmivm.issueResearchCoCodePolicy",
+    #[cfg(feature = "research-cocode")]
+    "defmivm.issueResearchCoCodeBook",
+    #[cfg(feature = "research-cocode")]
+    "defmivm.issueResearchCoCodeProofBegin",
+    #[cfg(feature = "research-cocode")]
+    "defmivm.issueResearchCoCodeProofChunk",
+    #[cfg(feature = "research-cocode")]
+    "defmivm.issueResearchCoCodeCommit",
 ];
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

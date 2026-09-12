@@ -1,0 +1,15 @@
+[09-11|21:32:17.536] INFO server/server.go:178 dialing gRPC server for gRPC gateway {"port": ":55919"}
+[09-11|21:32:17.536] INFO server/server.go:168 serving gRPC server {"port": ":55919"}
+[09-11|21:32:17.537] INFO server/server.go:202 serving gRPC gateway {"port": ":60133"}
+[09-11|21:32:18.759] INFO server/server.go:290 plugin-dir: {"plugin-dir": "/workspace/runs/native-04/plugins"}
+[09-11|21:32:18.759] INFO server/server.go:1640 checking custom chain's VM ID before installation {"id": "defmivm"}
+[09-11|21:32:18.759] INFO server/server.go:357 starting {"exec-path": "/workspace/native-bin/avalanchego", "num-nodes": 5, "track-subnets": "", "pid": 79, "root-data-dir": "/workspace/runs/native-04/network-data", "plugin-dir": "/workspace/runs/native-04/plugins", "chain-configs": null, "global-node-config": ""}
+[09-11|21:32:40.171] INFO server/server.go:385 network healthy
+[09-11|21:32:40.608] INFO server/server.go:1462 ListBlockchains
+[09-11|21:34:35.370] INFO server/server.go:938 removing network
+[09-11|21:34:35.503] WARN server/server.go:117 signal received: closing server {"signal": "terminated"}
+[09-11|21:34:35.503] WARN server/server.go:209 root context is done
+[09-11|21:34:35.503] WARN server/server.go:212 closed gRPC gateway server
+[09-11|21:34:35.503] WARN server/server.go:217 closed gRPC server
+[09-11|21:34:35.503] WARN server/server.go:219 gRPC terminated
+[09-11|21:34:35.503] WARN server/server.go:120 closed server

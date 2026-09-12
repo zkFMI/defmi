@@ -5,18 +5,23 @@ use zkfmi_crypto::{
     backend::{Ed25519Signer, MlDsa65Signer},
     hybrid::signature::HybridSigner,
     key::{KeyId, KeyPurpose, KeyRecord, ParticipantId},
-    traits::Signer as _,
+    mode::{DeploymentCryptoPolicy, PqcMode},
+    traits::Signer,
 };
 
 /// Clones share ownership of the secret handle; they do not export or duplicate seeds.
 #[derive(Clone)]
 pub struct GovernanceSigner {
-    signer: Arc<HybridSigner>,
+    signer: Arc<dyn Signer>,
     record: KeyRecord,
 }
 
 impl GovernanceSigner {
     pub fn new(signer: HybridSigner, record: KeyRecord) -> Result<Self, String> {
+        Self::new_for_suite(Arc::new(signer), record)
+    }
+
+    fn new_for_suite(signer: Arc<dyn Signer>, record: KeyRecord) -> Result<Self, String> {
         record.validate().map_err(|e| e.to_string())?;
         if record.purpose != KeyPurpose::Governance
             || record.suite != signer.suite()
@@ -24,10 +29,7 @@ impl GovernanceSigner {
         {
             return Err("governance key does not match its enrolled metadata".into());
         }
-        Ok(Self {
-            signer: Arc::new(signer),
-            record,
-        })
+        Ok(Self { signer, record })
     }
 
     pub fn generate(node: &str, not_before: u64, not_after: u64) -> Result<Self, String> {
@@ -38,6 +40,15 @@ impl GovernanceSigner {
     fn with_initial_metadata(
         node: &str,
         signer: HybridSigner,
+        not_before: u64,
+        not_after: u64,
+    ) -> Result<Self, String> {
+        Self::with_initial_signer_metadata(node, Arc::new(signer), not_before, not_after)
+    }
+
+    fn with_initial_signer_metadata(
+        node: &str,
+        signer: Arc<dyn Signer>,
         not_before: u64,
         not_after: u64,
     ) -> Result<Self, String> {
@@ -59,7 +70,7 @@ impl GovernanceSigner {
             rotation_proof: None,
             dekyx_binding: None,
         };
-        Self::new(signer, record)
+        Self::new_for_suite(signer, record)
     }
 
     pub fn verifying_key(&self) -> KeyRecord {
@@ -70,6 +81,16 @@ impl GovernanceSigner {
         self.signer
             .sign(KeyPurpose::Governance, message)
             .map_err(|e| e.to_string())
+    }
+
+    pub(crate) fn sign_for_deployment(
+        &self,
+        policy: &DeploymentCryptoPolicy,
+        message: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        policy
+            .sign(self.signer.as_ref(), KeyPurpose::Governance, message)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -90,6 +111,35 @@ pub fn public_development_keys() -> Result<BTreeMap<String, GovernanceSigner>, S
             Ok((
                 node.clone(),
                 GovernanceSigner::with_initial_metadata(&node, signer, 0, i64::MAX as u64)?,
+            ))
+        })
+        .collect()
+}
+
+/// PUBLIC deterministic lab fixtures for a fresh, explicitly mode-bound
+/// deployment. They are not production enrollment or independent custody.
+pub fn public_development_keys_for_policy(
+    policy: &DeploymentCryptoPolicy,
+) -> Result<BTreeMap<String, GovernanceSigner>, String> {
+    policy.validate().map_err(|error| error.to_string())?;
+    (0..7)
+        .map(|index| {
+            let node = format!("node-{index}");
+            let classical: [u8; 32] = Sha256::digest(format!("key:{index}").as_bytes()).into();
+            let signer: Arc<dyn Signer> = match policy.mode {
+                PqcMode::Off => Arc::new(Ed25519Signer::from_seed(&classical)),
+                PqcMode::On => {
+                    let pq: [u8; 32] =
+                        Sha256::digest(format!("pqc-governance-key:{index}").as_bytes()).into();
+                    Arc::new(HybridSigner::new(
+                        Ed25519Signer::from_seed(&classical),
+                        MlDsa65Signer::from_seed(&pq),
+                    ))
+                }
+            };
+            Ok((
+                node.clone(),
+                GovernanceSigner::with_initial_signer_metadata(&node, signer, 0, i64::MAX as u64)?,
             ))
         })
         .collect()
@@ -160,5 +210,53 @@ mod tests {
         assert!(!QuorumAuthorizer::read_only()
             .at(100)
             .verify(&statement, &root, &good));
+    }
+
+    #[test]
+    fn fresh_deployment_modes_bind_real_governance_signatures() {
+        use zkfmi_crypto::{
+            mode::{DeploymentCryptoPolicy, PqcMode},
+            suite::Version,
+        };
+
+        for mode in [PqcMode::Off, PqcMode::On] {
+            let policy = DeploymentCryptoPolicy {
+                version: Version::V1,
+                deployment_id: format!("fresh-governance-{mode:?}"),
+                mode,
+            };
+            let keys = public_development_keys_for_policy(&policy).unwrap();
+            let authority = QuorumAuthorizer::new_for_deployment(
+                keys.iter()
+                    .map(|(id, key)| (id.clone(), key.verifying_key()))
+                    .collect(),
+                3,
+                1,
+                "fresh-chain",
+                policy.clone(),
+            )
+            .unwrap();
+            let signers = keys.into_iter().take(3).collect();
+            let statement = [0x51; 32];
+            let root = [0x72; 32];
+            let approval = authority.approve(statement, root, &signers).unwrap();
+            assert_eq!(approval.suite, policy.signing_suite());
+            assert!(authority.at(1).verify(&statement, &root, &approval));
+
+            let mut changed = policy.clone();
+            changed.deployment_id.push_str("-changed");
+            let changed_authority = QuorumAuthorizer::new_for_deployment(
+                signers
+                    .iter()
+                    .map(|(id, key)| (id.clone(), key.verifying_key()))
+                    .collect(),
+                3,
+                1,
+                "fresh-chain",
+                changed,
+            )
+            .unwrap();
+            assert!(!changed_authority.at(1).verify(&statement, &root, &approval));
+        }
     }
 }

@@ -6,7 +6,10 @@ mod execution;
 pub mod genesis;
 pub mod id;
 pub mod recovery;
+#[cfg(feature = "research-cocode")]
+pub mod research_cocode;
 pub mod state;
+mod state_store;
 pub mod state_sync;
 pub mod transaction;
 pub mod vm;

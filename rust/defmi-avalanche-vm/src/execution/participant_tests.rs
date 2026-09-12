@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ed25519_dalek::SigningKey;
 use defmi::{
     facility::{QuorumApproval, QuorumAuthorizer},
     participant::{
@@ -12,6 +11,7 @@ use defmi::{
         StandingMandate,
     },
 };
+use ed25519_dalek::SigningKey;
 use serde_json::{json, Map, Value};
 
 use crate::{state::State, transaction::TransactionEnvelope};

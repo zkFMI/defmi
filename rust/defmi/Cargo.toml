@@ -26,6 +26,9 @@ wasm-measurement = ["clear_on_drop"]
 default = ["avalanche"]
 avalanche = ["dep:openssl", "dep:dekyx-core", "zkfmi-crypto/tls"]
 public-audit = ["dep:qomm-batch-audit"]
+# Separate fresh-network note family. Enabling its wire types is not proof
+# availability or permission to accept a transition without verification.
+pqc-notes-research = ["zkfmi-crypto/private-proof-witness"]
 
 [dependencies]
 qomm-batch-audit = { git = "https://github.com/zkFMI/zkpi.git", rev = "fc9579070484859aff9110a927be79c1ffe22b70", optional = true }

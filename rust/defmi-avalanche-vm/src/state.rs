@@ -21,6 +21,7 @@ use defmi::participant::ParticipantRegistry;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use zkfmi_crypto::mode::DeploymentCryptoPolicy;
 use zkpi_proofs::opening_envelope::{EncryptedOpeningShare, OpeningEnvelope};
 
 use crate::{execution, id::Id, transaction::TransactionEnvelope};
@@ -443,11 +444,25 @@ pub enum NoteProofVersion {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct State {
     pub note_proof_version: NoteProofVersion,
+    #[serde(default, skip_serializing_if = "ConfidentialState::is_empty")]
+    pub confidential: ConfidentialState,
     pub transition_count: u64,
+    #[serde(
+        rename = "deployment_crypto_policy",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub deployment_crypto_policy: Option<DeploymentCryptoPolicy>,
     pub applied_transactions: BTreeSet<[u8; 32]>,
     /// Opaque state owned and validated by the configured application runtime.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub application_states: BTreeMap<String, Vec<u8>>,
+    #[cfg(feature = "research-cocode")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::research_cocode::ResearchCoCodeState::is_empty"
+    )]
+    pub research_cocode: crate::research_cocode::ResearchCoCodeState,
     #[serde(default)]
     pub assets: BTreeMap<String, AssetRecord>,
     #[serde(default)]
@@ -506,6 +521,27 @@ pub struct State {
     pub participant_registry: ParticipantRegistry,
 }
 
+/// Versioned asset-confidential state. An asset identity is a randomized
+/// commitment; no map from it to the selected plaintext asset is persisted.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfidentialState {
+    pub identities: BTreeMap<String, defmi::confidential_notes::AssetIdentity>,
+    pub notes: BTreeSet<String>,
+    /// Tagged escrow values; the ordinary reservation stores normalized credit
+    /// values under G. Their full equality proof is verified on admission.
+    pub reservation_values: BTreeMap<String, [u8; 32]>,
+    pub refunds: BTreeMap<String, defmi::confidential_notes::RetainedRefund>,
+    pub claim_assets: BTreeMap<String, zkfmi_crypto::sealed::SealedMessage>,
+}
+
+impl ConfidentialState {
+    pub fn is_empty(&self) -> bool {
+        self.identities.is_empty() && self.notes.is_empty() && self.reservation_values.is_empty()
+            && self.refunds.is_empty() && self.claim_assets.is_empty()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransitionReceipt {
     pub transaction_id: Id,
@@ -532,6 +568,59 @@ impl State {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(policy) = &self.deployment_crypto_policy {
+            policy.validate().map_err(|error| error.to_string())?;
+            if policy.mode == zkfmi_crypto::mode::PqcMode::On && !self.confidential.is_empty() {
+                return Err("classical confidential assets cannot enter PQC-on state".into());
+            }
+        }
+        for (id, identity) in &self.confidential.identities {
+            if *id != id_key(&identity.commitment) || self.assets.contains_key(id)
+                || identity.registry.assets.iter().any(|asset| !self.assets.contains_key(&id_key(asset))) {
+                return Err("confidential identity has a wrong key, collision or unknown cohort".into());
+            }
+            identity.validate()?;
+        }
+        for id in &self.confidential.notes {
+            let note = self.notes.get(id).ok_or("confidential note index names an absent note")?;
+            if !self.confidential.identities.contains_key(&id_key(&note.asset_id)) {
+                return Err("confidential note has no registered asset commitment".into());
+            }
+        }
+        for (hold, value) in &self.confidential.reservation_values {
+            let record = self.application_reservations.get(hold).ok_or("confidential reserve is absent")?;
+            let note_key = id_key(&record.escrow_note_id);
+            if !self.confidential.notes.contains(&note_key)
+                || self.notes.get(&note_key).is_none_or(|n| &n.value_commitment != value) {
+                return Err("confidential reserve lost its canonical tagged escrow".into());
+            }
+        }
+        for (hold, refund) in &self.confidential.refunds {
+            let record = self.application_reservations.get(hold).ok_or("confidential refund reserve is absent")?;
+            let identity = self.confidential.identities.get(&id_key(&record.binding.asset_id))
+                .ok_or("confidential refund asset identity is absent")?;
+            if record.status != "active" || record.sequence == 0 || record.remaining_opening.is_none()
+                || !self.confidential.reservation_values.contains_key(hold) || refund.context == ZERO {
+                return Err("confidential retained refund has an invalid head".into());
+            }
+            refund.conversion.verify(&record.remaining(), &identity.tag, &refund.context)?;
+        }
+        for (id, envelope) in &self.confidential.claim_assets {
+            let claim = self.note_claims.get(id).ok_or("confidential asset envelope has no claim")?;
+            if !self.confidential.identities.contains_key(&id_key(&claim.asset_id)) {
+                return Err("confidential claim has no asset identity".into());
+            }
+            envelope.validate(zkfmi_crypto::sealed::SealingPurpose::NoteOpening, 64)
+                .map_err(|e| e.to_string())?;
+        }
+        #[cfg(feature = "research-cocode")]
+        {
+            self.research_cocode.validate()?;
+            if let Some(policy) = &self.deployment_crypto_policy {
+                self.research_cocode
+                    .validate_for_deployment_crypto(policy)?;
+            }
+        }
         if self
             .application_states
             .iter()
@@ -658,10 +747,8 @@ impl State {
                 .try_into()
                 .expect("32-byte note identifier");
             record.output(note_id).validate()?;
-            if !self
-                .assets
-                .get(&id_key(&record.asset_id))
-                .is_some_and(|asset| asset.active)
+            if !self.confidential.notes.contains(&id_key(&note_id)) && !self
+                .assets.get(&id_key(&record.asset_id)).is_some_and(|asset| asset.active)
             {
                 return Err("state note belongs to an inactive or unknown asset".into());
             }
@@ -674,6 +761,10 @@ impl State {
         let mut application_requests = BTreeSet::new();
         for (key, record) in &self.application_reservations {
             record.binding.validate()?;
+            if self.confidential.reservation_values.contains_key(key)
+                && ((record.sequence > 0 && record.status == "active") != self.confidential.refunds.contains_key(key)) {
+                return Err("confidential reservation lost its retained refund".into());
+            }
             let binding = &record.binding;
             let hold = self
                 .credit_holds
@@ -701,7 +792,10 @@ impl State {
                 || hold.status != record.status
                 || hold.settlement_digest != record.settlement_digest
                 || note.asset_id != binding.asset_id
-                || note.value_commitment != binding.amount_commitment
+                || note.value_commitment != self.confidential.reservation_values.get(key)
+                    .copied().unwrap_or(binding.amount_commitment)
+                || (self.confidential.notes.contains(&id_key(&record.escrow_note_id))
+                    != self.confidential.reservation_values.contains_key(key))
                 || note.lock_id != binding.hold_id
                 || facility.beneficiary_commitment != binding.entity_commitment
                 || facility.rail_asset_id != binding.asset_id
@@ -826,6 +920,10 @@ impl State {
         }
         let mut claim_key_fingerprints = BTreeSet::new();
         for (claim_id, record) in &self.note_claims {
+            if self.confidential.identities.contains_key(&id_key(&record.asset_id))
+                != self.confidential.claim_assets.contains_key(claim_id) {
+                return Err("confidential claim lost its encrypted asset opening".into());
+            }
             let claim_id: [u8; 32] = hex::decode(claim_id)
                 .expect("validated note claim identifier")
                 .try_into()
@@ -1039,6 +1137,9 @@ impl State {
         timestamp: u64,
         application: &dyn crate::application::ApplicationRuntime,
     ) -> Result<TransitionReceipt, String> {
+        if self.deployment_crypto_policy.as_ref() != authorizer.deployment_crypto_policy() {
+            return Err("state deployment crypto policy differs from governance authority".into());
+        }
         application.validate_state(self)?;
         let transaction = TransactionEnvelope::decode(bytes)?;
         let transaction_id = transaction.id()?;
@@ -1069,6 +1170,20 @@ impl State {
     pub fn root(&self) -> [u8; 32] {
         let mut hash = Sha256::new();
         hash.update(STATE_DOMAIN);
+        if !self.confidential.is_empty() {
+            hash.update(b"confidential-assets:v1");
+            let encoded = serde_json::to_vec(&self.confidential).expect("validated confidential state serializes");
+            hash.update((encoded.len() as u64).to_be_bytes());
+            hash.update(encoded);
+        }
+        if let Some(policy) = &self.deployment_crypto_policy {
+            hash.update(b"deployment-crypto-policy:v1");
+            let policy = policy
+                .encode()
+                .expect("validated deployment crypto policy encodes");
+            hash.update((policy.len() as u64).to_be_bytes());
+            hash.update(policy);
+        }
         // Keep the established empty-genesis root. Nonempty note state commits
         // the new scheme; missing/legacy scheme markers fail deserialization.
         if !self.notes.is_empty() || !self.note_serials.is_empty() {
@@ -1094,6 +1209,11 @@ impl State {
                 serde_json::to_vec(&self.application_states).expect("application state serializes");
             hash.update((encoded.len() as u64).to_be_bytes());
             hash.update(encoded);
+        }
+        #[cfg(feature = "research-cocode")]
+        if !self.research_cocode.is_empty() {
+            hash.update(b"research-cocode:v1");
+            hash.update(self.research_cocode.root_digest());
         }
         for (asset_id, record) in &self.assets {
             hash.update(
@@ -1440,6 +1560,63 @@ fn is_hex_id(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_state_rejects_a_governance_authority_from_another_crypto_policy() {
+        use defmi::{facility::QuorumAuthorizer, governance::public_development_keys_for_policy};
+        use zkfmi_crypto::{mode::PqcMode, suite::Version};
+
+        let policy = DeploymentCryptoPolicy {
+            version: Version::V1,
+            deployment_id: "fresh-policy-state-test".into(),
+            mode: PqcMode::On,
+        };
+        let keys = public_development_keys_for_policy(&policy).expect("policy fixtures");
+        let authority = QuorumAuthorizer::new_for_deployment(
+            keys.iter()
+                .map(|(node, signer)| (node.clone(), signer.verifying_key()))
+                .collect(),
+            3,
+            1,
+            "state-policy-test",
+            policy.clone(),
+        )
+        .expect("policy authority");
+        let mut state = State {
+            deployment_crypto_policy: Some(policy),
+            ..State::default()
+        };
+        let before = state.clone();
+
+        let legacy_authority = QuorumAuthorizer::read_only();
+        assert_eq!(
+            state.apply(&[], &legacy_authority, 1).unwrap_err(),
+            "state deployment crypto policy differs from governance authority"
+        );
+        assert_eq!(state, before);
+
+        // The matching policy passes the policy gate and reaches transaction decoding.
+        assert_ne!(
+            state.apply(&[], &authority, 1).unwrap_err(),
+            "state deployment crypto policy differs from governance authority"
+        );
+        assert_eq!(state, before);
+    }
+
+    #[cfg(not(feature = "research-cocode"))]
+    #[test]
+    fn default_build_rejects_research_transactions_without_changing_state() {
+        let state = State::default();
+        let before_root = state.root();
+        assert!(TransactionEnvelope::new(
+            "defmivm.issueResearchCoCodeProofBegin",
+            serde_json::json!({}),
+        )
+        .expect_err("research method must be absent from the default envelope allowlist")
+        .contains("not an allowed DeFMI issue method"));
+        assert_eq!(state, State::default());
+        assert_eq!(state.root(), before_root);
+    }
 
     #[test]
     fn empty_root_matches_the_cross_runtime_contract() {

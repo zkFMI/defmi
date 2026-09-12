@@ -1,0 +1,1183 @@
+{
+  "scope": "generated canonical public state and accepted transaction JSON; exact IDs and common binary encodings",
+  "limitations": [
+    "No claim of information-theoretic secrecy from this byte scan",
+    "Public market, venue, issuer and cohort metadata may identify an asset"
+  ],
+  "record_files": 37,
+  "confidential_identities": 8,
+  "notes": 23,
+  "claims": 6,
+  "unexpected_selected_asset_id_occurrences": [],
+  "permitted_public_occurrences": [
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/4ea81970aaf5f880752772be31e1ca4ce9b264a653ad01f1924d2c6153da340e/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/4ea81970aaf5f880752772be31e1ca4ce9b264a653ad01f1924d2c6153da340e/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/4ea81970aaf5f880752772be31e1ca4ce9b264a653ad01f1924d2c6153da340e/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/4ea81970aaf5f880752772be31e1ca4ce9b264a653ad01f1924d2c6153da340e/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/6c5ca22be11a0336a93c0fe9e227c2594222aabb27eeb683b0420c98a8c9c415/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/6c5ca22be11a0336a93c0fe9e227c2594222aabb27eeb683b0420c98a8c9c415/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/6c5ca22be11a0336a93c0fe9e227c2594222aabb27eeb683b0420c98a8c9c415/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/6c5ca22be11a0336a93c0fe9e227c2594222aabb27eeb683b0420c98a8c9c415/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/947c49035f53ca1b3681daa9e455098f800c6e68c6cf718b78b95a9103bf551e/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/947c49035f53ca1b3681daa9e455098f800c6e68c6cf718b78b95a9103bf551e/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/947c49035f53ca1b3681daa9e455098f800c6e68c6cf718b78b95a9103bf551e/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/947c49035f53ca1b3681daa9e455098f800c6e68c6cf718b78b95a9103bf551e/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/9c431c8423334625eeeda2eea1f81db48f6ef982b7bee149601b02a3e51e3a31/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/9c431c8423334625eeeda2eea1f81db48f6ef982b7bee149601b02a3e51e3a31/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/9c431c8423334625eeeda2eea1f81db48f6ef982b7bee149601b02a3e51e3a31/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/9c431c8423334625eeeda2eea1f81db48f6ef982b7bee149601b02a3e51e3a31/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/b25d12592d444b933327bcec03e3fcb2c95ad69a062a021d356bacddae0aa46d/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/b25d12592d444b933327bcec03e3fcb2c95ad69a062a021d356bacddae0aa46d/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/b25d12592d444b933327bcec03e3fcb2c95ad69a062a021d356bacddae0aa46d/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/b25d12592d444b933327bcec03e3fcb2c95ad69a062a021d356bacddae0aa46d/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/cec5e7bc76685c8afd9b1d9d3468df6a86540cdc8cc25459ba8ef5cb1d90723b/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/cec5e7bc76685c8afd9b1d9d3468df6a86540cdc8cc25459ba8ef5cb1d90723b/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/cec5e7bc76685c8afd9b1d9d3468df6a86540cdc8cc25459ba8ef5cb1d90723b/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/cec5e7bc76685c8afd9b1d9d3468df6a86540cdc8cc25459ba8ef5cb1d90723b/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/dad0480c958757fde6f60561942352670cdd6b434b66531c4d23c2000ac48a05/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/dad0480c958757fde6f60561942352670cdd6b434b66531c4d23c2000ac48a05/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/dad0480c958757fde6f60561942352670cdd6b434b66531c4d23c2000ac48a05/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/dad0480c958757fde6f60561942352670cdd6b434b66531c4d23c2000ac48a05/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/e26d6a4718bf7f278fda8252453694c04339b5ece0e4b7e100ee28c631d7a052/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/e26d6a4718bf7f278fda8252453694c04339b5ece0e4b7e100ee28c631d7a052/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/e26d6a4718bf7f278fda8252453694c04339b5ece0e4b7e100ee28c631d7a052/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "confidential/identities/e26d6a4718bf7f278fda8252453694c04339b5ece0e4b7e100ee28c631d7a052/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "assets/08fcd832ec597391ed9f52ad7c1be19fba2e70d77e6e8288179084daaf97547f",
+      "encoding": "map_key",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "assets/208d7b64d18d733c64cea743399a5bfd9b2ad6d5874820920d52f6ff2cf6fda0",
+      "encoding": "map_key",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "assets/3707c63257c1b12c23bd6a1c7bd34466005a6729519db443741f5dac8828ba6a",
+      "encoding": "map_key",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "assets/7c2423bcba35804334ca0739f5aec43721dc9fa475fc1d5ccc910cfa52cb16b7",
+      "encoding": "map_key",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "csdIssuers/a2d133f2220b538764262a9bbe5e0f9099509148c77652f0e219a4ed0692ae59/permittedAssetIds/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "csdIssuers/a2d133f2220b538764262a9bbe5e0f9099509148c77652f0e219a4ed0692ae59/permittedAssetIds/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "csdIssuers/a2d133f2220b538764262a9bbe5e0f9099509148c77652f0e219a4ed0692ae59/permittedAssetIds/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "canonical-state.json",
+      "path": "csdIssuers/a2d133f2220b538764262a9bbe5e0f9099509148c77652f0e219a4ed0692ae59/permittedAssetIds/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "001-transaction.json",
+      "path": "params/asset/assetID",
+      "encoding": "hex",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "002-transaction.json",
+      "path": "params/asset/assetID",
+      "encoding": "hex",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "003-transaction.json",
+      "path": "params/asset/assetID",
+      "encoding": "hex",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "004-transaction.json",
+      "path": "params/asset/assetID",
+      "encoding": "hex",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "005-transaction.json",
+      "path": "params/issuer/permittedAssetIDs/0",
+      "encoding": "hex",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "005-transaction.json",
+      "path": "params/issuer/permittedAssetIDs/1",
+      "encoding": "hex",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "005-transaction.json",
+      "path": "params/issuer/permittedAssetIDs/2",
+      "encoding": "hex",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "005-transaction.json",
+      "path": "params/issuer/permittedAssetIDs/3",
+      "encoding": "hex",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "006-transaction.json",
+      "path": "params/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "006-transaction.json",
+      "path": "params/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "006-transaction.json",
+      "path": "params/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "006-transaction.json",
+      "path": "params/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "007-transaction.json",
+      "path": "params/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "007-transaction.json",
+      "path": "params/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "007-transaction.json",
+      "path": "params/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "007-transaction.json",
+      "path": "params/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "008-transaction.json",
+      "path": "params/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "008-transaction.json",
+      "path": "params/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "008-transaction.json",
+      "path": "params/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "008-transaction.json",
+      "path": "params/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "009-transaction.json",
+      "path": "params/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "009-transaction.json",
+      "path": "params/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "009-transaction.json",
+      "path": "params/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "009-transaction.json",
+      "path": "params/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "010-transaction.json",
+      "path": "params/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "010-transaction.json",
+      "path": "params/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "010-transaction.json",
+      "path": "params/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "010-transaction.json",
+      "path": "params/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "011-transaction.json",
+      "path": "params/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "011-transaction.json",
+      "path": "params/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "011-transaction.json",
+      "path": "params/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "011-transaction.json",
+      "path": "params/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "012-transaction.json",
+      "path": "params/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "012-transaction.json",
+      "path": "params/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "012-transaction.json",
+      "path": "params/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "012-transaction.json",
+      "path": "params/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "017-transaction.json",
+      "path": "params/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "017-transaction.json",
+      "path": "params/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "017-transaction.json",
+      "path": "params/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "017-transaction.json",
+      "path": "params/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "018-transaction.json",
+      "path": "params/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "018-transaction.json",
+      "path": "params/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "018-transaction.json",
+      "path": "params/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "018-transaction.json",
+      "path": "params/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "020-transaction.json",
+      "path": "params/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "020-transaction.json",
+      "path": "params/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "020-transaction.json",
+      "path": "params/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "020-transaction.json",
+      "path": "params/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "022-transaction.json",
+      "path": "params/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "022-transaction.json",
+      "path": "params/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "022-transaction.json",
+      "path": "params/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "022-transaction.json",
+      "path": "params/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "035-transaction.json",
+      "path": "params/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "035-transaction.json",
+      "path": "params/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "035-transaction.json",
+      "path": "params/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "035-transaction.json",
+      "path": "params/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/0/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/0/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/0/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/0/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/1/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/1/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/1/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/1/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/2/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/2/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/2/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/2/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/3/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/3/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/3/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/3/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/4/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/4/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/4/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/4/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/5/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/5/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/5/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/5/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/6/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/6/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/6/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/6/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/7/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/7/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/7/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/7/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/8/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/8/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/8/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/8/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/9/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/9/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/9/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/9/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/10/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/10/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/10/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/10/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/11/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/11/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/11/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/11/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/12/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/12/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/12/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/12/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/13/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/13/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/13/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/13/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/14/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/14/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/14/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/14/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/15/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/15/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/15/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/15/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/16/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/16/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/16/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/16/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/17/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/17/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/17/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/17/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/18/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/18/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/18/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/18/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/19/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/19/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/19/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/19/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/20/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/20/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/20/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/20/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/21/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/21/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/21/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/21/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/22/identity/registry/assets/0",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/22/identity/registry/assets/1",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/22/identity/registry/assets/2",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    },
+    {
+      "file": "native-wallet-scan.json",
+      "path": "notes/22/identity/registry/assets/3",
+      "encoding": "byte_array",
+      "allowed_public_definition_or_cohort": true
+    }
+  ],
+  "artifact_hashes": {
+    "canonical-state.json": "8fa6095ef8fea88c26fbdae033dbbfd6abf7af0fc9a28c88ec95629c37724685",
+    "001-transaction.json": "66489379e8adbfe1c80e994dcdcfcc6f758d2b5f722a133849081e57b28aa0ec",
+    "002-transaction.json": "2f8018da8780182f52e45fa83be80c8b1de68a1f339ab08c275744764cb72c91",
+    "003-transaction.json": "6943ba5d050365bb1ab1def70e0b494f44f9c6e6c411209e1440060443d0bc71",
+    "004-transaction.json": "934eecaa62dd83248c6740c817a74e69eff987e4cc46503d6ce7f182b2f496c7",
+    "005-transaction.json": "1852c30adbede1eca8002eb0b31be77f302ce8c78154a833042b0b98173311b1",
+    "006-transaction.json": "082d893a8dc4721934b2811db775bbe16201b49a4ca5764279adf5b81d445991",
+    "007-transaction.json": "44bd3358a531a3ccf88e64e7a8215767ba94e6e5108fce422769be3a188d7725",
+    "008-transaction.json": "83f321aba02493e9c614804077ea0ed4a39b2031e18e50a5544e9f93fbec66f5",
+    "009-transaction.json": "93539c425a4ea844223d0302fdd030ec470289a79ab43c29532b8b13c0eccfe7",
+    "010-transaction.json": "95fa07c81279b252bc13d653aa60eec4a628c117e2197156f5472dd2a96e8ee4",
+    "011-transaction.json": "48c6b6bff6dbd216341a476325675135b7568575dffe78a8e5b07ac6fde5e1d8",
+    "012-transaction.json": "10be031d3d0370337cda1efabf7f9efc24a4ecabda4f4fe44e53f0979797a66e",
+    "013-transaction.json": "4afaa87c8644f94a3351b9c477cc8f183e210a304a8f957449f6c64058de8101",
+    "014-transaction.json": "c5af5e692721f889af6bada4392ba40b0ff555e2b8e81130957ce8008c176fa7",
+    "015-transaction.json": "3a501e802127f1b522b9b33f37e869e63b5dbb77592d0d13a83b63b395eb0309",
+    "016-transaction.json": "b8dfaca459e51d5069087cb78627ed64ad6ffceb889b195025e0e9fc22828a56",
+    "017-transaction.json": "eab8934ebc798812a54147f5da7754096e36245714419be851690774b28fda3e",
+    "018-transaction.json": "ec3c8b22055991d4088c657e3960b675876e015bd38464b459e90d1730332bc9",
+    "019-transaction.json": "8fe07b04b79552bef2c42aea548e190105f9b670ce025a8ad54ce66f27c923e4",
+    "020-transaction.json": "28302212b08c2e1b884ce548569f95258d390732d3ee816b49a664092c0d6758",
+    "021-transaction.json": "95b4ee7245a34e7e1a5f7af44a1b2c18ec032271f8ad1d143d1759374efa0ddd",
+    "022-transaction.json": "e5f6b9dac6f7d359ee2ce113e3a967d6d9eadbc5b7d0338969151609d09c1ff8",
+    "023-transaction.json": "eb2b1cbfc912e3b96a1ea1a5f38ca9283f2293b89ba01cb40c53b132db78d32f",
+    "024-transaction.json": "1ab1c42f08920a6bf0ae3a6836bd1b1ce7e93d1360d1ae4ebc612cbeddf21e31",
+    "025-transaction.json": "060997ec083693e249b30591fa4de955e8a8118901dc3beba58c89b0a6b3efc7",
+    "026-transaction.json": "5004c0e7818e24f8a255a12dde2ef7a2a62693027784d82012cfbc3da7908bb3",
+    "027-transaction.json": "1dd234f9845821b58879bd2d96dac8aa269c780bc4546f2372010439b6650ddb",
+    "028-transaction.json": "93bdd6e0642ec12fc5f35c68ae751dae5ecb8f0745d25e130df5e2536b2c19aa",
+    "029-transaction.json": "d1f990bb526b8e30aa573032b1c4ddfdf7b75718273776229b40f398d37aae05",
+    "030-transaction.json": "0d56cdf63781dcaaa764120145075923b6b394ac20283729a5ab06d9c25830a9",
+    "031-transaction.json": "2b76d08bdd07642e8fc0a706518c64c7cca3f4ec91b0462ed10bfbd1270e4a04",
+    "032-transaction.json": "f8b7f83cc2ddc8af690b0afd1dc7bda0bf20c96264d1f26135a197afadf7c0b8",
+    "033-transaction.json": "b5e8cf6b5c910b65f8c20fda5321046126ea5c3da51e46c5411969847fba8169",
+    "034-transaction.json": "fcf37efac763f445e9a753c2548f7713b91b09df680256af47502e223662a7e5",
+    "035-transaction.json": "2e16a435be562e373ffbbc9e2f2c2d4b80f664806db9141111cb0f9eec6ac642",
+    "native-wallet-scan.json": "96fd9cffe78c38d6621f7c164d1beeea697507b21be30b7e921a66e97782a856"
+  },
+  "validator_sha256": "163f324c785c10576c6ebdb8d5bc11f00d0ab4e415fd118ccbde451acb9d1ab6",
+  "unexpected_embedded_ID_byte_arrays": []
+}

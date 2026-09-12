@@ -16,6 +16,10 @@ Delivery versus payment for committed holdings: two legs that move together or n
 
 The deployment target is a dedicated **non-EVM Avalanche L1**. `rust/defmi-avalanche-vm/` contains the Rust state machine, while `avalanche/defmivm/` contains configuration and five-validator acceptance launchers. The full gate covers account-free notes, pre-authorized reserves, seven-party MPC zkPI, atomic multi-RFQ settlement, shared legal-entity caps, restart recovery, and state-root agreement. AvalancheGo remains an external consensus host and launches the Rust VM over RPCChainVM protocol 45.
 
+Fresh networks may pin an immutable [PQC deployment
+policy](docs/PQC_GREENFIELD_DEPLOYMENT.md) in genesis. This is a greenfield
+selection, not an in-place switch or migration of an existing ledger.
+
 
 ## What it does
 
@@ -180,6 +184,7 @@ to real machines is not published.
 - [`POSITION.md`](POSITION.md) --- what is new here and what is not, stated line by line against the nearest prior work
 - [`REVIEW.md`](REVIEW.md) --- what two rounds of review found, including what was checked and found sound
 - [`ZKPI_WIRE.md`](ZKPI_WIRE.md) --- the bytes an instruction travels as, the vectors to check an implementation against, and where it can run
+- [`docs/PQC_GREENFIELD_DEPLOYMENT.md`](docs/PQC_GREENFIELD_DEPLOYMENT.md) --- fresh-network PQC policy binding, compatibility, acceptance, and evidence boundaries
 - [`doc/ja/DEFMI_ZKPI_USE_CASES.md`](doc/ja/DEFMI_ZKPI_USE_CASES.md) --- non-QOMM uses for proof-carrying instructions and decentralized settlement, with prior art and an implementation order
 
 ## Dependencies and application hosts

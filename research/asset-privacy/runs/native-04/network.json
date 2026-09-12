@@ -1,0 +1,15 @@
+{
+  "chain_id": "XgL1J2iaJF8SzRobPwiT6HRd7B7CtDYhxobvWF7U56Yr2cXmd",
+  "node_uris": [
+    "http://127.0.0.1:34133",
+    "http://127.0.0.1:34387",
+    "http://127.0.0.1:40121",
+    "http://127.0.0.1:42647",
+    "http://127.0.0.1:46207"
+  ],
+  "binaries": {
+    "vm": "5b91ca129e40f4055590682a3d558f593d5b4ba36bb5a8ed69fd51c8fb815e9a",
+    "avalanchego": "023da7976ba7ab9a1ded2280ba26575649066078dd89805f826592e06c035c8b",
+    "runner": "c67d0d59b63c8486c5995da6bcaa93ff5821327b12c82bc80dc7dabbc726b93f"
+  }
+}

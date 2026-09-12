@@ -77,6 +77,7 @@ use crate::{
 
 mod application_reservation;
 mod application_settlement;
+mod confidential;
 mod participant;
 
 #[derive(Deserialize)]
@@ -990,6 +991,7 @@ pub(crate) fn execute(
     timestamp: u64,
     application: &dyn crate::application::ApplicationRuntime,
 ) -> Result<[u8; 32], String> {
+    require_supported_deployment_crypto_path(state, &transaction.method)?;
     let authorizer = &authorizer.at(timestamp);
     let params = transaction
         .params
@@ -1001,6 +1003,11 @@ pub(crate) fn execute(
         "defmivm.issueCSDIssuer" => register_csd_issuer(state, params, authorizer, timestamp),
         "defmivm.issueCSDIssuerControl" => control_csd_issuer(state, params, authorizer),
         "defmivm.issueNote" => issue_note(state, params, authorizer, timestamp),
+        "defmivm.issueConfidentialAssetIdentity" => confidential::register_identity(state, params, authorizer),
+        "defmivm.issueConfidentialNote" => confidential::issue(state, params, authorizer, timestamp),
+        "defmivm.issueConfidentialNoteTransfer" => confidential::transfer(state, params, authorizer, timestamp),
+        "defmivm.issueConfidentialNoteReservation" => confidential::reserve(state, params, authorizer, timestamp),
+        "defmivm.issueConfidentialNoteFill" => application_settlement::confidential_fill(state, params, timestamp),
         "defmivm.issueStandingNotePool" => {
             register_standing_note_pool(state, params, authorizer, timestamp)
         }
@@ -1155,9 +1162,57 @@ pub(crate) fn execute(
         "defmivm.issueParticipantNoteProductReservation" => {
             participant::reserve_product_with_mandate(state, params, authorizer, timestamp, true)
         }
+        #[cfg(feature = "research-cocode")]
+        "defmivm.issueResearchCoCodePolicy" => {
+            crate::research_cocode::register_policy(state, params, authorizer)
+        }
+        #[cfg(feature = "research-cocode")]
+        "defmivm.issueResearchCoCodeBook" => {
+            crate::research_cocode::register_book(state, params, authorizer)
+        }
+        #[cfg(feature = "research-cocode")]
+        "defmivm.issueResearchCoCodeProofBegin" => {
+            crate::research_cocode::begin_proof(state, params, authorizer)
+        }
+        #[cfg(feature = "research-cocode")]
+        "defmivm.issueResearchCoCodeProofChunk" => {
+            crate::research_cocode::append_proof_chunk(state, params, authorizer)
+        }
+        #[cfg(feature = "research-cocode")]
+        "defmivm.issueResearchCoCodeCommit" => {
+            crate::research_cocode::commit_settlement(state, params, authorizer)
+        }
         method => Err(format!(
             "{method} has no Rust consensus executor in this build"
         )),
+    }
+}
+
+fn require_supported_deployment_crypto_path(state: &State, method: &str) -> Result<(), String> {
+    if state
+        .deployment_crypto_policy
+        .as_ref()
+        .is_none_or(|policy| policy.mode != zkfmi_crypto::mode::PqcMode::On)
+    {
+        return Ok(());
+    }
+    #[cfg(feature = "research-cocode")]
+    const PQC_ON_SUPPORTED_METHODS: &[&str] = &[
+        "defmivm.issueResearchCoCodePolicy",
+        "defmivm.issueResearchCoCodeBook",
+        "defmivm.issueResearchCoCodeProofBegin",
+        "defmivm.issueResearchCoCodeProofChunk",
+        "defmivm.issueResearchCoCodeCommit",
+    ];
+    #[cfg(not(feature = "research-cocode"))]
+    const PQC_ON_SUPPORTED_METHODS: &[&str] = &[];
+
+    if PQC_ON_SUPPORTED_METHODS.contains(&method) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{method} is not enabled under the fresh PQC-on transaction allowlist"
+        ))
     }
 }
 
@@ -2044,18 +2099,25 @@ fn control_csd_issuer(
 }
 
 fn insert_note(state: &mut State, output: &NoteOutput) -> Result<(), String> {
+    insert_note_with_confidentiality(state, output, false)
+}
+
+fn insert_note_with_confidentiality(state: &mut State, output: &NoteOutput, confidential: bool) -> Result<(), String> {
     output.validate()?;
-    if !state
-        .assets
-        .get(&id_key(&output.asset_id))
-        .is_some_and(|asset| asset.active)
-    {
+    if confidential {
+        if !state.confidential.identities.contains_key(&id_key(&output.asset_id))
+            || !matches!(&output.encrypted_opening, zkpi_committee::standing_pool::NoteOpening::Recipient(e)
+                if e.ciphertext.len() == 108) {
+            return Err("confidential note requires a registered identity and encrypted asset metadata".into());
+        }
+    } else if !state.assets.get(&id_key(&output.asset_id)).is_some_and(|asset| asset.active) {
         return Err("note output belongs to an inactive or unknown asset".into());
     }
     let key = id_key(&output.note_id);
     if state.notes.contains_key(&key) {
         return Err("note output identifier was already used".into());
     }
+    if confidential { state.confidential.notes.insert(key.clone()); }
     state.notes.insert(
         key,
         NoteRecord {
@@ -2078,7 +2140,30 @@ fn issue_note(
 ) -> Result<[u8; 32], String> {
     require_keys(params, &["issuance", "approval", "expectedBeforeRoot"])?;
     let dto: NoteIssuanceDto = field(params, "issuance")?;
-    let issuance = NoteIssuance {
+    let issuance = note_issuance_from_dto(dto)?;
+    issuance.body()?;
+    let statement = issuance.statement()?;
+    authorize(state, params, statement, authorizer)?;
+    if timestamp == 0 {
+        return Err("note issuance has no consensus timestamp".into());
+    }
+    if state.operations.contains_key(&id_key(&issuance.operation_id))
+        || state.note_issuances.contains_key(&id_key(&issuance.issuance_nonce))
+        || state.notes.contains_key(&id_key(&issuance.output.note_id)) {
+        return Err("note issuance reuses an operation, nonce, or note".into());
+    }
+    let issuer = state.csd_issuers.get(&id_key(&issuance.issuer_id))
+        .ok_or_else(|| "note issuance names an unknown CSD issuer".to_string())?;
+    if issuer.status != "active" { return Err("CSD issuer is not active".into()); }
+    issuance.verify_issuer(&issuer.definition(issuance.issuer_id), timestamp)?;
+    insert_note(state, &issuance.output)?;
+    state.note_issuances.insert(id_key(&issuance.issuance_nonce), statement);
+    state.operations.insert(id_key(&issuance.operation_id), statement);
+    Ok(statement)
+}
+
+fn note_issuance_from_dto(dto: NoteIssuanceDto) -> Result<NoteIssuance, String> {
+    Ok(NoteIssuance {
         operation_id: hex_array(&dto.operation_id, "issuance.operationID")?,
         issuance_nonce: hex_array(&dto.issuance_nonce, "issuance.issuanceNonce")?,
         issuer_id: hex_array(&dto.issuer_id, "issuance.issuerID")?,
@@ -2094,39 +2179,7 @@ fn issue_note(
             &dto.issuer_signature,
             "issuance.issuerSignature",
         )?),
-    };
-    issuance.body()?;
-    let statement = issuance.statement()?;
-    authorize(state, params, statement, authorizer)?;
-    if timestamp == 0 {
-        return Err("note issuance has no consensus timestamp".into());
-    }
-    if state
-        .operations
-        .contains_key(&id_key(&issuance.operation_id))
-        || state
-            .note_issuances
-            .contains_key(&id_key(&issuance.issuance_nonce))
-        || state.notes.contains_key(&id_key(&issuance.output.note_id))
-    {
-        return Err("note issuance reuses an operation, nonce, or note".into());
-    }
-    let issuer = state
-        .csd_issuers
-        .get(&id_key(&issuance.issuer_id))
-        .ok_or_else(|| "note issuance names an unknown CSD issuer".to_string())?;
-    if issuer.status != "active" {
-        return Err("CSD issuer is not active".into());
-    }
-    issuance.verify_issuer(&issuer.definition(issuance.issuer_id), timestamp)?;
-    insert_note(state, &issuance.output)?;
-    state
-        .note_issuances
-        .insert(id_key(&issuance.issuance_nonce), statement);
-    state
-        .operations
-        .insert(id_key(&issuance.operation_id), statement);
-    Ok(statement)
+    })
 }
 
 fn register_standing_note_pool(
@@ -2663,7 +2716,8 @@ fn redeem_note_claim(
     };
     redemption.verify(&claim, authorizer.domain(), now)?;
     let statement = redemption.signing_message()?;
-    insert_note(state, &redemption.output)?;
+    let confidential = state.confidential.claim_assets.contains_key(&key);
+    insert_note_with_confidentiality(state, &redemption.output, confidential)?;
     record.status = "materialized".into();
     record.materialization = statement;
     state.note_claims.insert(key, record);
@@ -5887,7 +5941,7 @@ fn register_asset(
     let statement = definition.statement()?;
     authorize(state, params, statement, authorizer)?;
     let key = id_key(&definition.asset_id);
-    if state.assets.contains_key(&key) {
+    if state.assets.contains_key(&key) || state.confidential.identities.contains_key(&key) {
         return Err("asset identifier is already registered".into());
     }
     state.assets.insert(
@@ -6354,6 +6408,7 @@ fn grant_credit(
         .assets
         .get(&id_key(&grant.rail_asset_id))
         .is_some_and(|asset| asset.active)
+        && !state.confidential.identities.contains_key(&id_key(&grant.rail_asset_id))
     {
         return Err("credit facility uses an inactive or unknown asset".into());
     }
@@ -6913,8 +6968,20 @@ pub fn authorize(
                 signature: {
                     let bytes = hex::decode(&signed.signature)
                         .map_err(|_| "approval signature is not hex")?;
-                    zkfmi_crypto::hybrid::signature::HybridSignature::decode(&bytes)
-                        .map_err(|_| "approval requires a complete hybrid signature")?;
+                    match authorizer
+                        .deployment_crypto_policy()
+                        .map(|policy| policy.mode)
+                    {
+                        Some(zkfmi_crypto::mode::PqcMode::Off) => {
+                            ed25519_dalek::Signature::from_slice(&bytes).map_err(|_| {
+                                "PQC-off approval requires a complete Ed25519 signature"
+                            })?;
+                        }
+                        Some(zkfmi_crypto::mode::PqcMode::On) | None => {
+                            zkfmi_crypto::hybrid::signature::HybridSignature::decode(&bytes)
+                                .map_err(|_| "approval requires a complete hybrid signature")?;
+                        }
+                    }
                     bytes
                 },
             })
@@ -7014,6 +7081,61 @@ mod tests {
     use zkpi_proofs::quote_proof::{MakerWitness, QuoteCircuit, Registered};
     use zkpi_proofs::threshold_quote::{deal_quote_shares_with_qty_blinding, joint_prove_quote};
     use zkpi_proofs::threshold_range::{deal_bits, joint_prove_range_from_contributions};
+
+    #[test]
+    fn fresh_pqc_on_transaction_allowlist_is_exact_and_fail_closed() {
+        use zkfmi_crypto::{mode::DeploymentCryptoPolicy, mode::PqcMode, suite::Version};
+
+        let on = State {
+            deployment_crypto_policy: Some(DeploymentCryptoPolicy {
+                version: Version::V1,
+                deployment_id: "fresh-on-allowlist-test".into(),
+                mode: PqcMode::On,
+            }),
+            ..State::default()
+        };
+        let rejected = [
+            "defmivm.issueAsset",
+            "defmivm.issueResearchCoCodePolicySuffix",
+            "defmivm.issueResearchCoCodeProof",
+            "defmivm.issueResearchCoCodeCommit.extra",
+        ];
+        for method in rejected {
+            assert!(require_supported_deployment_crypto_path(&on, method)
+                .unwrap_err()
+                .contains("not enabled under the fresh PQC-on transaction allowlist"));
+        }
+
+        #[cfg(feature = "research-cocode")]
+        for method in [
+            "defmivm.issueResearchCoCodePolicy",
+            "defmivm.issueResearchCoCodeBook",
+            "defmivm.issueResearchCoCodeProofBegin",
+            "defmivm.issueResearchCoCodeProofChunk",
+            "defmivm.issueResearchCoCodeCommit",
+        ] {
+            require_supported_deployment_crypto_path(&on, method)
+                .expect("the exact converted research method is enabled");
+        }
+        #[cfg(not(feature = "research-cocode"))]
+        assert!(
+            require_supported_deployment_crypto_path(&on, "defmivm.issueResearchCoCodePolicy")
+                .is_err()
+        );
+
+        let off = State {
+            deployment_crypto_policy: Some(DeploymentCryptoPolicy {
+                version: Version::V1,
+                deployment_id: "fresh-off-allowlist-test".into(),
+                mode: PqcMode::Off,
+            }),
+            ..State::default()
+        };
+        require_supported_deployment_crypto_path(&off, "defmivm.issueAsset")
+            .expect("PQC-off keeps the established executor surface");
+        require_supported_deployment_crypto_path(&State::default(), "defmivm.issueAsset")
+            .expect("legacy deployments keep the established executor surface");
+    }
 
     #[test]
     fn application_note_reservation_verifies_full_proofs_and_survives_restart() {
