@@ -11,8 +11,9 @@ default = []
 research-cocode = ["dep:zkfmi-cosnark-trial"]
 
 [dependencies]
+zkpi-defmi-sdk = { path = "../zkpi-defmi-sdk" }
 zkfmi-crypto.workspace = true
-zkfmi-cosnark-trial = { path = "../../../zkfmi-crypto/research/cosnark-trial", default-features = false, optional = true }
+zkfmi-cosnark-trial = { git = "https://github.com/zkFMI/zkfmi-crypto.git", rev = "9f95ffc0bb3206517ffadb70223f2ebbcad5e908", default-features = false, optional = true }
 avalanche-rpcchainvm-qomm = { path = "../vendor/avalanche-rs-qomm/crates/avalanche-rpcchainvm" }
 defmi.workspace = true
 zkpi-committee.workspace = true
